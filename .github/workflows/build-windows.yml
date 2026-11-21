@@ -1,0 +1,37 @@
+name: Build Windows application
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Build AppShelf with .NET Framework
+        shell: cmd
+        run: Build-AppShelf.cmd --no-start --no-pause
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $executable = Get-Item -LiteralPath "AppShelf.exe" -ErrorAction Stop
+          if ($executable.Length -le 0) {
+            throw "AppShelf.exe is empty."
+          }
+
+      - name: Upload Windows application
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppShelf-${{ github.sha }}
+          path: AppShelf.exe
+          if-no-files-found: error
+          retention-days: 14

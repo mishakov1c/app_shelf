@@ -1,0 +1,67 @@
+# Visual Studio и другие IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Результаты и промежуточные файлы сборки
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+publish/
+artifacts/
+TestResults/
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.cache
+*.tlog
+*.nupkg
+
+# Временные файлы, журналы и резервные копии
+*.tmp
+*.temp
+*.log
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.zip
+*.7z
+*.rar
+Backups/
+Logs/
+
+# Пользовательские данные AppShelf
+apps.json
+reminders.json
+AppShelf-reminders*.json
+weather-cache.json
+weather-cache-*.json
+Shortcuts/
+*.dpapi
+
+# Локальный экспорт переписки (не является исходником проекта)
+/appshelf-2-6-1-github.json
+
+# Локальные конфигурации и секреты
+.env
+.env.*
+!.env.example
+secrets.json
+*.secrets.json
+appsettings.local.json
+appsettings.*.local.json
+
+# Служебные файлы Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/

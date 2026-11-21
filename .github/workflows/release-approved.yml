@@ -1,0 +1,108 @@
+name: Publish approved AppShelf release
+
+# Explicitly designated release commits only; regular pushes never create releases.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: >-
+      ${{ startsWith(github.event.head_commit.message, 'release: AppShelf ') }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Check out reviewed main commit
+        uses: actions/checkout@v4
+
+      - name: Verify release metadata and extract notes
+        shell: pwsh
+        env:
+          RELEASE_COMMIT: ${{ github.event.head_commit.message }}
+        run: |
+          $subject = ($env:RELEASE_COMMIT -split '\r?\n')[0].Trim()
+          $matched = [regex]::Match($subject, '^release: AppShelf (\d+\.\d+\.\d+)$')
+          if (-not $matched.Success) { throw "Invalid release commit subject: $subject" }
+          $version = $matched.Groups[1].Value
+
+          $source = Get-Content -LiteralPath VersionInfo.cs -Raw
+          $expected = 'AssemblyInformationalVersion("' + $version + '")'
+          if (-not $source.Contains($expected)) {
+            throw "VersionInfo.cs does not match $version"
+          }
+
+          $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
+          $pattern = '(?ms)^## \[' + [regex]::Escape($version) + '\][^\r\n]*\r?\n(?<body>.*?)(?=^## \[|\z)'
+          $section = [regex]::Match($changelog, $pattern)
+          if (-not $section.Success -or [string]::IsNullOrWhiteSpace($section.Groups['body'].Value)) {
+            throw "No changelog section for $version"
+          }
+
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE 'release-notes.md'),
+              $section.Groups['body'].Value.Trim(), $utf8)
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "APP_RELEASE_VERSION=$version`n", $utf8)
+          Write-Host "Release metadata validated: $version"
+
+      - name: Build .NET Framework Windows EXE
+        shell: cmd
+        run: Build-AppShelf.cmd --no-start --no-pause
+
+      - name: Run isolated Windows PowerShell 5.1 STA regression tests
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $tests = @(Get-ChildItem -LiteralPath tests -Filter '*.Tests.ps1' | Sort-Object Name)
+          if ($tests.Count -lt 15) { throw "Expected at least 15 regression test files" }
+          foreach ($test in $tests) {
+            Write-Host "START $($test.Name)"
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo.FileName = $exe
+            $process.StartInfo.Arguments = '-NoProfile -STA -ExecutionPolicy Bypass -File "' + $test.FullName + '"'
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.CreateNoWindow = $true
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            [void]$process.Start()
+            $out = $process.StandardOutput.ReadToEndAsync()
+            $err = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(180000)) {
+              $process.Kill()
+              $process.WaitForExit()
+              Write-Host $out.Result
+              Write-Host $err.Result
+              throw "TIMEOUT $($test.Name) after 180 seconds"
+            }
+            Write-Host $out.Result
+            Write-Host $err.Result
+            if ($process.ExitCode -ne 0) { throw "FAIL $($test.Name) (exit $($process.ExitCode))" }
+            Write-Host "PASS $($test.Name)"
+          }
+
+      - name: Verify release executable
+        shell: pwsh
+        run: |
+          $exe = Get-Item -LiteralPath AppShelf.exe -ErrorAction Stop
+          if ($exe.Length -le 0) { throw "Release EXE is empty" }
+          $actualVersion = $exe.VersionInfo.ProductVersion
+          Write-Host "ProductVersion: $actualVersion"
+          if ($actualVersion -ne $env:APP_RELEASE_VERSION) {
+            throw "EXE product version is $actualVersion, expected $env:APP_RELEASE_VERSION"
+          }
+
+      - name: Publish verified GitHub Release with EXE
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = $env:APP_RELEASE_VERSION
+          gh release create "$version" "AppShelf.exe" `
+            --title "AppShelf $version" `
+            --notes-file "release-notes.md" `
+            --target "$env:GITHUB_SHA"
