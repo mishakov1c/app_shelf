@@ -4571,6 +4571,9 @@ namespace AppShelf
                 catch (Exception ex) { ShowError("Не удалось открыть репозиторий.", ex); }
             };
             actions.Children.Add(repository);
+            Button updates = ActionButton("Проверить обновления", false);
+            updates.Click += delegate { ShowUpdateWindow(dialog); };
+            actions.Children.Add(updates);
             Button close = ActionButton("Закрыть", true);
             close.Click += delegate { dialog.Close(); };
             actions.Children.Add(close);
@@ -6461,6 +6464,23 @@ namespace AppShelf
         [STAThread]
         public static void Main()
         {
+            // Keep the parameterless entry point: existing Windows startup and
+            // process regression scenarios call Program.Main() directly.
+            string[] commandLine = Environment.GetCommandLineArgs();
+            if (commandLine.Length > 1 && commandLine[1] == "--apply-update")
+            {
+                string[] helperArgs = new string[commandLine.Length - 1];
+                Array.Copy(commandLine, 1, helperArgs, 0, helperArgs.Length);
+                try { AppUpdate.Apply(helperArgs); }
+                catch (Exception error)
+                {
+                    ConfigStore.Log(error);
+                    MessageBox.Show("Установка обновления не выполнена:\n" + error.Message +
+                        "\n\nИсходный AppShelf.exe сохранён; подробности в " + ConfigStore.LogPath,
+                        "AppShelf — обновление", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                return;
+            }
             // Global spans terminal sessions; the SID separates independent Windows profiles.
             // Fail closed, before even error logging can touch the user's data directory.
             Mutex instance = null;

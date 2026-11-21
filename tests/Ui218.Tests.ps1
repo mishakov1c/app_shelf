@@ -9,7 +9,7 @@ $previous = $env:APPSHELF_TEST_DATA
 $env:APPSHELF_TEST_DATA = $temp
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
-    $sources = foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs')) {
+    $sources = foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
