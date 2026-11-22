@@ -6215,6 +6215,83 @@ namespace AppShelf
             {
                 tileScaleValue.Text = FluentUi.NormalizeTileScale((int)Math.Round(tileScaleSlider.Value)) + "%";
             };
+            // Layout controls are hidden when grouping is disabled; the width
+            // and alignment choices are not applicable to the compact grid.
+            TextBlock groupLayoutLabel = Text("Компоновка групп:", 12, MutedBrush);
+            ComboBox groupLayoutSetting = new ComboBox
+            {
+                MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
+                Style = tileSetting.Style
+            };
+            groupLayoutSetting.Items.Add(new ComboBoxItem { Content = "Вертикально", Tag = "vertical" });
+            groupLayoutSetting.Items.Add(new ComboBoxItem { Content = "Компактная сетка", Tag = "grid" });
+            groupLayoutSetting.SelectedIndex =
+                NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "grid" ? 1 : 0;
+
+            TextBlock groupWidthLabel = Text("Ширина групп:", 12, MutedBrush);
+            ComboBox groupWidthSetting = new ComboBox
+            {
+                MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
+                Style = tileSetting.Style
+            };
+            groupWidthSetting.Items.Add(new ComboBoxItem { Content = "На всю ширину", Tag = "full" });
+            groupWidthSetting.Items.Add(new ComboBoxItem { Content = "По содержимому", Tag = "content" });
+            groupWidthSetting.SelectedIndex =
+                NormalizeGroupWidthMode(_config.GroupWidthMode) == "content" ? 1 : 0;
+
+            TextBlock groupAlignmentLabel = Text("Выравнивание групп:", 12, MutedBrush);
+            ComboBox groupAlignmentSetting = new ComboBox
+            {
+                MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
+                Style = tileSetting.Style
+            };
+            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "По левому краю", Tag = "left" });
+            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "По центру", Tag = "center" });
+            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "По правому краю", Tag = "right" });
+            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "Чередование слева и справа", Tag = "alternate" });
+            string activeGroupAlignment = NormalizeGroupAlignment(_config.GroupAlignment);
+            groupAlignmentSetting.SelectedIndex = activeGroupAlignment == "center" ? 1 :
+                activeGroupAlignment == "right" ? 2 : activeGroupAlignment == "alternate" ? 3 : 0;
+            foreach (ComboBox field in new ComboBox[]
+                { groupLayoutSetting, groupWidthSetting, groupAlignmentSetting })
+            {
+                foreach (ResourceDictionary styles in tileSetting.Resources.MergedDictionaries)
+                    field.Resources.MergedDictionaries.Add(styles);
+                field.Background = FluentUi.Brush("#101A2A");
+                field.BorderBrush = FluentUi.Brush("#34465F");
+                field.FontWeight = FontWeights.Normal;
+            }
+            TextBlock groupLayoutHint = Text(
+                "В режиме «По содержимому» можно задать отдельное выравнивание " +
+                "через правую кнопку на заголовке группы.", 11, MutedBrush);
+            groupLayoutHint.TextWrapping = TextWrapping.Wrap;
+            groupLayoutHint.Margin = new Thickness(0, 0, 0, 10);
+
+            Action refreshGroupLayoutControls = delegate
+            {
+                bool grouped = groupingSetting.IsChecked == true;
+                ComboBoxItem layoutChoice = groupLayoutSetting.SelectedItem as ComboBoxItem;
+                ComboBoxItem widthChoice = groupWidthSetting.SelectedItem as ComboBoxItem;
+                bool grid = layoutChoice != null && (string)layoutChoice.Tag == "grid";
+                bool contentWidth = widthChoice != null && (string)widthChoice.Tag == "content";
+                Visibility layoutVisibility = grouped ? Visibility.Visible : Visibility.Collapsed;
+                Visibility widthVisibility = grouped && !grid ? Visibility.Visible : Visibility.Collapsed;
+                Visibility alignVisibility = grouped && !grid && contentWidth
+                    ? Visibility.Visible : Visibility.Collapsed;
+                groupLayoutLabel.Visibility = layoutVisibility;
+                groupLayoutSetting.Visibility = layoutVisibility;
+                groupWidthLabel.Visibility = widthVisibility;
+                groupWidthSetting.Visibility = widthVisibility;
+                groupAlignmentLabel.Visibility = alignVisibility;
+                groupAlignmentSetting.Visibility = alignVisibility;
+                groupLayoutHint.Visibility = alignVisibility;
+            };
+            groupingSetting.Checked += delegate { refreshGroupLayoutControls(); };
+            groupingSetting.Unchecked += delegate { refreshGroupLayoutControls(); };
+            groupLayoutSetting.SelectionChanged += delegate { refreshGroupLayoutControls(); };
+            groupWidthSetting.SelectionChanged += delegate { refreshGroupLayoutControls(); };
+            refreshGroupLayoutControls();
+
             TextBlock backgroundSettingLabel = Text("Фон главного окна:", 12, MutedBrush);
             ComboBox backgroundSetting = new ComboBox { MinHeight = 33, Margin = new Thickness(0, 4, 0, 10) };
             backgroundSetting.Items.Add(new ComboBoxItem { Content = "Синие дуги", Tag = "blue-arcs" });
@@ -6594,8 +6671,10 @@ namespace AppShelf
 
             AddSettingsSection(appearanceRows, "appearance-tiles", "Плитки и группы",
                 new List<UIElement> { groupingSetting, tileSettingLabel, tileSetting,
-                    tileScaleLabel, tileScaleRow, groupOpacityLabel, opacityRow,
-                    previewCaption, previewBackdrop },
+                    tileScaleLabel, tileScaleRow,
+                    groupLayoutLabel, groupLayoutSetting, groupWidthLabel, groupWidthSetting,
+                    groupAlignmentLabel, groupAlignmentSetting, groupLayoutHint,
+                    groupOpacityLabel, opacityRow, previewCaption, previewBackdrop },
                 appearanceBodies, appearanceArrows, appearanceHeaders, toggleAppearance);
             AddSettingsSection(appearanceRows, "appearance-background", "Фон главного окна",
                 new List<UIElement> { backgroundSettingLabel, backgroundSetting, backgroundActions },
@@ -6780,6 +6859,9 @@ namespace AppShelf
                 pending.RdpKeepAwake = rdp.IsChecked == true;
                 pending.SettingsLastSection = selectedSettingsSection;
                 pending.GroupingEnabled = groupingSetting.IsChecked == true;
+                pending.GroupLayoutMode = (string)((ComboBoxItem)groupLayoutSetting.SelectedItem).Tag;
+                pending.GroupWidthMode = (string)((ComboBoxItem)groupWidthSetting.SelectedItem).Tag;
+                pending.GroupAlignment = (string)((ComboBoxItem)groupAlignmentSetting.SelectedItem).Tag;
                 pending.AlwaysOnTop = topmostSetting.IsChecked == true;
                 pending.TileDisplayMode = (string)((ComboBoxItem)tileSetting.SelectedItem).Tag;
                 pending.TileScalePercent = FluentUi.NormalizeTileScale((int)Math.Round(tileScaleSlider.Value));
