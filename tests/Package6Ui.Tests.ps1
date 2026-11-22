@@ -295,6 +295,15 @@ public static class Package6Tests
     {
         return Controls<ComboBox>(Body(d, "appearance-panel"))[0];
     }
+    private static ComboBox ComboWithOption(Window d, string optionTag)
+    {
+        foreach (ComboBox field in Controls<ComboBox>(d))
+            foreach (object choice in field.Items) {
+                ComboBoxItem entry = choice as ComboBoxItem;
+                if (entry != null && Object.Equals(entry.Tag, optionTag)) return field;
+            }
+        throw new Exception("Settings combo missing option " + optionTag);
+    }
     private static ComboBox NetworkMode(Window d, int slot)
     {
         foreach (ComboBox c in Controls<ComboBox>(d))
@@ -1665,6 +1674,114 @@ public static class Package6Tests
                 }; Call(w, "ShowAboutWindow");
             } finally { w.Close(); }
         }); }
+        Case("legacy group layout fills the full viewport", delegate {
+            Seed("normal", 2);
+            Assert(Load().GroupWidthMode == null && Load().GroupLayoutMode == null &&
+                Load().GroupAlignmentOverrides == null, "Legacy group layout gained required fields");
+            MainWindow w = Open(); try {
+                StackPanel host = (StackPanel)Get(w, "_tileHost");
+                Assert(host.Children.Count == 3, "Legacy vertical group count changed");
+                foreach (Border card in host.Children)
+                    Assert(Double.IsNaN(card.Width) &&
+                        card.HorizontalAlignment == HorizontalAlignment.Stretch,
+                        "Legacy group no longer fills the available width");
+            } finally { w.Close(); }
+        });
+        Case("content-sized groups honor alignment overrides and window resize", delegate {
+            Seed("normal", 6);
+            AppConfig c = Load();
+            c.Items[5].Group = "Вторая";
+            c.GroupWidthMode = "content";
+            c.GroupLayoutMode = "vertical";
+            c.GroupAlignment = "alternate";
+            c.GroupAlignmentOverrides = new Dictionary<string, string>
+                { { "Вторая", "center" } };
+            ConfigStore.Save(c);
+            MainWindow w = Open(); try {
+                w.Width = 980; Drain();
+                StackPanel host = (StackPanel)Get(w, "_tileHost");
+                Assert(host.Children.Count == 3, "Content layout changed group order");
+                Border first = (Border)host.Children[0];
+                Border second = (Border)host.Children[1];
+                Border empty = (Border)host.Children[2];
+                Assert(first.HorizontalAlignment == HorizontalAlignment.Left &&
+                    second.HorizontalAlignment == HorizontalAlignment.Center &&
+                    empty.HorizontalAlignment == HorizontalAlignment.Left,
+                    "Alternate/default and individual alignments were not applied");
+                Assert(first.Width > second.Width && !Double.IsNaN(first.Width) &&
+                    !Double.IsNaN(empty.Width), "Group width does not follow tile count");
+                w.Width = w.MinWidth; Drain();
+                ScrollViewer viewport = (ScrollViewer)Get(w, "_tilesScroller");
+                Assert(first.Width <= viewport.ViewportWidth + 0.5 &&
+                    second.Width <= viewport.ViewportWidth + 0.5,
+                    "Narrow viewport clips content-sized groups");
+                Assert(Load().GroupAlignmentOverrides["Вторая"] == "center",
+                    "Saved per-group alignment preference was lost");
+                DockPanel heading = (DockPanel)Group(w, 1).Header;
+                MenuItem alignment = Menu(heading.ContextMenu, "Выравнивание группы");
+                Click(Menu(alignment, "Справа"));
+                Assert(Load().GroupAlignmentOverrides["Вторая"] == "right" &&
+                    second.HorizontalAlignment == HorizontalAlignment.Right,
+                    "Per-group context menu did not persist/reflow the new alignment");
+                Click(Menu(alignment, "По общему правилу"));
+                Assert(Load().GroupAlignmentOverrides == null &&
+                    second.HorizontalAlignment == HorizontalAlignment.Right,
+                    "Inherited alternate alignment did not restore the correct position");
+            } finally { w.Close(); }
+        });
+        Case("compact grid wraps groups without stretching their cards", delegate {
+            Seed("normal", 5);
+            AppConfig c = Load();
+            c.Items[4].Group = "Вторая";
+            c.GroupLayoutMode = "grid";
+            c.GroupWidthMode = "full"; // Grid must use tile widths regardless.
+            ConfigStore.Save(c);
+            MainWindow w = Open(); try {
+                w.Width = 850; Drain();
+                StackPanel host = (StackPanel)Get(w, "_tileHost");
+                Assert(host.Children.Count == 1 && host.Children[0] is WrapPanel,
+                    "Compact grid host is missing");
+                WrapPanel grid = (WrapPanel)host.Children[0];
+                Assert(grid.Children.Count == 3, "Grid lost a group, including the empty target");
+                ScrollViewer viewport = (ScrollViewer)Get(w, "_tilesScroller");
+                foreach (Border card in grid.Children)
+                    Assert(!Double.IsNaN(card.Width) && card.Width > 0 &&
+                        card.Width <= viewport.ViewportWidth + 0.5,
+                        "Grid card did not size to the available viewport");
+                w.Width = w.MinWidth; Drain();
+                foreach (Border card in grid.Children)
+                    Assert(card.Width <= viewport.ViewportWidth + 0.5,
+                        "Grid card overflows after shrinking the window");
+            } finally { w.Close(); }
+        });
+        Case("group layout settings hide inapplicable controls and persist choices", delegate {
+            Seed("normal", 1);
+            MainWindow w = Open(); try {
+                settings = delegate(Window d) {
+                    ComboBox layout = ComboWithOption(d, "grid");
+                    ComboBox width = ComboWithOption(d, "content");
+                    ComboBox align = ComboWithOption(d, "alternate");
+                    Assert(layout.Visibility == Visibility.Visible &&
+                        width.Visibility == Visibility.Visible &&
+                        align.Visibility == Visibility.Collapsed,
+                        "Default full-width mode incorrectly shows alignment");
+                    width.SelectedIndex = 1; Drain();
+                    Assert(align.Visibility == Visibility.Visible,
+                        "Content width did not reveal alignment");
+                    align.SelectedIndex = 3;
+                    layout.SelectedIndex = 1; Drain();
+                    Assert(width.Visibility == Visibility.Collapsed &&
+                        align.Visibility == Visibility.Collapsed,
+                        "Compact grid still shows irrelevant controls");
+                    Click(ButtonNamed(d, "Сохранить"));
+                };
+                Call(w, "ShowSettings");
+                AppConfig saved = Load();
+                Assert(saved.GroupLayoutMode == "grid" && saved.GroupWidthMode == "content" &&
+                    saved.GroupAlignment == "alternate",
+                    "Group layout selectors were not saved");
+            } finally { w.Close(); }
+        });
         Console.WriteLine("Package6 scenarios passed=" + passed + "; failed=" + failed);
         app.Shutdown(); if (failed != 0) throw new Exception("Package6 failures: " + failed);
     }
