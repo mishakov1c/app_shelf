@@ -545,6 +545,10 @@ namespace AppShelf
         // Names are presentation only; IDs prevent collisions between identically named reminders.
         private readonly List<string> _pendingReminderIds = new List<string>();
         private readonly HashSet<string> _openReminderAlertIds = new HashSet<string>(StringComparer.Ordinal);
+        // Closing the shared window defers unfinished notifications until the next
+        // AppShelf launch, without writing acknowledgements to reminders.json.
+        private readonly HashSet<string> _dismissedReminderAlertIds =
+            new HashSet<string>(StringComparer.Ordinal);
         private bool _checkingDueReminders;
         private bool _dueReminderSaveFailed;
         private bool _remindersShuttingDown;
@@ -831,7 +835,8 @@ namespace AppShelf
             foreach (ReminderItem item in _reminderDocument.Reminders)
             {
                 if (!item.PendingAlert || SnoozedAlertInQuietHours(item, now)) continue;
-                if (_openReminderAlertIds.Contains(item.Id) || _pendingReminderIds.Contains(item.Id))
+                if (_openReminderAlertIds.Contains(item.Id) || _pendingReminderIds.Contains(item.Id) ||
+                    _dismissedReminderAlertIds.Contains(item.Id))
                     continue;
                 _pendingReminderNames.Add(item.Title);
                 _pendingReminderIds.Add(item.Id);
@@ -839,11 +844,11 @@ namespace AppShelf
             ShowDueReminderAlert();
         }
 
-        // Closing an alert acknowledges the exact occurrences, not the next repeat.
-        // A failed write leaves pendingAlert=true on disk so the next startup retries.
-        private void AcknowledgeReminderAlert(IList<string> ids)
+        // Only an explicit "Done" action acknowledges its selected occurrence.
+        // Failed writes leave pendingAlert=true and the row actionable.
+        private bool AcknowledgeReminderAlert(IList<string> ids)
         {
-            if (!_remindersCanSave || _reminderDocument == null || ids == null) return;
+            if (!_remindersCanSave || _reminderDocument == null || ids == null) return false;
             HashSet<string> selected = new HashSet<string>(ids, StringComparer.Ordinal);
             ReminderDocument pending = new ReminderDocument
             {
@@ -868,10 +873,11 @@ namespace AppShelf
                 pending.Reminders[i] = copy;
                 changed.Add(item);
             }
-            if (changed.Count == 0) return;
+            if (changed.Count == 0) return false;
             try { ReminderStore.Save(pending); }
-            catch (Exception error) { ConfigStore.Log(error); return; }
+            catch (Exception error) { ConfigStore.Log(error); return false; }
             foreach (ReminderItem item in changed) item.PendingAlert = false;
+            return true;
         }
 
         // A fired recurring item has a separate history occurrence; snooze only changes
@@ -1056,8 +1062,8 @@ namespace AppShelf
         {
             if (_reminderAlertWindow != null) return;
             if (_pendingReminderIds.Count == 0) return;
-            // Decide what may be displayed only at the point of actual delivery,
-            // so queued and recovered alerts cannot bypass quiet hours.
+            // Decide what may be displayed only at actual delivery. Pending
+            // snoozes may not bypass quiet hours after a restart.
             DateTime now = DateTime.Now;
             List<string> titles = new List<string>();
             List<string> ids = new List<string>();
@@ -1067,7 +1073,7 @@ namespace AppShelf
                 string id = _pendingReminderIds[i];
                 ReminderItem occurrence = _reminderDocument.Reminders.Find(
                     delegate(ReminderItem item) { return item != null && item.Id == id; });
-                // Keep pendingAlert=true for the next permitted delivery window.
+                if (_dismissedReminderAlertIds.Contains(id)) continue;
                 if (SnoozedAlertInQuietHours(occurrence, now)) continue;
                 if (SuppressHourlyAlert(occurrence, now)) suppressed.Add(id);
                 else
@@ -1078,8 +1084,7 @@ namespace AppShelf
             }
             _pendingReminderNames.Clear();
             _pendingReminderIds.Clear();
-            // Acknowledge only the skipped hourly events; regular once alerts
-            // continue to be delivered normally.
+            // Preserve the established policy for obsolete automatic hourly events.
             if (suppressed.Count > 0) AcknowledgeReminderAlert(suppressed);
             if (ids.Count == 0)
             {
@@ -1097,90 +1102,149 @@ namespace AppShelf
             }
             catch (Exception error) { ConfigStore.Log(error); }
 
-            Window dialog = NewReminderWindow("Напоминания", 470, 325);
+            Window dialog = NewReminderWindow("Напоминания",
+                ids.Count == 1 ? 510 : 630, ids.Count == 1 ? 355 : 505);
             _reminderAlertWindow = dialog;
             dialog.Topmost = true;
             dialog.ShowInTaskbar = true;
             dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
             DockPanel layout = new DockPanel { Margin = new Thickness(20) };
             dialog.Content = layout;
-            StackPanel actions = new StackPanel();
-            DockPanel.SetDock(actions, Dock.Bottom);
-            layout.Children.Add(actions);
-            DockPanel content = new DockPanel();
-            layout.Children.Add(content);
-            TextBlock header = Text("Время напоминания", 21, WhiteBrush);
+
+            TextBlock header = Text(ids.Count == 1 ? "Время напоминания" :
+                "Сработало напоминаний: " + ids.Count, 21, WhiteBrush);
             header.FontWeight = FontWeights.Bold;
-            header.Margin = new Thickness(0, 0, 0, 12);
+            header.Margin = new Thickness(0, 0, 0, 13);
             DockPanel.SetDock(header, Dock.Top);
-            content.Children.Add(header);
-            ScrollViewer scroll = new ScrollViewer { MaxHeight = 100,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            layout.Children.Add(header);
+
+            TextBlock hint = Text("Закрытие окна сохранит необработанные напоминания до следующего запуска.",
+                11, MutedBrush);
+            hint.TextWrapping = TextWrapping.Wrap;
+            hint.Margin = new Thickness(0, 12, 0, 0);
+            DockPanel.SetDock(hint, Dock.Bottom);
+            layout.Children.Add(hint);
+
+            ScrollViewer scroll = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            };
             FluentUi.StyleSettingsScroll(scroll);
-            TextBlock messages = Text(String.Join("\n", titles.ToArray()), 14, WhiteBrush);
-            messages.TextWrapping = TextWrapping.Wrap;
-            scroll.Content = messages;
-            content.Children.Add(scroll);
-            Button done = ActionButton("Готово", true);
-            done.Margin = new Thickness(0, 14, 0, 9);
-            done.Click += delegate { dialog.Close(); };
-            actions.Children.Add(done);
-            WrapPanel controls = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
-            actions.Children.Add(controls);
-            bool snoozed = false;
-            Action<int> snoozeFor = delegate(int minutes)
+            layout.Children.Add(scroll);
+            StackPanel rows = new StackPanel { Margin = new Thickness(0, 0, 4, 0) };
+            scroll.Content = rows;
+
+            // Remove only the processed item from the displayed batch. The original
+            // recurring parent is never modified by this presentation code.
+            Action<string, Border> completed = delegate(string id, Border card)
             {
-                if (snoozed || !_remindersCanSave) return;
-                if (!SnoozeReminderOccurrences(ids, minutes)) return;
-                snoozed = true;
-                dialog.Close();
+                ids.Remove(id);
+                _openReminderAlertIds.Remove(id);
+                rows.Children.Remove(card);
+                UpdateReminderList();
+                if (ids.Count == 0) dialog.Close();
             };
-            int[] quick = ReminderQuickIntervals(_config);
-            for (int i = 0; i < quick.Length; i++)
+
+            for (int i = 0; i < ids.Count; i++)
             {
-                int minutes = quick[i];
-                Button button = ActionButton(SnoozeDurationText(minutes), false);
-                button.Margin = new Thickness(0, 0, 5, 5);
-                button.ToolTip = "Отложить текущее срабатывание на " + SnoozeDurationText(minutes);
-                button.Click += delegate { snoozeFor(minutes); };
-                controls.Children.Add(button);
+                string occurrenceId = ids[i];
+                string title = titles[i];
+                Border card = new Border
+                {
+                    Background = FluentUi.Surface,
+                    BorderBrush = FluentUi.BorderColor,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(13),
+                    Margin = new Thickness(0, 0, 0, 9)
+                };
+                rows.Children.Add(card);
+                StackPanel panel = new StackPanel();
+                card.Child = panel;
+                TextBlock message = Text(title, 14, WhiteBrush);
+                message.FontWeight = FontWeights.SemiBold;
+                message.TextWrapping = TextWrapping.Wrap;
+                panel.Children.Add(message);
+
+                WrapPanel buttons = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+                panel.Children.Add(buttons);
+                Button done = ActionButton("Готово", true);
+                done.Margin = new Thickness(0, 0, 9, 7);
+                done.Click += delegate
+                {
+                    if (!ids.Contains(occurrenceId)) return;
+                    if (!AcknowledgeReminderAlert(new string[] { occurrenceId }))
+                    {
+                        MessageBox.Show(dialog,
+                            "Не удалось сохранить подтверждение напоминания. Повтори действие.",
+                            "AppShelf — напоминания", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+                    completed(occurrenceId, card);
+                };
+                buttons.Children.Add(done);
+
+                Action<int> snoozeFor = delegate(int minutes)
+                {
+                    if (!ids.Contains(occurrenceId) || !_remindersCanSave) return;
+                    if (!SnoozeReminderOccurrences(new string[] { occurrenceId }, minutes)) return;
+                    completed(occurrenceId, card);
+                };
+                int[] quick = ReminderQuickIntervals(_config);
+                for (int q = 0; q < quick.Length; q++)
+                {
+                    int minutes = quick[q];
+                    Button button = ActionButton(SnoozeDurationText(minutes), false);
+                    button.Margin = new Thickness(0, 0, 6, 7);
+                    button.ToolTip = "Отложить только «" + title + "» на " +
+                        SnoozeDurationText(minutes);
+                    button.Click += delegate { snoozeFor(minutes); };
+                    buttons.Children.Add(button);
+                }
+
+                Button more = ActionButton("Ещё…", false);
+                more.Margin = new Thickness(0, 0, 0, 7);
+                buttons.Children.Add(more);
+                ContextMenu menu = new ContextMenu();
+                int last = _config.SnoozeLastMinutes >= 1 && _config.SnoozeLastMinutes <= 10080
+                    ? _config.SnoozeLastMinutes : 10;
+                MenuItem lastItem = new MenuItem { Header = "Последний: " + SnoozeDurationText(last) };
+                lastItem.Click += delegate { snoozeFor(last); };
+                menu.Items.Add(lastItem);
+                foreach (int minutes in new int[] { 5, 15, 120, 180, 360, 720, 1440 })
+                {
+                    int choice = minutes;
+                    MenuItem preset = new MenuItem { Header = SnoozeDurationText(choice) };
+                    preset.Click += delegate { snoozeFor(choice); };
+                    menu.Items.Add(preset);
+                }
+                menu.Items.Add(new Separator());
+                MenuItem custom = new MenuItem { Header = "Свой интервал…" };
+                custom.Click += delegate
+                {
+                    int? chosen = ShowCustomSnoozeInterval(dialog);
+                    if (chosen.HasValue) snoozeFor(chosen.Value);
+                };
+                menu.Items.Add(custom);
+                MenuItem configure = new MenuItem { Header = "Настроить быстрые кнопки…" };
+                configure.Click += delegate { ConfigureQuickSnoozeIntervals(dialog); };
+                menu.Items.Add(configure);
+                more.ContextMenu = menu;
+                more.Click += delegate { menu.PlacementTarget = more; menu.IsOpen = true; };
             }
-            Button more = ActionButton("Ещё…", false);
-            controls.Children.Add(more);
-            ContextMenu menu = new ContextMenu();
-            int last = _config.SnoozeLastMinutes >= 1 && _config.SnoozeLastMinutes <= 10080
-                ? _config.SnoozeLastMinutes : 10;
-            MenuItem lastItem = new MenuItem { Header = "Последний: " + SnoozeDurationText(last) };
-            lastItem.Click += delegate { snoozeFor(last); };
-            menu.Items.Add(lastItem);
-            foreach (int minutes in new int[] { 5, 15, 120, 180, 360, 720, 1440 })
-            {
-                int choice = minutes;
-                MenuItem preset = new MenuItem { Header = SnoozeDurationText(choice) };
-                preset.Click += delegate { snoozeFor(choice); };
-                menu.Items.Add(preset);
-            }
-            menu.Items.Add(new Separator());
-            MenuItem custom = new MenuItem { Header = "Свой интервал…" };
-            custom.Click += delegate
-            {
-                int? chosen = ShowCustomSnoozeInterval(dialog);
-                if (chosen.HasValue) snoozeFor(chosen.Value);
-            };
-            menu.Items.Add(custom);
-            MenuItem configure = new MenuItem { Header = "Настроить быстрые кнопки…" };
-            configure.Click += delegate { ConfigureQuickSnoozeIntervals(dialog); };
-            menu.Items.Add(configure);
-            more.ContextMenu = menu;
-            more.Click += delegate { menu.PlacementTarget = more; menu.IsOpen = true; };
+
             dialog.Closed += delegate
             {
-                // App shutdown is not user acknowledgement. Keep the alert durable.
-                if (!_remindersShuttingDown && !snoozed) AcknowledgeReminderAlert(ids);
+                // Closing the window, including its X button, is not an
+                // acknowledgement. Do not re-open dismissed items every ten
+                // seconds; pendingAlert on disk causes replay on next startup.
+                if (!_remindersShuttingDown)
+                    foreach (string id in ids) _dismissedReminderAlertIds.Add(id);
+                foreach (string id in ids) _openReminderAlertIds.Remove(id);
                 _reminderAlertWindow = null;
-                _openReminderAlertIds.Clear();
                 UpdateReminderList();
-                if (_pendingReminderNames.Count > 0)
+                if (_pendingReminderIds.Count > 0)
                     Dispatcher.BeginInvoke(new Action(ShowDueReminderAlert));
             };
             dialog.Show();
