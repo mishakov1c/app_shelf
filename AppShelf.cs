@@ -2053,6 +2053,38 @@ namespace AppShelf
             tileModes.Items.Add(_tileModeLabeledMenuItem);
             quick.Items.Add(tileModes);
             UpdateTileModeMenu();
+            // Only the three layout modes are quick actions; detailed options
+            // (width, alignment and nine-zone positions) belong in Settings.
+            MenuItem groupLayoutModes = new MenuItem { Header = "Размещение групп" };
+            Dictionary<string, MenuItem> groupLayoutChoices =
+                new Dictionary<string, MenuItem>(StringComparer.Ordinal);
+            Action refreshGroupLayoutChoices = delegate
+            {
+                string currentMode = NormalizeGroupLayoutMode(_config.GroupLayoutMode);
+                foreach (KeyValuePair<string, MenuItem> pair in groupLayoutChoices)
+                    pair.Value.IsChecked = pair.Key == currentMode;
+                groupLayoutModes.IsEnabled = _config.GroupingEnabled;
+            };
+            foreach (string layoutMode in new[] { "vertical", "grid", "free" })
+            {
+                string chosen = layoutMode;
+                MenuItem option = new MenuItem
+                {
+                    Header = chosen == "vertical" ? "Список" :
+                        chosen == "grid" ? "Автоматическая сетка" : "Свободное размещение",
+                    IsCheckable = true
+                };
+                option.Click += delegate
+                {
+                    SetGroupLayoutMode(chosen);
+                    refreshGroupLayoutChoices();
+                };
+                groupLayoutModes.Items.Add(option);
+                groupLayoutChoices.Add(chosen, option);
+            }
+            groupLayoutModes.SubmenuOpened += delegate { refreshGroupLayoutChoices(); };
+            refreshGroupLayoutChoices();
+            quick.Items.Add(groupLayoutModes);
             _pinMenuItem = new MenuItem { Header = "Поверх остальных окон",
                 IsCheckable = true, IsChecked = _config.AlwaysOnTop };
             _pinMenuItem.Click += delegate
@@ -2090,6 +2122,7 @@ namespace AppShelf
                 _groupMenuItem.IsChecked = _config.GroupingEnabled;
                 _pinMenuItem.IsChecked = _config.AlwaysOnTop;
                 UpdateTileModeMenu();
+                refreshGroupLayoutChoices();
                 foreach (KeyValuePair<string, MenuItem> pair in panelChoices)
                     pair.Value.IsChecked = pair.Key == NormalizeBottomPanelMode(_config.BottomPanelMode);
                 sound.IsChecked = _config.SoundsEnabled != false;
@@ -5073,6 +5106,17 @@ namespace AppShelf
             _groupMenuItem.IsChecked = _config.GroupingEnabled;
             _newGroupMenuItem.IsEnabled = _config.GroupingEnabled;
             if (saved) RenderTiles();
+        }
+
+        private void SetGroupLayoutMode(string mode)
+        {
+            if (mode != "vertical" && mode != "grid" && mode != "free") return;
+            if (!_canSave) { ShowSaveDisabled(); return; }
+            if (!_config.GroupingEnabled || NormalizeGroupLayoutMode(_config.GroupLayoutMode) == mode)
+                return;
+            AppConfig pending = _config.Copy();
+            pending.GroupLayoutMode = mode;
+            if (SaveConfigChanges(pending)) RenderTiles();
         }
 
         private string CurrentTileDisplayMode()
