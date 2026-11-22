@@ -1590,12 +1590,15 @@ namespace AppShelf
             public readonly string Group;
             public readonly int TileCount;
             public readonly int Position;
-            public GroupLayoutCard(Border card, string group, int tileCount, int position)
+            public readonly TextBlock Heading;
+            public GroupLayoutCard(Border card, string group, int tileCount, int position,
+                TextBlock heading)
             {
                 Card = card;
                 Group = group;
                 TileCount = tileCount;
                 Position = position;
+                Heading = heading;
             }
         }
 
@@ -4284,10 +4287,10 @@ namespace AppShelf
         {
             if (_updatingGroupWidths || _tilesScroller == null ||
                 _groupLayoutCards.Count == 0) return;
-            double available = _tilesScroller.ViewportWidth;
-            if (Double.IsNaN(available) || Double.IsInfinity(available) || available <= 1)
-                available = _tilesScroller.ActualWidth - _tilesScroller.Padding.Left -
-                    _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
+            // Reserve scrollbar room even while hidden: otherwise the scrollbar
+            // appearing may alter wrapping and oscillate around the threshold.
+            double available = _tilesScroller.ActualWidth - _tilesScroller.Padding.Left -
+                _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
             if (Double.IsNaN(available) || Double.IsInfinity(available) || available <= 1) return;
 
             bool grid = NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "grid";
@@ -4309,12 +4312,14 @@ namespace AppShelf
                         card.HorizontalAlignment = align == "right" ? HorizontalAlignment.Right :
                             align == "center" ? HorizontalAlignment.Center : HorizontalAlignment.Left;
                         card.Margin = new Thickness(0, 0, grid ? 9 : 0, 8);
+                        group.Heading.MaxWidth = Math.Max(85, width - 84);
                     }
                     else
                     {
                         card.Width = Double.NaN;
                         card.HorizontalAlignment = HorizontalAlignment.Stretch;
                         card.Margin = new Thickness(0, 0, 0, 8);
+                        group.Heading.MaxWidth = Double.PositiveInfinity;
                     }
                 }
             }
@@ -4396,6 +4401,7 @@ namespace AppShelf
                         "  ·  " + inGroup, 15, WhiteBrush);
                     heading.FontWeight = FontWeights.SemiBold;
                     heading.Margin = new Thickness(5, 0, 0, 4);
+                    heading.TextTrimming = TextTrimming.CharacterEllipsis;
                     DockPanel headerPanel = new DockPanel { LastChildFill = true };
                     if (group.Length != 0)
                     {
@@ -4502,7 +4508,7 @@ namespace AppShelf
                         Padding = new Thickness(10, 7, 10, 7), Margin = new Thickness(0, 0, 0, 8)
                     };
                     _groupLayoutCards.Add(new GroupLayoutCard(groupCard, group, inGroup,
-                        _groupLayoutCards.Count));
+                        _groupLayoutCards.Count, heading));
                     if (gridHost != null) gridHost.Children.Add(groupCard);
                     else _tileHost.Children.Add(groupCard);
                 }
