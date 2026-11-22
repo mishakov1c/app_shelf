@@ -1911,7 +1911,7 @@ public static class Package6Tests
             } finally { w.Close(); }
         });
         Case("free zones use content heights before scrolling a small viewport", delegate {
-            Seed("compact", 18);
+            Seed("compact", 10);
             AppConfig c = Load();
             c.Groups.Clear();
             c.Groups.AddRange(new string[] { "Первая", "Вторая" });
