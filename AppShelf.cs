@@ -83,6 +83,10 @@ namespace AppShelf
         {
             AppConfig copy = (AppConfig)MemberwiseClone();
             copy.Groups = new List<string>(Groups);
+            copy.GroupAlignmentOverrides = GroupAlignmentOverrides == null ? null :
+                new Dictionary<string, string>(GroupAlignmentOverrides, StringComparer.OrdinalIgnoreCase);
+            copy.GroupZoneOverrides = GroupZoneOverrides == null ? null :
+                new Dictionary<string, string>(GroupZoneOverrides, StringComparer.OrdinalIgnoreCase);
             copy.SnoozeQuickMinutes = SnoozeQuickMinutes == null ? null : (int[])SnoozeQuickMinutes.Clone();
             copy.BottomPanelFavorites = BottomPanelFavorites == null ? null : new List<string>(BottomPanelFavorites);
             copy.BottomPanelCategories = BottomPanelCategories == null ? null : new List<string>(BottomPanelCategories);
@@ -115,6 +119,28 @@ namespace AppShelf
 
         [DataMember(Name = "groupingEnabled", EmitDefaultValue = false)]
         public bool GroupingEnabled;
+
+        // Optional group layout; missing fields retain the original full-width,
+        // vertically stacked appearance of existing apps.json profiles.
+        [DataMember(Name = "groupWidthMode", EmitDefaultValue = false)]
+        public string GroupWidthMode;
+
+        [DataMember(Name = "groupLayoutMode", EmitDefaultValue = false)]
+        public string GroupLayoutMode;
+
+        [DataMember(Name = "groupAlignment", EmitDefaultValue = false)]
+        public string GroupAlignment;
+
+        // Only non-default overrides are stored, keyed by the group's name.
+        [DataMember(Name = "groupAlignmentOverrides", EmitDefaultValue = false)]
+        public Dictionary<string, string> GroupAlignmentOverrides;
+
+        // Free layout uses a 3x3 zone board; missing fields mean top-left.
+        [DataMember(Name = "groupDefaultZone", EmitDefaultValue = false)]
+        public string GroupDefaultZone;
+
+        [DataMember(Name = "groupZoneOverrides", EmitDefaultValue = false)]
+        public Dictionary<string, string> GroupZoneOverrides;
 
         [DataMember(Name = "groups")]
         public List<string> Groups = new List<string>();
@@ -1454,6 +1480,14 @@ namespace AppShelf
         private bool _windowPlacementTrackingReady;
         private bool _lastNonMinimizedWasMaximized;
         private StackPanel _tileHost;
+        private ScrollViewer _tilesScroller;
+        private readonly List<GroupLayoutCard> _groupLayoutCards = new List<GroupLayoutCard>();
+        private Grid _freeLayoutGrid;
+        private readonly Dictionary<string, StackPanel> _freeZoneHosts =
+            new Dictionary<string, StackPanel>(StringComparer.Ordinal);
+        private readonly List<Border> _freeZoneCells = new List<Border>();
+        private readonly List<TextBlock> _freeZoneHints = new List<TextBlock>();
+        private bool _updatingGroupWidths;
         private Grid _mainContentGrid;
         private DockPanel _mainBackgroundHost;
         private Border _footerBorder;
@@ -1563,6 +1597,35 @@ namespace AppShelf
         private Point _groupDragStart;
         private bool _groupDragInProgress;
         private Border _highlightedDropZone;
+
+        private sealed class GroupLayoutCard
+        {
+            public readonly Border Card;
+            public readonly string Group;
+            public readonly int TileCount;
+            public readonly int Position;
+            public readonly TextBlock Heading;
+            public GroupLayoutCard(Border card, string group, int tileCount, int position,
+                TextBlock heading)
+            {
+                Card = card;
+                Group = group;
+                TileCount = tileCount;
+                Position = position;
+                Heading = heading;
+            }
+        }
+
+        private sealed class FreeGroupDropTarget
+        {
+            public readonly string Zone;
+            public readonly Border Surface;
+            public FreeGroupDropTarget(string zone, Border surface)
+            {
+                Zone = zone;
+                Surface = surface;
+            }
+        }
 
         private sealed class GroupDropTarget
         {
@@ -1990,6 +2053,38 @@ namespace AppShelf
             tileModes.Items.Add(_tileModeLabeledMenuItem);
             quick.Items.Add(tileModes);
             UpdateTileModeMenu();
+            // Only the three layout modes are quick actions; detailed options
+            // (width, alignment and nine-zone positions) belong in Settings.
+            MenuItem groupLayoutModes = new MenuItem { Header = "Размещение групп" };
+            Dictionary<string, MenuItem> groupLayoutChoices =
+                new Dictionary<string, MenuItem>(StringComparer.Ordinal);
+            Action refreshGroupLayoutChoices = delegate
+            {
+                string currentMode = NormalizeGroupLayoutMode(_config.GroupLayoutMode);
+                foreach (KeyValuePair<string, MenuItem> pair in groupLayoutChoices)
+                    pair.Value.IsChecked = pair.Key == currentMode;
+                groupLayoutModes.IsEnabled = _config.GroupingEnabled;
+            };
+            foreach (string layoutMode in new[] { "vertical", "grid", "free" })
+            {
+                string chosen = layoutMode;
+                MenuItem option = new MenuItem
+                {
+                    Header = chosen == "vertical" ? "Список" :
+                        chosen == "grid" ? "Автоматическая сетка" : "Свободное размещение",
+                    IsCheckable = true
+                };
+                option.Click += delegate
+                {
+                    SetGroupLayoutMode(chosen);
+                    refreshGroupLayoutChoices();
+                };
+                groupLayoutModes.Items.Add(option);
+                groupLayoutChoices.Add(chosen, option);
+            }
+            groupLayoutModes.SubmenuOpened += delegate { refreshGroupLayoutChoices(); };
+            refreshGroupLayoutChoices();
+            quick.Items.Add(groupLayoutModes);
             _pinMenuItem = new MenuItem { Header = "Поверх остальных окон",
                 IsCheckable = true, IsChecked = _config.AlwaysOnTop };
             _pinMenuItem.Click += delegate
@@ -2027,6 +2122,7 @@ namespace AppShelf
                 _groupMenuItem.IsChecked = _config.GroupingEnabled;
                 _pinMenuItem.IsChecked = _config.AlwaysOnTop;
                 UpdateTileModeMenu();
+                refreshGroupLayoutChoices();
                 foreach (KeyValuePair<string, MenuItem> pair in panelChoices)
                     pair.Value.IsChecked = pair.Key == NormalizeBottomPanelMode(_config.BottomPanelMode);
                 sound.IsChecked = _config.SoundsEnabled != false;
@@ -2185,6 +2281,12 @@ namespace AppShelf
             };
             // Match Settings and About without affecting nested tile/group controls.
             FluentUi.StyleSettingsScroll(scroller);
+            _tilesScroller = scroller;
+            scroller.SizeChanged += delegate { UpdateGroupWidths(); };
+            scroller.ScrollChanged += delegate(object sender, ScrollChangedEventArgs e)
+            {
+                if (Math.Abs(e.ViewportWidthChange) > 0.5) UpdateGroupWidths();
+            };
             _tileHost = new StackPanel { AllowDrop = true };
             scroller.AllowDrop = true;
             contentGrid.AllowDrop = true;
@@ -3425,6 +3527,31 @@ namespace AppShelf
         // Resolve both the tile underneath the pointer and the nearest group drop
         // zone. The group's Expander is marked as well, so a collapsed or empty
         // group can receive a tile by dropping it on the heading.
+        private bool ResolveFreeGroupZone(object originalSource, out string zone,
+            out Border surface)
+        {
+            zone = null;
+            surface = null;
+            if (!_config.GroupingEnabled ||
+                NormalizeGroupLayoutMode(_config.GroupLayoutMode) != "free") return false;
+            DependencyObject current = originalSource as DependencyObject;
+            while (current != null)
+            {
+                FrameworkElement element = current as FrameworkElement;
+                FreeGroupDropTarget target = element == null
+                    ? null : element.Tag as FreeGroupDropTarget;
+                if (target != null)
+                {
+                    zone = target.Zone;
+                    surface = target.Surface;
+                    return true;
+                }
+                if (Object.ReferenceEquals(current, this)) break;
+                current = FindVisualAncestor(current);
+            }
+            return false;
+        }
+
         private bool ResolveDropTarget(object originalSource, out AppItem targetItem,
             out Button targetButton, out string group, out Border zone)
         {
@@ -3498,7 +3625,19 @@ namespace AppShelf
             bool hasDestination = ResolveDropTarget(e.OriginalSource,
                 out targetItem, out targetButton, out group, out zone);
             string draggedGroup = InternalDraggedGroup(e.Data);
-            if (_canSave && draggedGroup != null && hasDestination &&
+            string freeZone;
+            Border freeSurface;
+            bool hasFreeZone = ResolveFreeGroupZone(e.OriginalSource,
+                out freeZone, out freeSurface);
+            if (_canSave && draggedGroup != null && hasFreeZone)
+            {
+                bool movingZone = !String.Equals(GroupZoneFor(draggedGroup),
+                    freeZone, StringComparison.Ordinal);
+                bool reordering = hasDestination && group.Length != 0 &&
+                    !String.Equals(draggedGroup, group, StringComparison.OrdinalIgnoreCase);
+                if (movingZone || reordering) e.Effects = DragDropEffects.Move;
+            }
+            else if (_canSave && draggedGroup != null && hasDestination &&
                 group.Length != 0 && !String.Equals(draggedGroup, group, StringComparison.OrdinalIgnoreCase))
                 e.Effects = DragDropEffects.Move;
             else if (_canSave && InternalDraggedItem(e.Data) != null && hasDestination)
@@ -3506,7 +3645,8 @@ namespace AppShelf
             else if (_canSave && (HasSupportedFiles(e.Data) || DroppedSiteUrl(e.Data) != null))
                 e.Effects = ExternalFileEffect(e.AllowedEffects);
 
-            HighlightDropZone(e.Effects == DragDropEffects.None ? null : zone);
+            HighlightDropZone(e.Effects == DragDropEffects.None ? null :
+                draggedGroup != null && hasFreeZone ? freeSurface : zone);
             e.Handled = true;
         }
 
@@ -3529,7 +3669,21 @@ namespace AppShelf
                 out targetItem, out targetButton, out group, out zone);
             string draggedGroup = InternalDraggedGroup(e.Data);
             AppItem dragged = InternalDraggedItem(e.Data);
-            if (draggedGroup != null && hasDestination && group.Length != 0 &&
+            string freeZone;
+            Border freeSurface;
+            bool hasFreeZone = ResolveFreeGroupZone(e.OriginalSource,
+                out freeZone, out freeSurface);
+            if (draggedGroup != null && hasFreeZone)
+            {
+                bool sameZone = String.Equals(GroupZoneFor(draggedGroup),
+                    freeZone, StringComparison.Ordinal);
+                bool changed = sameZone && hasDestination && group.Length != 0 &&
+                    !String.Equals(draggedGroup, group, StringComparison.OrdinalIgnoreCase)
+                    ? SwapGroups(draggedGroup, group)
+                    : !sameZone && SetGroupZoneOverride(draggedGroup, freeZone);
+                if (changed) e.Effects = DragDropEffects.Move;
+            }
+            else if (draggedGroup != null && hasDestination && group.Length != 0 &&
                 !String.Equals(draggedGroup, group, StringComparison.OrdinalIgnoreCase))
             {
                 if (SwapGroups(draggedGroup, group)) e.Effects = DragDropEffects.Move;
@@ -4186,6 +4340,193 @@ namespace AppShelf
             return query.Length == 0 || (item.Name ?? "").IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private static string NormalizeGroupWidthMode(string value)
+        {
+            return value == "content" ? "content" : "full";
+        }
+
+        private static string NormalizeGroupLayoutMode(string value)
+        {
+            return value == "grid" || value == "free" ? value : "vertical";
+        }
+
+        private static readonly string[] FreeGroupZones = {
+            "top-left", "top-center", "top-right",
+            "middle-left", "middle-center", "middle-right",
+            "bottom-left", "bottom-center", "bottom-right"
+        };
+
+        private static string NormalizeGroupZone(string value)
+        {
+            return Array.IndexOf(FreeGroupZones, value) >= 0 ? value : "top-left";
+        }
+
+        private static string FreeGroupZoneLabel(string zone)
+        {
+            switch (zone)
+            {
+                case "top-center": return "Сверху по центру";
+                case "top-right": return "Сверху справа";
+                case "middle-left": return "По центру слева";
+                case "middle-center": return "По центру";
+                case "middle-right": return "По центру справа";
+                case "bottom-left": return "Снизу слева";
+                case "bottom-center": return "Снизу по центру";
+                case "bottom-right": return "Снизу справа";
+                default: return "Сверху слева";
+            }
+        }
+
+        private string GroupZoneFor(string group)
+        {
+            if (!String.IsNullOrWhiteSpace(group) && _config.GroupZoneOverrides != null)
+            {
+                foreach (KeyValuePair<string, string> saved in _config.GroupZoneOverrides)
+                    if (String.Equals(saved.Key, group, StringComparison.OrdinalIgnoreCase) &&
+                        Array.IndexOf(FreeGroupZones, saved.Value) >= 0)
+                        return saved.Value;
+            }
+            return NormalizeGroupZone(_config.GroupDefaultZone);
+        }
+
+        private static string NormalizeGroupAlignment(string value)
+        {
+            return value == "center" || value == "right" || value == "alternate"
+                ? value : "left";
+        }
+
+        private static string NormalizeGroupOverride(string value)
+        {
+            return value == "left" || value == "center" || value == "right"
+                ? value : null;
+        }
+
+        private string GroupAlignmentFor(string group, int position)
+        {
+            if (_config.GroupAlignmentOverrides != null && !String.IsNullOrWhiteSpace(group))
+            {
+                string preference;
+                if (_config.GroupAlignmentOverrides.TryGetValue(group, out preference))
+                {
+                    string valid = NormalizeGroupOverride(preference);
+                    if (valid != null) return valid;
+                }
+            }
+            string alignment = NormalizeGroupAlignment(_config.GroupAlignment);
+            return alignment == "alternate" ? (position % 2 == 0 ? "left" : "right") : alignment;
+        }
+
+        // Width is based on tile slots (including their margins), not a fixed
+        // percentage of the window. The final column count is limited by the
+        // viewport so WrapPanel can flow into additional lines.
+        private double NaturalGroupWidth(int itemCount, double available)
+        {
+            string mode = CurrentTileDisplayMode();
+            double scale = FluentUi.NormalizeTileScale(_config.TileScalePercent) / 100.0;
+            double tileWidth = Math.Round((mode == "compact" ? 78 :
+                mode == "labeled" ? 124 : 100) * scale) + 11;
+            const double chrome = 38; // Group border/padding and drop-zone padding.
+            int columns = Math.Min(Math.Max(1, itemCount),
+                Math.Max(1, (int)Math.Floor(Math.Max(1, available - chrome) / tileWidth)));
+            // Empty groups need a larger visible drop target; nonempty cards
+            // may hug their last tile with only modest room for the header.
+            double minimum = itemCount == 0 ? 190 : 168;
+            return Math.Max(1, Math.Min(available,
+                Math.Max(minimum, Math.Ceiling(columns * tileWidth + chrome))));
+        }
+
+        private void ShowFreeGroupZoneHints(bool visible)
+        {
+            foreach (TextBlock hint in _freeZoneHints)
+                hint.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        // Nine independent drop targets; on narrow screens arrange them in a
+        // vertical list rather than clip cards or introduce horizontal scrolling.
+        private void UpdateFreeBoardLayout(double available)
+        {
+            if (_freeLayoutGrid == null) return;
+            bool narrow = available < 600;
+            double viewportHeight = _tilesScroller.ActualHeight -
+                _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
+            if (Double.IsNaN(viewportHeight) || viewportHeight < 0) viewportHeight = 0;
+            _freeLayoutGrid.MinHeight = Math.Max(0, viewportHeight);
+            for (int i = 0; i < FreeGroupZones.Length; i++)
+            {
+                int row = i / 3;
+                int col = i % 3;
+                Border cell = _freeZoneCells[i];
+                StackPanel stack = _freeZoneHosts[FreeGroupZones[i]];
+                Grid.SetRow(cell, narrow ? i : row);
+                Grid.SetColumn(cell, narrow ? 0 : col);
+                Grid.SetColumnSpan(cell, narrow ? 3 : 1);
+                cell.MinHeight = narrow && stack.Children.Count == 0 ? 26 : 0;
+                stack.HorizontalAlignment = col == 0 ? HorizontalAlignment.Left :
+                    col == 1 ? HorizontalAlignment.Center : HorizontalAlignment.Right;
+                stack.VerticalAlignment = narrow || row == 0 ? VerticalAlignment.Top :
+                    row == 1 ? VerticalAlignment.Center : VerticalAlignment.Bottom;
+                _freeLayoutGrid.RowDefinitions[i].MinHeight =
+                    narrow ? (stack.Children.Count == 0 ? 26 : 70) :
+                    i < 3 ? Math.Max(90, viewportHeight / 3) : 0;
+            }
+        }
+
+        private void UpdateGroupWidths()
+        {
+            if (_updatingGroupWidths || _tilesScroller == null ||
+                (_groupLayoutCards.Count == 0 && _freeLayoutGrid == null)) return;
+            // Reserve scrollbar room even while hidden: otherwise the scrollbar
+            // appearing may alter wrapping and oscillate around the threshold.
+            double outerWidth = _tilesScroller.ActualWidth;
+            if (Double.IsNaN(outerWidth) || outerWidth <= 1)
+                outerWidth = !Double.IsNaN(ActualWidth) && ActualWidth > 1
+                    ? ActualWidth : Width;
+            double available = outerWidth - _tilesScroller.Padding.Left -
+                _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
+            if (Double.IsNaN(available) || Double.IsInfinity(available) || available <= 1) return;
+
+            string layout = NormalizeGroupLayoutMode(_config.GroupLayoutMode);
+            bool grid = layout == "grid";
+            bool free = layout == "free";
+            bool natural = free || grid || NormalizeGroupWidthMode(_config.GroupWidthMode) == "content";
+            try
+            {
+                _updatingGroupWidths = true;
+                if (free) UpdateFreeBoardLayout(available);
+                foreach (GroupLayoutCard group in _groupLayoutCards)
+                {
+                    Border card = group.Card;
+                    if (natural)
+                    {
+                        // Reserve the right gap between cards only in grid mode.
+                        double limit = Math.Max(1, free
+                            ? (available < 600 ? available - 12 : available / 3 - 16)
+                            : available - (grid ? 9 : 0));
+                        // Collapsed groups have no visible tiles; keep only a small drop target.
+                        Expander expander = card.Child as Expander;
+                        int visibleTiles = expander != null && !expander.IsExpanded ? 0 : group.TileCount;
+                        double width = NaturalGroupWidth(visibleTiles, limit);
+                        if (Double.IsNaN(card.Width) || Math.Abs(card.Width - width) > 0.5)
+                            card.Width = width;
+                        string align = grid || free ? "left" :
+                            GroupAlignmentFor(group.Group, group.Position);
+                        card.HorizontalAlignment = align == "right" ? HorizontalAlignment.Right :
+                            align == "center" ? HorizontalAlignment.Center : HorizontalAlignment.Left;
+                        card.Margin = new Thickness(0, 0, grid ? 9 : 0, 8);
+                        group.Heading.MaxWidth = Math.Max(85, width - 84);
+                    }
+                    else
+                    {
+                        card.Width = Double.NaN;
+                        card.HorizontalAlignment = HorizontalAlignment.Stretch;
+                        card.Margin = new Thickness(0, 0, 0, 8);
+                        group.Heading.MaxWidth = Double.PositiveInfinity;
+                    }
+                }
+            }
+            finally { _updatingGroupWidths = false; }
+        }
+
         // Used by the appearance slider. Changing brush values in place preserves
         // the live group expansion state, app tiles, keyboard focus and drag targets.
         private void ApplyGroupAppearancePreview(string preset, int opacity)
@@ -4193,13 +4534,10 @@ namespace AppShelf
             if (_tileHost == null) return;
             Brush groupBrush = FluentUi.MainGroupBackground(preset, opacity);
             Brush borderBrush = FluentUi.MainGroupBorder(preset);
-            foreach (UIElement child in _tileHost.Children)
+            foreach (GroupLayoutCard group in _groupLayoutCards)
             {
-                Border card = child as Border;
-                if (card == null || !Object.Equals(card.Tag, "AppShelfMainGroupCard"))
-                    continue;
-                card.Background = groupBrush;
-                card.BorderBrush = borderBrush;
+                group.Card.Background = groupBrush;
+                group.Card.BorderBrush = borderBrush;
             }
         }
 
@@ -4207,6 +4545,11 @@ namespace AppShelf
         {
             if (_tileHost == null) return;
             _tileHost.Children.Clear();
+            _groupLayoutCards.Clear();
+            _freeLayoutGrid = null;
+            _freeZoneHosts.Clear();
+            _freeZoneCells.Clear();
+            _freeZoneHints.Clear();
             int count = 0;
             if (!_config.GroupingEnabled)
             {
@@ -4223,6 +4566,57 @@ namespace AppShelf
             else
             {
                 List<string> groups = AllGroups();
+                string layoutMode = NormalizeGroupLayoutMode(_config.GroupLayoutMode);
+                bool gridMode = layoutMode == "grid";
+                bool freeMode = layoutMode == "free";
+                WrapPanel gridHost = null;
+                if (gridMode)
+                {
+                    gridHost = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
+                    _tileHost.Children.Add(gridHost);
+                }
+                if (freeMode)
+                {
+                    _freeLayoutGrid = new Grid
+                    {
+                        HorizontalAlignment = HorizontalAlignment.Stretch,
+                        VerticalAlignment = VerticalAlignment.Top
+                    };
+                    for (int i = 0; i < 9; i++)
+                        _freeLayoutGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                    for (int i = 0; i < 3; i++)
+                        _freeLayoutGrid.ColumnDefinitions.Add(new ColumnDefinition
+                        { Width = new GridLength(1, GridUnitType.Star), MinWidth = 0 });
+                    for (int i = 0; i < FreeGroupZones.Length; i++)
+                    {
+                        string key = FreeGroupZones[i];
+                        Grid content = new Grid();
+                        StackPanel stack = new StackPanel { Orientation = Orientation.Vertical };
+                        content.Children.Add(stack);
+                        TextBlock hint = Text(FreeGroupZoneLabel(key), 11, MutedBrush);
+                        hint.HorizontalAlignment = HorizontalAlignment.Center;
+                        hint.VerticalAlignment = VerticalAlignment.Center;
+                        hint.IsHitTestVisible = false;
+                        hint.Visibility = Visibility.Collapsed;
+                        content.Children.Add(hint);
+                        Border cell = new Border
+                        {
+                            Background = Brushes.Transparent,
+                            Padding = new Thickness(4),
+                            AllowDrop = true,
+                            Child = content,
+                            ToolTip = "Перетащи сюда группу: " + FreeGroupZoneLabel(key)
+                        };
+                        cell.Tag = new FreeGroupDropTarget(key, cell);
+                        Grid.SetRow(cell, i / 3);
+                        Grid.SetColumn(cell, i % 3);
+                        _freeLayoutGrid.Children.Add(cell);
+                        _freeZoneCells.Add(cell);
+                        _freeZoneHints.Add(hint);
+                        _freeZoneHosts.Add(key, stack);
+                    }
+                    _tileHost.Children.Add(_freeLayoutGrid);
+                }
                 // The special ungrouped section is only useful when it contains
                 // visible applications. Keep it last, after the user-defined groups.
                 bool hasUngrouped = false;
@@ -4256,6 +4650,7 @@ namespace AppShelf
                         "  ·  " + inGroup, 15, WhiteBrush);
                     heading.FontWeight = FontWeights.SemiBold;
                     heading.Margin = new Thickness(5, 0, 0, 4);
+                    heading.TextTrimming = TextTrimming.CharacterEllipsis;
                     DockPanel headerPanel = new DockPanel { LastChildFill = true };
                     if (group.Length != 0)
                     {
@@ -4273,15 +4668,96 @@ namespace AppShelf
                         groupMenu.Items.Add(new Separator());
                         groupMenu.Items.Add(MenuAction("Переименовать группу", delegate { RenameGroup(selectedGroup); }));
                         groupMenu.Items.Add(MenuAction("Удалить группу", delegate { DeleteGroup(selectedGroup); }));
+                        // Individual overrides are meaningful only for vertically
+                        // stacked groups sized to their tiles, never in a compact grid.
+                        if (NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "vertical" &&
+                            NormalizeGroupWidthMode(_config.GroupWidthMode) == "content")
+                        {
+                            groupMenu.Items.Add(new Separator());
+                            MenuItem alignMenu = new MenuItem { Header = "Выравнивание группы" };
+                            string current = null;
+                            if (_config.GroupAlignmentOverrides != null)
+                                _config.GroupAlignmentOverrides.TryGetValue(selectedGroup, out current);
+                            foreach (string option in new[] { "inherit", "left", "center", "right" })
+                            {
+                                string selected = option;
+                                string label = option == "inherit" ? "По общему правилу" :
+                                    option == "left" ? "Слева" :
+                                    option == "center" ? "По центру" : "Справа";
+                                MenuItem choice = MenuAction(label, delegate
+                                { SetGroupAlignmentOverride(selectedGroup, selected); });
+                                choice.IsCheckable = true;
+                                choice.IsChecked = option == "inherit"
+                                    ? NormalizeGroupOverride(current) == null
+                                    : current == option;
+                                choice.IsEnabled = _canSave;
+                                choice.Tag = selected;
+                                alignMenu.Items.Add(choice);
+                            }
+                            // Menu is retained when alignment changes in place.
+                            // Refresh checkmarks every time the submenu opens.
+                            alignMenu.SubmenuOpened += delegate
+                            {
+                                string selectedPreference = null;
+                                if (_config.GroupAlignmentOverrides != null)
+                                    _config.GroupAlignmentOverrides.TryGetValue(selectedGroup,
+                                        out selectedPreference);
+                                foreach (MenuItem item in alignMenu.Items)
+                                {
+                                    string value = item.Tag as string;
+                                    item.IsChecked = value == "inherit"
+                                        ? NormalizeGroupOverride(selectedPreference) == null
+                                        : selectedPreference == value;
+                                }
+                            };
+                            groupMenu.Items.Add(alignMenu);
+                        }
+                        if (freeMode)
+                        {
+                            groupMenu.Items.Add(new Separator());
+                            MenuItem zoneMenu = new MenuItem { Header = "Размещение группы" };
+                            foreach (string zoneOption in new[] { "inherit",
+                                "top-left", "top-center", "top-right",
+                                "middle-left", "middle-center", "middle-right",
+                                "bottom-left", "bottom-center", "bottom-right" })
+                            {
+                                string chosenZone = zoneOption;
+                                string caption = chosenZone == "inherit"
+                                    ? "По общему правилу" : FreeGroupZoneLabel(chosenZone);
+                                MenuItem choice = MenuAction(caption, delegate
+                                { SetGroupZoneOverride(selectedGroup, chosenZone); });
+                                choice.IsCheckable = true;
+                                choice.IsEnabled = _canSave;
+                                choice.Tag = chosenZone;
+                                zoneMenu.Items.Add(choice);
+                            }
+                            zoneMenu.SubmenuOpened += delegate
+                            {
+                                string preference = null;
+                                if (_config.GroupZoneOverrides != null)
+                                    _config.GroupZoneOverrides.TryGetValue(selectedGroup, out preference);
+                                foreach (MenuItem choice in zoneMenu.Items)
+                                {
+                                    string selected = choice.Tag as string;
+                                    choice.IsChecked = selected == "inherit"
+                                        ? preference == null : preference == selected;
+                                }
+                            };
+                            groupMenu.Items.Add(zoneMenu);
+                        }
                         headerPanel.ContextMenu = groupMenu;
-                        heading.ToolTip = "Правая кнопка — порядок, переименование, удаление";
+                        heading.ToolTip = freeMode
+                            ? "Правая кнопка — размещение группы и другие действия"
+                            : "Правая кнопка — порядок, переименование, удаление";
 
                         // Drag by the dedicated handle, never by an application tile.
                         // A normal click on the heading still expands/collapses.
                         TextBlock grip = Text("⋮⋮", 19, MutedBrush);
                         grip.Margin = new Thickness(12, 0, 5, 4);
                         grip.Cursor = Cursors.SizeAll;
-                        grip.ToolTip = "Перетащи на заголовок другой группы, чтобы поменять группы местами";
+                        grip.ToolTip = freeMode
+                            ? "Перетащи в одну из девяти зон или на группу в той же зоне"
+                            : "Перетащи на заголовок другой группы, чтобы поменять группы местами";
                         DockPanel.SetDock(grip, Dock.Right);
                         headerPanel.Children.Add(grip);
                         grip.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
@@ -4305,6 +4781,7 @@ namespace AppShelf
                             {
                                 DataObject data = new DataObject();
                                 data.SetData(GroupDragFormat, selectedGroup);
+                                if (freeMode) ShowFreeGroupZoneHints(true);
                                 DragDrop.DoDragDrop(grip, data, DragDropEffects.Move);
                             }
                             catch (Exception ex)
@@ -4314,6 +4791,7 @@ namespace AppShelf
                             finally
                             {
                                 _groupDragInProgress = false;
+                                ShowFreeGroupZoneHints(false);
                                 ClearDropHighlight();
                             }
                             e.Handled = true;
@@ -4322,6 +4800,8 @@ namespace AppShelf
                     headerPanel.Children.Add(heading);
                     section.Header = headerPanel;
                     section.Content = zone;
+                    section.Expanded += delegate { UpdateGroupWidths(); };
+                    section.Collapsed += delegate { UpdateGroupWidths(); };
                     section.Tag = new GroupDropTarget(group, zone);
                     section.AllowDrop = true;
                     Border groupCard = new Border
@@ -4334,9 +4814,14 @@ namespace AppShelf
                         CornerRadius = new CornerRadius(13),
                         Padding = new Thickness(10, 7, 10, 7), Margin = new Thickness(0, 0, 0, 8)
                     };
-                    _tileHost.Children.Add(groupCard);
+                    _groupLayoutCards.Add(new GroupLayoutCard(groupCard, group, inGroup,
+                        _groupLayoutCards.Count, heading));
+                    if (gridHost != null) gridHost.Children.Add(groupCard);
+                    else if (freeMode) _freeZoneHosts[GroupZoneFor(group)].Children.Add(groupCard);
+                    else _tileHost.Children.Add(groupCard);
                 }
             }
+            UpdateGroupWidths();
             _empty.Text = _config.Items.Count == 0
                 ? "Пока здесь пусто.\n\nПеретащи EXE или ярлык из Проводника\nили нажми «+ Добавить»."
                 : "Ничего не найдено.";
@@ -4623,6 +5108,17 @@ namespace AppShelf
             if (saved) RenderTiles();
         }
 
+        private void SetGroupLayoutMode(string mode)
+        {
+            if (mode != "vertical" && mode != "grid" && mode != "free") return;
+            if (!_canSave) { ShowSaveDisabled(); return; }
+            if (!_config.GroupingEnabled || NormalizeGroupLayoutMode(_config.GroupLayoutMode) == mode)
+                return;
+            AppConfig pending = _config.Copy();
+            pending.GroupLayoutMode = mode;
+            if (SaveConfigChanges(pending)) RenderTiles();
+        }
+
         private string CurrentTileDisplayMode()
         {
             string mode = _config.TileDisplayMode;
@@ -4897,6 +5393,39 @@ namespace AppShelf
             return SaveGroupOrder(groups);
         }
 
+        private bool SetGroupZoneOverride(string group, string value)
+        {
+            if (!_canSave) { ShowSaveDisabled(); return false; }
+            if (String.IsNullOrWhiteSpace(group) ||
+                (value != "inherit" && Array.IndexOf(FreeGroupZones, value) < 0))
+                return false;
+            AppConfig pending = _config.Copy();
+            Dictionary<string, string> overrides = pending.GroupZoneOverrides ??
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string key in new List<string>(overrides.Keys))
+                if (String.Equals(key, group, StringComparison.OrdinalIgnoreCase))
+                    overrides.Remove(key);
+            if (value != "inherit") overrides[group] = value;
+            pending.GroupZoneOverrides = overrides.Count == 0 ? null : overrides;
+            if (!SaveConfigChanges(pending)) return false;
+            RenderTiles();
+            return true;
+        }
+
+        private void SetGroupAlignmentOverride(string group, string value)
+        {
+            if (!_canSave) { ShowSaveDisabled(); return; }
+            if (String.IsNullOrWhiteSpace(group) ||
+                (value != "inherit" && NormalizeGroupOverride(value) == null)) return;
+            AppConfig pending = _config.Copy();
+            Dictionary<string, string> overrides = pending.GroupAlignmentOverrides ??
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            overrides.Remove(group);
+            if (value != "inherit") overrides[group] = value;
+            pending.GroupAlignmentOverrides = overrides.Count == 0 ? null : overrides;
+            if (SaveConfigChanges(pending)) UpdateGroupWidths();
+        }
+
         private void RenameGroup(string name)
         {
             if (!_canSave) { ShowSaveDisabled(); return; }
@@ -4914,6 +5443,30 @@ namespace AppShelf
                     pending.Groups[i] = newName;
             foreach (AppItem item in pending.Items)
                 if (String.Equals(GroupOf(item), name, StringComparison.OrdinalIgnoreCase)) item.Group = newName;
+            if (pending.GroupZoneOverrides != null)
+            {
+                foreach (string key in new List<string>(pending.GroupZoneOverrides.Keys))
+                    if (String.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string savedZone = pending.GroupZoneOverrides[key];
+                        pending.GroupZoneOverrides.Remove(key);
+                        pending.GroupZoneOverrides[newName] = savedZone;
+                        break;
+                    }
+            }
+            if (pending.GroupAlignmentOverrides != null)
+            {
+                string previousKey = null;
+                foreach (string key in pending.GroupAlignmentOverrides.Keys)
+                    if (String.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+                        { previousKey = key; break; }
+                if (previousKey != null)
+                {
+                    string preference = pending.GroupAlignmentOverrides[previousKey];
+                    pending.GroupAlignmentOverrides.Remove(previousKey);
+                    pending.GroupAlignmentOverrides[newName] = preference;
+                }
+            }
             if (SaveConfigChanges(pending)) RenderTiles();
         }
 
@@ -4928,6 +5481,19 @@ namespace AppShelf
             { return String.Equals(group, name, StringComparison.OrdinalIgnoreCase); });
             foreach (AppItem item in pending.Items)
                 if (String.Equals(GroupOf(item), name, StringComparison.OrdinalIgnoreCase)) item.Group = "";
+            if (pending.GroupZoneOverrides != null)
+            {
+                foreach (string key in new List<string>(pending.GroupZoneOverrides.Keys))
+                    if (String.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+                        pending.GroupZoneOverrides.Remove(key);
+                if (pending.GroupZoneOverrides.Count == 0) pending.GroupZoneOverrides = null;
+            }
+            if (pending.GroupAlignmentOverrides != null)
+            {
+                pending.GroupAlignmentOverrides.Remove(name);
+                if (pending.GroupAlignmentOverrides.Count == 0)
+                    pending.GroupAlignmentOverrides = null;
+            }
             if (SaveConfigChanges(pending)) RenderTiles();
         }
 
@@ -6011,6 +6577,178 @@ namespace AppShelf
             {
                 tileScaleValue.Text = FluentUi.NormalizeTileScale((int)Math.Round(tileScaleSlider.Value)) + "%";
             };
+            // Keep the existing JSON settings and layout logic; only their editor changes.
+            TextBlock groupLayoutLabel = Text("Размещение групп:", 12, MutedBrush);
+            groupLayoutLabel.Margin = new Thickness(0, 4, 0, 5);
+            StackPanel groupLayoutChoices = new StackPanel { Margin = new Thickness(4, 0, 0, 0) };
+            string activeLayoutMode = NormalizeGroupLayoutMode(_config.GroupLayoutMode);
+            RadioButton groupLayoutList = new RadioButton
+            {
+                Content = "Список — группы одна под другой", Tag = "GroupLayoutMode:vertical",
+                GroupName = "AppShelfSettingsGroupLayout", IsChecked = activeLayoutMode == "vertical",
+                Foreground = WhiteBrush, Margin = new Thickness(0, 3, 0, 5)
+            };
+            RadioButton groupLayoutGrid = new RadioButton
+            {
+                Content = "Автоматическая сетка — с переносом", Tag = "GroupLayoutMode:grid",
+                GroupName = "AppShelfSettingsGroupLayout", IsChecked = activeLayoutMode == "grid",
+                Foreground = WhiteBrush, Margin = new Thickness(0, 3, 0, 5)
+            };
+            RadioButton groupLayoutFree = new RadioButton
+            {
+                Content = "Свободное размещение — девять зон", Tag = "GroupLayoutMode:free",
+                GroupName = "AppShelfSettingsGroupLayout", IsChecked = activeLayoutMode == "free",
+                Foreground = WhiteBrush, Margin = new Thickness(0, 3, 0, 5)
+            };
+            groupLayoutChoices.Children.Add(groupLayoutList);
+            groupLayoutChoices.Children.Add(groupLayoutGrid);
+            groupLayoutChoices.Children.Add(groupLayoutFree);
+            TextBlock groupModeDescription = Text("", 11, MutedBrush);
+            groupModeDescription.TextWrapping = TextWrapping.Wrap;
+            groupModeDescription.Margin = new Thickness(3, 0, 0, 11);
+
+            TextBlock groupWidthLabel = Text("Ширина групп:", 12, MutedBrush);
+            WrapPanel groupWidthChoices = new WrapPanel { Margin = new Thickness(4, 5, 0, 9) };
+            bool contentWidthSelected = NormalizeGroupWidthMode(_config.GroupWidthMode) == "content";
+            RadioButton groupWidthFull = new RadioButton
+            {
+                Content = "На всю ширину", Tag = "GroupWidthMode:full",
+                GroupName = "AppShelfSettingsGroupWidth", IsChecked = !contentWidthSelected,
+                Foreground = WhiteBrush, Margin = new Thickness(0, 0, 16, 6)
+            };
+            RadioButton groupWidthContent = new RadioButton
+            {
+                Content = "По содержимому", Tag = "GroupWidthMode:content",
+                GroupName = "AppShelfSettingsGroupWidth", IsChecked = contentWidthSelected,
+                Foreground = WhiteBrush, Margin = new Thickness(0, 0, 12, 6)
+            };
+            groupWidthChoices.Children.Add(groupWidthFull);
+            groupWidthChoices.Children.Add(groupWidthContent);
+
+            TextBlock groupAlignmentLabel = Text("Выравнивание групп:", 12, MutedBrush);
+            ComboBox groupAlignmentSetting = new ComboBox
+            {
+                MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
+                Style = tileSetting.Style
+            };
+            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "По левому краю", Tag = "left" });
+            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "По центру", Tag = "center" });
+            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "По правому краю", Tag = "right" });
+            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "Чередование слева и справа", Tag = "alternate" });
+            string activeGroupAlignment = NormalizeGroupAlignment(_config.GroupAlignment);
+            groupAlignmentSetting.SelectedIndex = activeGroupAlignment == "center" ? 1 :
+                activeGroupAlignment == "right" ? 2 : activeGroupAlignment == "alternate" ? 3 : 0;
+            foreach (ResourceDictionary styles in tileSetting.Resources.MergedDictionaries)
+                groupAlignmentSetting.Resources.MergedDictionaries.Add(styles);
+            groupAlignmentSetting.Background = FluentUi.Brush("#101A2A");
+            groupAlignmentSetting.BorderBrush = FluentUi.Brush("#34465F");
+            groupAlignmentSetting.FontWeight = FontWeights.Normal;
+            TextBlock groupLayoutHint = Text(
+                "Для отдельных групп выравнивание задаётся через правую кнопку на заголовке.",
+                11, MutedBrush);
+            groupLayoutHint.TextWrapping = TextWrapping.Wrap;
+            groupLayoutHint.Margin = new Thickness(0, 0, 0, 10);
+
+            TextBlock groupDefaultZoneLabel = Text("Положение новых групп по умолчанию:", 12, MutedBrush);
+            groupDefaultZoneLabel.Margin = new Thickness(0, 0, 0, 5);
+            System.Windows.Controls.Primitives.UniformGrid groupZonePicker =
+                new System.Windows.Controls.Primitives.UniformGrid
+                {
+                    Columns = 3, Rows = 3, MaxWidth = 255,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Margin = new Thickness(0, 0, 0, 5), Tag = "GroupZonePicker"
+                };
+            string selectedGroupZone = NormalizeGroupZone(_config.GroupDefaultZone);
+            string[] zoneSymbols = { "↖", "↑", "↗", "←", "●", "→", "↙", "↓", "↘" };
+            List<Button> zoneButtons = new List<Button>();
+            for (int i = 0; i < FreeGroupZones.Length; i++)
+            {
+                string chosenZone = FreeGroupZones[i];
+                Button zoneButton = ActionButton(zoneSymbols[i], false);
+                zoneButton.Tag = "GroupZone:" + chosenZone;
+                zoneButton.ToolTip = FreeGroupZoneLabel(chosenZone);
+                zoneButton.FontSize = 18;
+                zoneButton.Margin = new Thickness(3);
+                zoneButton.Padding = new Thickness(0);
+                zoneButton.MinHeight = 38;
+                zoneButton.Height = 40;
+                zoneButton.HorizontalAlignment = HorizontalAlignment.Stretch;
+                System.Windows.Automation.AutomationProperties.SetName(zoneButton,
+                    "Зона размещения: " + FreeGroupZoneLabel(chosenZone));
+                zoneButtons.Add(zoneButton);
+                groupZonePicker.Children.Add(zoneButton);
+            }
+            TextBlock groupZoneSelection = Text("", 11, WhiteBrush);
+            groupZoneSelection.Margin = new Thickness(3, 0, 0, 8);
+            Action refreshZonePicker = delegate
+            {
+                foreach (Button button in zoneButtons)
+                {
+                    bool selected = String.Equals(
+                        ((string)button.Tag).Substring("GroupZone:".Length),
+                        selectedGroupZone, StringComparison.Ordinal);
+                    button.Background = selected ? FluentUi.Brush("#244B65") : TileBrush;
+                    button.BorderBrush = selected ? AccentBrush : StrokeBrush;
+                    button.BorderThickness = new Thickness(selected ? 2 : 1);
+                }
+                groupZoneSelection.Text = "Выбрана зона: " + FreeGroupZoneLabel(selectedGroupZone);
+            };
+            foreach (Button button in zoneButtons)
+            {
+                Button selectedButton = button;
+                selectedButton.Click += delegate
+                {
+                    selectedGroupZone = ((string)selectedButton.Tag).Substring("GroupZone:".Length);
+                    refreshZonePicker();
+                };
+            }
+            refreshZonePicker();
+            TextBlock freeGroupHint = Text(
+                "Перетаскивай группы мышью или выбирай зону через меню заголовка. " +
+                "Общее положение также действует для групп с правилом «По общему правилу».",
+                11, MutedBrush);
+            freeGroupHint.TextWrapping = TextWrapping.Wrap;
+            freeGroupHint.Margin = new Thickness(0, 0, 0, 10);
+
+            Action refreshGroupLayoutControls = delegate
+            {
+                bool grouped = groupingSetting.IsChecked == true;
+                bool list = groupLayoutList.IsChecked == true;
+                bool grid = groupLayoutGrid.IsChecked == true;
+                bool free = groupLayoutFree.IsChecked == true;
+                bool contentWidth = groupWidthContent.IsChecked == true;
+                Visibility basic = grouped ? Visibility.Visible : Visibility.Collapsed;
+                Visibility listOnly = grouped && list ? Visibility.Visible : Visibility.Collapsed;
+                Visibility alignmentOnly = grouped && list && contentWidth
+                    ? Visibility.Visible : Visibility.Collapsed;
+                Visibility freeOnly = grouped && free ? Visibility.Visible : Visibility.Collapsed;
+                groupLayoutLabel.Visibility = basic;
+                groupLayoutChoices.Visibility = basic;
+                groupModeDescription.Visibility = basic;
+                groupModeDescription.Text = free
+                    ? "Размещай группы независимо по девяти зонам рабочего пространства."
+                    : grid
+                        ? "Ширина рассчитывается автоматически; группы переносятся на следующую строку."
+                        : "Группы располагаются последовательно сверху вниз.";
+                groupWidthLabel.Visibility = listOnly;
+                groupWidthChoices.Visibility = listOnly;
+                groupAlignmentLabel.Visibility = alignmentOnly;
+                groupAlignmentSetting.Visibility = alignmentOnly;
+                groupLayoutHint.Visibility = alignmentOnly;
+                groupDefaultZoneLabel.Visibility = freeOnly;
+                groupZonePicker.Visibility = freeOnly;
+                groupZoneSelection.Visibility = freeOnly;
+                freeGroupHint.Visibility = freeOnly;
+            };
+            groupingSetting.Checked += delegate { refreshGroupLayoutControls(); };
+            groupingSetting.Unchecked += delegate { refreshGroupLayoutControls(); };
+            groupLayoutList.Checked += delegate { refreshGroupLayoutControls(); };
+            groupLayoutGrid.Checked += delegate { refreshGroupLayoutControls(); };
+            groupLayoutFree.Checked += delegate { refreshGroupLayoutControls(); };
+            groupWidthFull.Checked += delegate { refreshGroupLayoutControls(); };
+            groupWidthContent.Checked += delegate { refreshGroupLayoutControls(); };
+            refreshGroupLayoutControls();
+
             TextBlock backgroundSettingLabel = Text("Фон главного окна:", 12, MutedBrush);
             ComboBox backgroundSetting = new ComboBox { MinHeight = 33, Margin = new Thickness(0, 4, 0, 10) };
             backgroundSetting.Items.Add(new ComboBoxItem { Content = "Синие дуги", Tag = "blue-arcs" });
@@ -6390,8 +7128,12 @@ namespace AppShelf
 
             AddSettingsSection(appearanceRows, "appearance-tiles", "Плитки и группы",
                 new List<UIElement> { groupingSetting, tileSettingLabel, tileSetting,
-                    tileScaleLabel, tileScaleRow, groupOpacityLabel, opacityRow,
-                    previewCaption, previewBackdrop },
+                    tileScaleLabel, tileScaleRow,
+                    groupLayoutLabel, groupLayoutChoices, groupModeDescription,
+                    groupWidthLabel, groupWidthChoices, groupAlignmentLabel, groupAlignmentSetting,
+                    groupLayoutHint, groupDefaultZoneLabel, groupZonePicker, groupZoneSelection,
+                    freeGroupHint,
+                    groupOpacityLabel, opacityRow, previewCaption, previewBackdrop },
                 appearanceBodies, appearanceArrows, appearanceHeaders, toggleAppearance);
             AddSettingsSection(appearanceRows, "appearance-background", "Фон главного окна",
                 new List<UIElement> { backgroundSettingLabel, backgroundSetting, backgroundActions },
@@ -6576,6 +7318,11 @@ namespace AppShelf
                 pending.RdpKeepAwake = rdp.IsChecked == true;
                 pending.SettingsLastSection = selectedSettingsSection;
                 pending.GroupingEnabled = groupingSetting.IsChecked == true;
+                pending.GroupLayoutMode = groupLayoutFree.IsChecked == true ? "free" :
+                    groupLayoutGrid.IsChecked == true ? "grid" : "vertical";
+                pending.GroupWidthMode = groupWidthContent.IsChecked == true ? "content" : "full";
+                pending.GroupAlignment = (string)((ComboBoxItem)groupAlignmentSetting.SelectedItem).Tag;
+                pending.GroupDefaultZone = selectedGroupZone;
                 pending.AlwaysOnTop = topmostSetting.IsChecked == true;
                 pending.TileDisplayMode = (string)((ComboBoxItem)tileSetting.SelectedItem).Tag;
                 pending.TileScalePercent = FluentUi.NormalizeTileScale((int)Math.Round(tileScaleSlider.Value));
