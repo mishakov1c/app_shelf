@@ -291,6 +291,10 @@ public static class Package6Tests
             "Missing section body in shared-container accordion " + key);
         return (Border)section.Children[1];
     }
+    private static ComboBox BottomPanelMode(Window d)
+    {
+        return Controls<ComboBox>(Body(d, "appearance-panel"))[0];
+    }
     private static ComboBox NetworkMode(Window d, int slot)
     {
         foreach (ComboBox c in Controls<ComboBox>(d))
@@ -866,11 +870,17 @@ public static class Package6Tests
                         d.Width = d.MinWidth * s; d.Height = d.MinHeight * s;
                         ((FrameworkElement)d.Content).LayoutTransform = new ScaleTransform(s, s); Drain();
                         ScrollViewer scroll = Controls<ScrollViewer>(d)[0];
-                        string[] keys = new string[] { "panel", "network", "weather", "time", "windows", "appearance", "data" };
+                        string[] keys = new string[] { "appearance", "network", "weather", "time", "windows", "data" };
                         Click(ButtonNamed(d, "Свернуть всё"));
-                        foreach (string key in keys) Assert(Body(d, key).Visibility == Visibility.Collapsed, "Collapse all missed " + key);
+                        foreach (string key in keys)
+                            Assert(Body(d, key).Visibility == Visibility.Collapsed, "Collapse all missed " + key);
+                        foreach (string key in new string[] { "appearance-tiles", "appearance-background", "appearance-panel" })
+                            Assert(Body(d, key).Visibility == Visibility.Collapsed, "Collapse all missed nested " + key);
                         Click(ButtonNamed(d, "Развернуть всё"));
-                        foreach (string key in keys) Assert(Body(d, key).Visibility == Visibility.Visible, "Expand all missed " + key);
+                        foreach (string key in keys)
+                            Assert(Body(d, key).Visibility == Visibility.Visible, "Expand all missed " + key);
+                        foreach (string key in new string[] { "appearance-tiles", "appearance-background", "appearance-panel" })
+                            Assert(Body(d, key).Visibility == Visibility.Visible, "Expand all missed nested " + key);
                         Assert(scroll.ScrollableHeight > 0, "Expanded content does not scroll");
                         scroll.ScrollToHome(); Drain();
                         System.Windows.Controls.Primitives.ScrollBar bar =
@@ -889,8 +899,10 @@ public static class Package6Tests
                         Inside(ButtonNamed(d, "Отмена"), (FrameworkElement)d.Content, "Pinned cancel");
                         foreach (string key in keys) {
                             Click(ButtonNamed(d, "Свернуть всё")); Click(Section(d, key));
+                            if (key == "appearance") Click(ButtonNamed(d, "Развернуть всё"));
                             Body(d, key).BringIntoView(); Drain();
                             foreach (ComboBox combo in Controls<ComboBox>(Body(d, key))) {
+                                combo.BringIntoView(); Drain();
                                 Dark(Visual<Border>(combo).Background, "Settings combo in " + key);
                                 combo.IsDropDownOpen = true; Drain();
                                 System.Windows.Controls.Primitives.Popup choices =
@@ -1073,74 +1085,133 @@ public static class Package6Tests
         Case("settings accordion and saved navigation", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
                 settings = delegate(Window d) {
+                    string[] main = { "appearance", "network", "weather", "time", "windows", "data" };
+                    string[] nested = { "appearance-tiles", "appearance-background", "appearance-panel" };
                     Dictionary<string, Button> headers = new Dictionary<string, Button>();
                     foreach (Button b in Controls<Button>(d))
                         if (b.Tag is string && ((string)b.Tag) != "")
                             headers[(string)b.Tag] = b;
-                    string[] keys = new string[] { "panel", "network", "weather", "time", "windows", "appearance", "data" };
-                    foreach (string key in keys) Assert(headers.ContainsKey(key), "Missing category " + key);
-                    List<Border> frames = new List<Border>();
-                    List<Border> dividers = new List<Border>();
+                    foreach (string key in main) Assert(headers.ContainsKey(key), "Missing main section " + key);
+                    foreach (string key in nested) Assert(headers.ContainsKey(key), "Missing nested subsection " + key);
+                    Assert(!headers.ContainsKey("panel"), "Standalone Bottom panel section unexpectedly remains");
+                    List<Border> frames = new List<Border>(), subframes = new List<Border>(), dividers = new List<Border>();
                     foreach (Border border in Controls<Border>(d))
                     {
                         if (Object.Equals(border.Tag, "SettingsAccordionFrame")) frames.Add(border);
+                        if (Object.Equals(border.Tag, "SettingsAppearanceSubsectionsFrame")) subframes.Add(border);
                         if (Object.Equals(border.Tag, "SettingsAccordionDivider")) dividers.Add(border);
                     }
                     Assert(frames.Count == 1 && frames[0].CornerRadius.TopLeft >= 10,
-                        "Single rounded accordion frame missing");
+                        "Single main rounded accordion frame missing");
                     SolidColorBrush frameFill = frames[0].Background as SolidColorBrush;
                     Assert(frameFill != null && frameFill.Color ==
                         (Color)ColorConverter.ConvertFromString("#111A29"),
-                        "Accordion is not using the reference dark fill");
-                    foreach (string key in keys) {
+                        "Main accordion is not using the reference dark fill");
+                    StackPanel rows = frames[0].Child as StackPanel;
+                    StackPanel nestedRows = subframes.Count == 1 ? subframes[0].Child as StackPanel : null;
+                    Assert(rows != null && rows.Children.Count == 11 && nestedRows != null &&
+                        nestedRows.Children.Count == 5 && dividers.Count == 7,
+                        "Expected six main sections and three nested Appearance subsections");
+                    foreach (string key in main) {
                         StackPanel caption = Section(d, key).Content as StackPanel;
                         System.Windows.Shapes.Path chevron = caption == null ? null :
                             caption.Children[0] as System.Windows.Shapes.Path;
                         Assert(chevron != null && chevron.StrokeThickness > 1 &&
                             chevron.StrokeThickness < 2, "Thin vector chevron missing: " + key);
                     }
-                    StackPanel rows = frames[0].Child as StackPanel;
-                    Assert(rows != null && rows.Children.Count == 13 && dividers.Count == 6,
-                        "Expected seven sections with six shared dividers");
-                    Assert(AccordionHeader(d, "panel").Background != Brushes.Transparent &&
-                        AccordionHeader(d, "appearance").Background == Brushes.Transparent,
-                        "Initially expanded section has wrong highlight");
-                    Assert(headers["panel"].IsVisible && ButtonNamed(d, "Сохранить").IsVisible,
-                        "Accordion or save row hidden");
+                    foreach (string key in nested) {
+                        StackPanel caption = Section(d, key).Content as StackPanel;
+                        Assert(caption != null && caption.Children[0] is System.Windows.Shapes.Path,
+                            "Nested subsection chevron missing: " + key);
+                    }
+                    Assert(AccordionHeader(d, "appearance").Background != Brushes.Transparent &&
+                        AccordionHeader(d, "network").Background == Brushes.Transparent &&
+                        Body(d, "appearance-tiles").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-panel").Visibility == Visibility.Collapsed,
+                        "Initial Appearance section/subsection selection is wrong");
+                    Click(headers["network"]);
+                    Assert(AccordionHeader(d, "network").Background != Brushes.Transparent &&
+                        Body(d, "appearance").Visibility == Visibility.Collapsed,
+                        "Main accordion did not switch to Network");
                     Click(headers["appearance"]);
+                    Assert(AccordionHeader(d, "appearance").Background != Brushes.Transparent &&
+                        Body(d, "network").Visibility == Visibility.Collapsed,
+                        "Main accordion did not return to Appearance");
+                    Click(headers["appearance-panel"]);
+                    Assert(Body(d, "appearance-panel").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-tiles").Visibility == Visibility.Collapsed &&
+                        Controls<ListBox>(Body(d, "appearance-panel")).Count == 1,
+                        "Bottom panel was not nested under Appearance");
                     Picture(d, "accordion-reference-B");
-                    Assert(AccordionHeader(d, "panel").Background == Brushes.Transparent &&
-                        AccordionHeader(d, "appearance").Background != Brushes.Transparent &&
-                        Body(d, "panel").Visibility == Visibility.Collapsed,
-                        "Accordion did not move the selected highlight");
                     Assert(Controls<ComboBox>(d).Count >= 3 && Controls<CheckBox>(d).Count >= 10,
                         "Settings modules disappeared");
-                    Assert(ButtonNamed(d, "Развернуть всё") != null &&
-                        ButtonNamed(d, "Свернуть всё") != null, "Accordion expand/collapse missing");
                     Click(ButtonNamed(d, "Свернуть всё"));
-                    foreach (string key in keys)
+                    foreach (string key in main)
                         Assert(AccordionHeader(d, key).Background == Brushes.Transparent &&
                             Body(d, key).Visibility == Visibility.Collapsed,
-                            "Collapsed section kept an active highlight");
+                            "Collapsed main section kept an active highlight");
+                    foreach (string key in nested)
+                        Assert(Body(d, key).Visibility == Visibility.Collapsed, "Nested collapse failed: " + key);
                     Click(ButtonNamed(d, "Развернуть всё"));
-                    foreach (string key in keys)
+                    foreach (string key in main)
                         Assert(AccordionHeader(d, key).Background != Brushes.Transparent &&
                             Body(d, key).Visibility == Visibility.Visible,
-                            "Expand all did not highlight all open rows");
+                            "Expand all missed main section " + key);
+                    foreach (string key in nested)
+                        Assert(Body(d, key).Visibility == Visibility.Visible, "Expand all missed nested " + key);
                     Assert(ButtonNamed(d, "Сохранить").IsVisible, "Pinned save unavailable");
                 };
                 Call(w, "ShowSettings");
-                Assert(Load().SettingsLastSection == "appearance",
-                    "Last settings section not persisted");
+                Assert(Load().SettingsLastSection == "panel",
+                    "Nested Bottom panel navigation was not persisted");
                 settings = delegate(Window d) {
                     Assert(Body(d, "appearance").Visibility == Visibility.Visible &&
-                        Body(d, "panel").Visibility == Visibility.Collapsed, "Reopen ignored last section");
-                    Assert(Controls<CheckBox>(Body(d, "appearance")).Contains(Check(d, "Группировка приложений")) &&
+                        Body(d, "network").Visibility == Visibility.Collapsed &&
+                        Body(d, "appearance-panel").Visibility == Visibility.Visible,
+                        "Reopen ignored the saved Bottom panel subsection");
+                    Assert(Controls<CheckBox>(Body(d, "appearance-tiles")).Contains(Check(d, "Группировка приложений")) &&
                         Controls<CheckBox>(Body(d, "windows")).Contains(Check(d, "Не давать простаивать")) &&
                         Controls<CheckBox>(Body(d, "network")).Contains(Check(d, "Показывать сетевые проверки")) &&
                         Controls<CheckBox>(Body(d, "weather")).Contains(Check(d, "Показывать погоду")) &&
                         Controls<CheckBox>(Body(d, "time")).Contains(Check(d, "Включить звуки")),
-                        "Settings assigned to the wrong category");
+                        "Settings assigned to the wrong main/nested section");
+                };
+                Call(w, "ShowSettings");
+            } finally { w.Close(); }
+        });
+        Case("legacy Bottom panel navigation opens Appearance subsection", delegate {
+            Seed("normal", 1);
+            AppConfig config = Load();
+            config.SettingsLastSection = "panel";
+            ConfigStore.Save(config);
+            MainWindow w = Open(); try {
+                settings = delegate(Window d) {
+                    Assert(Body(d, "appearance").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-panel").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-tiles").Visibility == Visibility.Collapsed,
+                        "Legacy panel section was not mapped to its Appearance subsection");
+                };
+                Call(w, "ShowSettings");
+                Assert(Load().SettingsLastSection == "panel",
+                    "Legacy panel navigation was needlessly rewritten");
+            } finally { w.Close(); }
+        });
+        Case("appearance background subsection is remembered", delegate {
+            Seed("normal", 1); MainWindow w = Open(); try {
+                settings = delegate(Window d) {
+                    Click(Section(d, "appearance-background"));
+                    Assert(Body(d, "appearance-background").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-tiles").Visibility == Visibility.Collapsed,
+                        "Background subsection did not expand");
+                };
+                Call(w, "ShowSettings");
+                Assert(Load().SettingsLastSection == "appearance-background",
+                    "Background subsection preference was not saved");
+                settings = delegate(Window d) {
+                    Assert(Body(d, "appearance").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-background").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-panel").Visibility == Visibility.Collapsed,
+                        "Saved background subsection was not restored");
                 };
                 Call(w, "ShowSettings");
             } finally { w.Close(); }
@@ -1151,9 +1222,9 @@ public static class Package6Tests
                     Check(d, "Группировка приложений").IsChecked = false;
                     Check(d, "Поверх остальных окон").IsChecked = true;
                     Check(d, "Включить звуки").IsChecked = false;
-                    Controls<ComboBox>(Body(d, "appearance"))[0].SelectedIndex = 2;
-                    Controls<ComboBox>(Body(d, "panel"))[0].SelectedIndex = 0;
-                    Click(Section(d, "appearance")); Click(ButtonNamed(d, "Сохранить"));
+                    Controls<ComboBox>(Body(d, "appearance-tiles"))[0].SelectedIndex = 2;
+                    BottomPanelMode(d).SelectedIndex = 0;
+                    Click(ButtonNamed(d, "Сохранить"));
                 };
                 Call(w, "ShowSettings");
                 MenuItem quick = Menu(Tools(w), "Быстрые настройки"); OpenMenu(quick);
@@ -1170,7 +1241,7 @@ public static class Package6Tests
                     Check(d, "Группировка приложений").IsChecked = true;
                     Check(d, "Поверх остальных окон").IsChecked = false;
                     Check(d, "Включить звуки").IsChecked = true;
-                    Controls<ComboBox>(Body(d, "appearance"))[0].SelectedIndex = 0;
+                    Controls<ComboBox>(Body(d, "appearance-tiles"))[0].SelectedIndex = 0;
                     Click(ButtonNamed(d, "Отмена"));
                 };
                 Call(w, "ShowSettings");
@@ -1281,18 +1352,24 @@ public static class Package6Tests
                     settings = delegate(Window d) {
                         d.Width = d.MinWidth * s; d.Height = 555 * s;
                         ((FrameworkElement)d.Content).LayoutTransform = new ScaleTransform(s, s); Drain();
-                        ComboBox mode = Controls<ComboBox>(d)[0];
-                        ListBox favorites = Controls<ListBox>(d)[0];
-                        Assert(mode.Items.Count == 3 && mode.SelectedIndex == 2 && !favorites.IsEnabled, "Initial detailed state changed");
+                        if (Body(d, "appearance-panel").Visibility != Visibility.Visible)
+                            Click(Section(d, "appearance-panel"));
+                        ComboBox mode = BottomPanelMode(d);
+                        ListBox favorites = Controls<ListBox>(Body(d, "appearance-panel"))[0];
+                        Assert(mode.Items.Count == 3 && mode.SelectedIndex == 2 && !favorites.IsEnabled &&
+                            favorites.Visibility == Visibility.Collapsed,
+                            "Detailed mode unexpectedly shows editable favorites");
                         Dark(Visual<Border>(mode).Background, "ComboBox");
-                        Dark(Visual<Border>(favorites).Background, "ListBox");
-                        Readable((CheckBox)((ListBoxItem)favorites.Items[0]).Content);
                         ContentPresenter selection = VisualTreeHelper.GetChild(mode, 0) is Grid
                             ? (ContentPresenter)((Grid)VisualTreeHelper.GetChild(mode, 0)).Children[1] : null;
                         Assert(selection != null && selection.VerticalAlignment == VerticalAlignment.Center, "Selected text not centered");
                         Picture(d, "bottom-settings-detailed-" + s.ToString(CultureInfo.InvariantCulture));
                         mode.SelectedIndex = 0; Drain();
-                        Assert(favorites.IsEnabled, "Compact favorites not enabled");
+                        Assert(favorites.IsEnabled && favorites.Visibility == Visibility.Visible &&
+                            Controls<CheckBox>(Body(d, "appearance-panel")).Count > 0,
+                            "Compact mode did not reveal its favorites");
+                        Dark(Visual<Border>(favorites).Background, "ListBox");
+                        Readable((CheckBox)((ListBoxItem)favorites.Items[0]).Content);
                         favorites.SelectedIndex = 0; Drain();
                         ListBoxItem first = (ListBoxItem)favorites.Items[0];
                         Dark(Visual<Border>(first).Background, "Selected item");
@@ -1319,7 +1396,8 @@ public static class Package6Tests
                         Picture((FrameworkElement)popup.Child, "bottom-dropdown-" + s.ToString(CultureInfo.InvariantCulture));
                         mode.IsDropDownOpen = false;
                         mode.SelectedIndex = 1; Drain();
-                        Assert(!favorites.IsEnabled, "Category mode permits favorites editing");
+                        Assert(!favorites.IsEnabled && favorites.Visibility == Visibility.Collapsed,
+                            "Category mode did not hide favorites");
                         Readable(check);
                         Picture(d, "bottom-settings-categories-" + s.ToString(CultureInfo.InvariantCulture));
                         d.Height = d.MinHeight * s; Drain();
@@ -1334,8 +1412,9 @@ public static class Package6Tests
         Case("settings persist favorite order and checks after reopen", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
                 settings = delegate(Window d) {
-                    Controls<ComboBox>(d)[0].SelectedIndex = 0;
-                    ListBox list = Controls<ListBox>(d)[0];
+                    Click(Section(d, "appearance-panel"));
+                    BottomPanelMode(d).SelectedIndex = 0;
+                    ListBox list = Controls<ListBox>(Body(d, "appearance-panel"))[0];
                     list.SelectedIndex = 0; Click(ButtonNamed(d, "↓ Ниже"));
                     ((CheckBox)((ListBoxItem)list.Items[0]).Content).IsChecked = false;
                     Click(ButtonNamed(d, "Сохранить"));
@@ -1344,8 +1423,8 @@ public static class Package6Tests
                 Assert(Load().BottomPanelMode == "compact" && Load().BottomPanelFavorites[0] == "route" &&
                     !Load().BottomPanelFavorites.Contains("weather"), "Settings failed to persist favorites");
                 settings = delegate(Window d) {
-                    ListBox list = Controls<ListBox>(d)[0];
-                    Assert(Controls<ComboBox>(d)[0].SelectedIndex == 0 &&
+                    ListBox list = Controls<ListBox>(Body(d, "appearance-panel"))[0];
+                    Assert(BottomPanelMode(d).SelectedIndex == 0 &&
                         (string)((CheckBox)((ListBoxItem)list.Items[0]).Content).Tag == "route", "Reopened favorites changed order");
                     foreach (ListBoxItem row in list.Items)
                         if ((string)((CheckBox)row.Content).Tag == "weather")

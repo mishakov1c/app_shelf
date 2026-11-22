@@ -326,9 +326,14 @@ public static class IndependentAudit
         {
             modal = delegate(Window d)
             {
-                // The first ComboBox controls the lower panel; the appearance section
-                // has a separate tile-mode ComboBox with the same 'compact' tag.
-                ComboBox combo = Controls<ComboBox>(d)[0];
+                // Appearance now contains several ComboBox controls before the panel.
+                // Identify the lower-panel selector by its unique detailed option.
+                ComboBox combo = Controls<ComboBox>(d).Find(delegate(ComboBox candidate)
+                {
+                    return candidate.Items.Count == 3 && candidate.Items[2] is ComboBoxItem &&
+                        Convert.ToString(((ComboBoxItem)candidate.Items[2]).Tag) == "detailed";
+                });
+                Assert(combo != null, "Bottom panel mode selector missing");
                 foreach (object value in combo.Items)
                 {
                     ComboBoxItem option = value as ComboBoxItem;

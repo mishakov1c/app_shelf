@@ -5720,7 +5720,8 @@ namespace AppShelf
                 categoryChecks.Children.Add(check);
             }
             layout.Children.Add(categorySettings);
-            layout.Children.Add(Text("Избранное в компактном режиме (галочка — показывать):", 12, MutedBrush));
+            TextBlock favoritesLabel = Text("Избранное в компактном режиме (галочка — показывать):", 12, MutedBrush);
+            layout.Children.Add(favoritesLabel);
             ListBox favoriteList = new ListBox
             {
                 Height = 191, Background = TileBrush, Foreground = WhiteBrush,
@@ -5774,6 +5775,13 @@ namespace AppShelf
                 favoriteList.IsEnabled = compact;
                 favoriteUp.IsEnabled = compact;
                 favoriteDown.IsEnabled = compact;
+                // Keep inactive selections in memory and on disk; they are only
+                // hidden from the editor until their display mode is selected.
+                favoritesLabel.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+                favoriteList.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+                favoriteActions.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+                categorySettings.Visibility = mode == "categories"
+                    ? Visibility.Visible : Visibility.Collapsed;
                 categorySettings.IsEnabled = mode == "categories";
                 int selected = 0;
                 foreach (CheckBox check in categoryOptions.Values)
@@ -6302,10 +6310,20 @@ namespace AppShelf
                     headers[part.Key].Background = part.Value.Visibility == Visibility.Visible
                         ? (Brush)selectedHeading : Brushes.Transparent;
             };
-            string lastSection = _config.SettingsLastSection;
-            if (lastSection != "panel" && lastSection != "network" && lastSection != "weather" &&
+            // Old profiles used a separate main "panel" section. Keep the
+            // user's last destination, now nested under "appearance".
+            string savedSection = _config.SettingsLastSection;
+            string lastAppearance = savedSection == "panel" || savedSection == "appearance-panel"
+                ? "appearance-panel" : savedSection == "appearance-background"
+                ? "appearance-background" : "appearance-tiles";
+            string lastSection = savedSection == "panel" ||
+                savedSection == "appearance-panel" ||
+                savedSection == "appearance-background" || savedSection == "appearance-tiles"
+                ? "appearance" : savedSection;
+            if (lastSection != "network" && lastSection != "weather" &&
                 lastSection != "time" && lastSection != "windows" &&
-                lastSection != "appearance" && lastSection != "data") lastSection = "panel";
+                lastSection != "appearance" && lastSection != "data")
+                lastSection = "appearance";
             Action<string> toggleSection = delegate(string key)
             {
                 bool expand = sections[key].Visibility != Visibility.Visible;
@@ -6322,6 +6340,78 @@ namespace AppShelf
                 }
                 refreshHeadings();
             };
+
+            // A separate accordion inside "Appearance" keeps controls easy to
+            // scan without restoring the old standalone main "Bottom panel".
+            Dictionary<string, Border> appearanceBodies =
+                new Dictionary<string, Border>(StringComparer.Ordinal);
+            Dictionary<string, System.Windows.Shapes.Path> appearanceArrows =
+                new Dictionary<string, System.Windows.Shapes.Path>(StringComparer.Ordinal);
+            Dictionary<string, Border> appearanceHeaders =
+                new Dictionary<string, Border>(StringComparer.Ordinal);
+            LinearGradientBrush selectedSubheading = new LinearGradientBrush(
+                (Color)ColorConverter.ConvertFromString("#223751"),
+                (Color)ColorConverter.ConvertFromString("#1D314A"), 0);
+            selectedSubheading.Freeze();
+            Action refreshAppearanceHeadings = delegate
+            {
+                foreach (KeyValuePair<string, Border> part in appearanceBodies)
+                    appearanceHeaders[part.Key].Background =
+                        part.Value.Visibility == Visibility.Visible
+                            ? (Brush)selectedSubheading : Brushes.Transparent;
+            };
+            Action<string> toggleAppearance = delegate(string key)
+            {
+                bool expand = appearanceBodies[key].Visibility != Visibility.Visible;
+                foreach (KeyValuePair<string, Border> part in appearanceBodies)
+                {
+                    part.Value.Visibility = Visibility.Collapsed;
+                    SetSettingsArrow(appearanceArrows[part.Key], false);
+                }
+                if (expand)
+                {
+                    appearanceBodies[key].Visibility = Visibility.Visible;
+                    SetSettingsArrow(appearanceArrows[key], true);
+                    lastAppearance = key;
+                }
+                refreshAppearanceHeadings();
+            };
+            StackPanel appearanceRows = new StackPanel();
+            Border appearanceFrame = new Border
+            {
+                Tag = "SettingsAppearanceSubsectionsFrame",
+                CornerRadius = new CornerRadius(10),
+                BorderThickness = new Thickness(1),
+                BorderBrush = FluentUi.Brush("#344A66"),
+                Background = FluentUi.Brush("#152135"),
+                Padding = new Thickness(4),
+                Child = appearanceRows
+            };
+
+            AddSettingsSection(appearanceRows, "appearance-tiles", "Плитки и группы",
+                new List<UIElement> { groupingSetting, tileSettingLabel, tileSetting,
+                    tileScaleLabel, tileScaleRow, groupOpacityLabel, opacityRow,
+                    previewCaption, previewBackdrop },
+                appearanceBodies, appearanceArrows, appearanceHeaders, toggleAppearance);
+            AddSettingsSection(appearanceRows, "appearance-background", "Фон главного окна",
+                new List<UIElement> { backgroundSettingLabel, backgroundSetting, backgroundActions },
+                appearanceBodies, appearanceArrows, appearanceHeaders, toggleAppearance);
+
+            // The previous section title is redundant under the nested heading.
+            // The same controls are moved, not recreated, to preserve handlers.
+            List<UIElement> bottomPanelItems =
+                SettingsRange(originalSettings, panelTitle, favoriteActions);
+            bottomPanelItems.RemoveAt(0);
+            bottomPanelItems.Add(bottomOpacityLabel);
+            bottomPanelItems.Add(bottomOpacityRow);
+            AddSettingsSection(appearanceRows, "appearance-panel", "Нижняя панель",
+                bottomPanelItems, appearanceBodies, appearanceArrows,
+                appearanceHeaders, toggleAppearance);
+
+            appearanceBodies[lastAppearance].Visibility = Visibility.Visible;
+            SetSettingsArrow(appearanceArrows[lastAppearance], true);
+            refreshAppearanceHeadings();
+
             Button expandAll = ActionButton("Развернуть всё", false);
             expandAll.Click += delegate
             {
@@ -6330,7 +6420,13 @@ namespace AppShelf
                     item.Value.Visibility = Visibility.Visible;
                     SetSettingsArrow(arrows[item.Key], true);
                 }
+                foreach (KeyValuePair<string, Border> item in appearanceBodies)
+                {
+                    item.Value.Visibility = Visibility.Visible;
+                    SetSettingsArrow(appearanceArrows[item.Key], true);
+                }
                 refreshHeadings();
+                refreshAppearanceHeadings();
             };
             expandActions.Children.Add(expandAll);
             Button collapseAll = ActionButton("Свернуть всё", false);
@@ -6341,32 +6437,37 @@ namespace AppShelf
                     item.Value.Visibility = Visibility.Collapsed;
                     SetSettingsArrow(arrows[item.Key], false);
                 }
+                foreach (KeyValuePair<string, Border> item in appearanceBodies)
+                {
+                    item.Value.Visibility = Visibility.Collapsed;
+                    SetSettingsArrow(appearanceArrows[item.Key], false);
+                }
                 refreshHeadings();
+                refreshAppearanceHeadings();
             };
             expandActions.Children.Add(collapseAll);
-            AddSettingsSection(accordionRows, "panel", "Нижняя панель",
-                SettingsRange(originalSettings, panelTitle, favoriteActions), sections, arrows, headers, toggleSection);
+
+            // Appearance replaces the former first-level Bottom panel entry.
+            AddSettingsSection(accordionRows, "appearance", "Внешний вид",
+                new List<UIElement> { appearanceFrame },
+                sections, arrows, headers, toggleSection);
             AddSettingsSection(accordionRows, "network", "Сеть",
                 new List<UIElement> { network, networkChecksSettings },
                 sections, arrows, headers, toggleSection);
             List<UIElement> weatherItems = new List<UIElement> { weather };
             weatherItems.AddRange(SettingsRange(originalSettings, weatherTitle, providerNote));
-            AddSettingsSection(accordionRows, "weather", "Погода", weatherItems, sections, arrows, headers, toggleSection);
+            AddSettingsSection(accordionRows, "weather", "Погода",
+                weatherItems, sections, arrows, headers, toggleSection);
             List<UIElement> timeItems = new List<UIElement> { pomodoro, countdown };
             timeItems.AddRange(SettingsRange(originalSettings, soundsTitle, soundNote));
-            AddSettingsSection(accordionRows, "time", "Таймеры и напоминания", timeItems, sections, arrows, headers, toggleSection);
+            AddSettingsSection(accordionRows, "time", "Таймеры и напоминания",
+                timeItems, sections, arrows, headers, toggleSection);
             List<UIElement> windowsItems = SettingsRange(originalSettings, sessionTitle, rdpNote);
             windowsItems.Add(tray);
             windowsItems.AddRange(SettingsRange(originalSettings, startupTitle, startupNote));
             windowsItems.Add(topmostSetting);
             AddSettingsSection(accordionRows, "windows", "Поведение Windows",
                 windowsItems, sections, arrows, headers, toggleSection);
-            AddSettingsSection(accordionRows, "appearance", "Внешний вид",
-                new List<UIElement> { groupingSetting, tileSettingLabel, tileSetting,
-                    tileScaleLabel, tileScaleRow, backgroundSettingLabel, backgroundSetting,
-                    backgroundActions, bottomOpacityLabel, bottomOpacityRow, groupOpacityLabel,
-                    opacityRow, previewCaption, previewBackdrop },
-                sections, arrows, headers, toggleSection);
             AddSettingsSection(accordionRows, "data", "Данные и резервные копии",
                 new List<UIElement> { collectionsSetting, backupSettings, note },
                 sections, arrows, headers, toggleSection);
@@ -6411,6 +6512,14 @@ namespace AppShelf
             buttons.Children.Add(ok);
             buttons.Children.Add(cancel);
             bool? savedSettings = dialog.ShowDialog();
+            // The existing navigation preference holds the last Appearance
+            // subsection too, without introducing another apps.json field.
+            // "panel" remains the canonical value for the historical panel view.
+            string selectedSettingsSection = lastSection == "appearance"
+                ? lastAppearance == "appearance-panel" ? "panel"
+                    : lastAppearance == "appearance-background" ? "appearance-background"
+                    : "appearance"
+                : lastSection;
             // Restore before applying the saved configuration; Cancel and failed saves
             // must never leave preview-only changes on the main window.
             if (_mainBackgroundHost != null)
@@ -6465,7 +6574,7 @@ namespace AppShelf
                 pending.ShowCountdownTimer = countdown.IsChecked == true;
                 pending.ShowCollections = collectionsSetting.IsChecked == true;
                 pending.RdpKeepAwake = rdp.IsChecked == true;
-                pending.SettingsLastSection = lastSection;
+                pending.SettingsLastSection = selectedSettingsSection;
                 pending.GroupingEnabled = groupingSetting.IsChecked == true;
                 pending.AlwaysOnTop = topmostSetting.IsChecked == true;
                 pending.TileDisplayMode = (string)((ComboBoxItem)tileSetting.SelectedItem).Tag;
@@ -6553,11 +6662,11 @@ namespace AppShelf
                 if (changedCity || changedProvider || _config.ShowWeather != _weatherSettingsVisible || _config.ShowWeather)
                     RefreshWeather();
             }
-            else if (_canSave && _config.SettingsLastSection != lastSection)
+            else if (_canSave && _config.SettingsLastSection != selectedSettingsSection)
             {
                 // A navigation preference is independent of edits cancelled in the dialog.
                 AppConfig navigation = _config.Copy();
-                navigation.SettingsLastSection = lastSection;
+                navigation.SettingsLastSection = selectedSettingsSection;
                 SaveConfigChanges(navigation, false);
             }
             }
