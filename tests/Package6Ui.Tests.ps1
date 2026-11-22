@@ -1778,6 +1778,107 @@ public static class Package6Tests
                     "Reexpanded grid group did not restore tile-sized width");
             } finally { w.Close(); }
         });
+        Case("free placement uses nine zones and resizes without horizontal clipping", delegate {
+            Seed("normal", 4);
+            AppConfig c = Load();
+            c.Items[3].Group = "Вторая";
+            c.GroupLayoutMode = "free";
+            c.GroupDefaultZone = "top-left";
+            c.GroupZoneOverrides = new Dictionary<string, string> { { "Вторая", "bottom-right" } };
+            ConfigStore.Save(c);
+            MainWindow w = Open(); try {
+                w.Width = 1100; w.Height = 780; Drain();
+                Grid board = (Grid)Get(w, "_freeLayoutGrid");
+                Assert(board != null && board.Children.Count == 9,
+                    "Free placement board is missing one of its zones");
+                Dictionary<string, StackPanel> zones =
+                    (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
+                Assert(zones["top-left"].Children.Count == 2 &&
+                    zones["bottom-right"].Children.Count == 1,
+                    "Free placement did not honor a saved zone override");
+                Point topLeft = zones["top-left"].TranslatePoint(new Point(0, 0), board);
+                Point bottomRight = zones["bottom-right"].TranslatePoint(new Point(0, 0), board);
+                Assert(bottomRight.X > topLeft.X && bottomRight.Y > topLeft.Y,
+                    "Zones are not placed in distinct screen regions");
+                Assert((bool)Call(w, "SetGroupZoneOverride", "Первая", "middle-center"),
+                    "Could not move group to center zone");
+                Assert(Load().GroupZoneOverrides["Первая"] == "middle-center",
+                    "Manual group zone was not saved");
+                zones = (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
+                Assert(zones["middle-center"].Children.Count == 1,
+                    "Moved group was not rendered in center zone");
+                Assert((bool)Call(w, "SetGroupZoneOverride", "Первая", "inherit"),
+                    "Could not restore default group zone");
+                Assert(!Load().GroupZoneOverrides.ContainsKey("Первая") &&
+                    ((Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts"))
+                        ["top-left"].Children.Count == 2,
+                    "Restoring inherited zone did not move the group back");
+                w.Width = w.MinWidth; Drain();
+                List<Border> cells = (List<Border>)Get(w, "_freeZoneCells");
+                foreach (Border zone in cells)
+                    Assert(Grid.GetColumnSpan(zone) == 3,
+                        "Narrow free placement failed to stack zones vertically");
+                w.Width = 1100; Drain();
+                foreach (Border zone in cells)
+                    Assert(Grid.GetColumnSpan(zone) == 1,
+                        "Wide free placement did not restore three columns");
+            } finally { w.Close(); }
+        });
+        Case("free placement context menu and empty-zone group drop", delegate {
+            Seed("normal", 2);
+            AppConfig c = Load();
+            c.GroupLayoutMode = "free";
+            ConfigStore.Save(c);
+            MainWindow w = Open(); try {
+                w.Width = 1200; Drain();
+                Dictionary<string, StackPanel> zones =
+                    (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
+                Border card = (Border)zones["top-left"].Children[0];
+                DockPanel header = (DockPanel)((Expander)card.Child).Header;
+                MenuItem placement = Menu(header.ContextMenu, "Размещение группы");
+                OpenMenu(placement);
+                Assert(Menu(placement, "По общему правилу").IsChecked,
+                    "New group must inherit default zone");
+                Click(Menu(placement, "По центру справа"));
+                Assert(Load().GroupZoneOverrides["Первая"] == "middle-right",
+                    "Context menu did not persist the selected zone");
+                zones = (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
+                Assert(zones["middle-right"].Children.Count == 1,
+                    "Context menu did not reflow the group");
+                List<Border> cells = (List<Border>)Get(w, "_freeZoneCells");
+                DataObject dragData = new DataObject();
+                dragData.SetData("AppShelf.InternalGroupName", "Первая");
+                DragEventArgs over = Drag(cells[6], dragData, DragDrop.PreviewDragOverEvent);
+                Assert(over.Effects == DragDropEffects.Move,
+                    "Empty free zone is not a group drop target");
+                DragEventArgs dropped = Drag(cells[6], dragData, DragDrop.PreviewDropEvent);
+                Assert(dropped.Effects == DragDropEffects.Move &&
+                    Load().GroupZoneOverrides["Первая"] == "bottom-left",
+                    "Drag-and-drop did not move group to the empty zone");
+            } finally { w.Close(); }
+        });
+        Case("free layout settings persist and keep old layout options hidden", delegate {
+            Seed("normal", 1);
+            MainWindow w = Open(); try {
+                settings = delegate(Window d) {
+                    ComboBox layout = ComboWithOption(d, "free");
+                    ComboBox width = ComboWithOption(d, "content");
+                    ComboBox align = ComboWithOption(d, "alternate");
+                    ComboBox zone = ComboWithOption(d, "bottom-right");
+                    layout.SelectedIndex = 2; Drain();
+                    Assert(width.Visibility == Visibility.Collapsed &&
+                        align.Visibility == Visibility.Collapsed &&
+                        zone.Visibility == Visibility.Visible,
+                        "Free mode exposes settings that are not applicable");
+                    zone.SelectedIndex = 8;
+                    Click(ButtonNamed(d, "Сохранить"));
+                };
+                Call(w, "ShowSettings");
+                Assert(Load().GroupLayoutMode == "free" &&
+                    Load().GroupDefaultZone == "bottom-right",
+                    "Free layout or global zone was not saved");
+            } finally { w.Close(); }
+        });
         Case("group layout settings hide inapplicable controls and persist choices", delegate {
             Seed("normal", 1);
             MainWindow w = Open(); try {
