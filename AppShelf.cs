@@ -914,6 +914,14 @@ namespace AppShelf
             }
         }
 
+        private static T ParseMetCachedJson<T>(byte[] body, string stage)
+        {
+            if (body == null || body.Length == 0 || body.Length > MaxWeatherJsonBytes)
+                throw new InvalidDataException(stage + ": повреждён кеш HTTP-ответа.");
+            using (MemoryStream cached = new MemoryStream(body, false))
+                return (T)new DataContractJsonSerializer(typeof(T)).ReadObject(cached);
+        }
+
         private static T ReadJsonWorker<T>(string url, string stage, bool allowTlsRetry, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
@@ -926,11 +934,40 @@ namespace AppShelf
             request.UserAgent = "AppShelf/" + appVersion +
                 " (+https://github.com/mishakov1c/app_shelf/issues)";
             request.Accept = "application/json";
-            // Open-Meteo's deflate responses can trigger a .NET Framework decompression error
-            // ("Длина блока не соответствует дополнению"). Current-weather JSON is small,
-            // so request an uncompressed response instead of touching TLS or certificates.
-            request.AutomaticDecompression = DecompressionMethods.None;
-            request.Headers[HttpRequestHeader.AcceptEncoding] = "identity";
+            bool metNorway = String.Equals(request.RequestUri.Host, "api.met.no",
+                StringComparison.OrdinalIgnoreCase);
+            MetHttpCacheEntry cachedMet = metNorway ? MetHttpResponseCache.Get(url) : null;
+            if (cachedMet != null)
+            {
+                token.ThrowIfCancellationRequested();
+                // Never send a request while Expires (or the three-hour minimum)
+                // prevents repeating the same locationforecast query.
+                if (DateTime.UtcNow.Ticks < cachedMet.ExpiresUtcTicks)
+                    return ParseMetCachedJson<T>(cachedMet.Body, stage);
+                DateTimeOffset modified;
+                if (!String.IsNullOrWhiteSpace(cachedMet.LastModified) &&
+                    DateTimeOffset.TryParse(cachedMet.LastModified, CultureInfo.InvariantCulture,
+                        DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal, out modified) &&
+                    modified.UtcDateTime <= DateTime.UtcNow)
+                    request.IfModifiedSince = modified.UtcDateTime;
+            }
+            if (metNorway)
+            {
+                // MET Norway requires redirect and gzip/deflate support. The framework
+                // advertises both encodings and decodes the response before JSON parsing.
+                request.AllowAutoRedirect = true;
+                request.MaximumAutomaticRedirections = 5;
+                request.AutomaticDecompression =
+                    DecompressionMethods.GZip | DecompressionMethods.Deflate;
+            }
+            else
+            {
+                // Open-Meteo's deflate responses caused a .NET Framework decompression
+                // error ("Длина блока не соответствует дополнению"). Preserve the
+                // working uncompressed request for both its forecast and geocoding.
+                request.AutomaticDecompression = DecompressionMethods.None;
+                request.Headers[HttpRequestHeader.AcceptEncoding] = "identity";
+            }
             request.Timeout = WeatherTimeoutMilliseconds;
             request.ReadWriteTimeout = WeatherTimeoutMilliseconds;
             bool retryTls = false;
@@ -941,6 +978,22 @@ namespace AppShelf
                     using (WebResponse response = request.GetResponse())
                     using (Stream stream = response.GetResponseStream())
                     {
+                        // Do not trust a final HTTP response after redirection.
+                        if (metNorway && (response.ResponseUri == null ||
+                            response.ResponseUri.Scheme != Uri.UriSchemeHttps))
+                            throw new InvalidDataException(stage + ": ответ получен не по HTTPS.");
+                        HttpWebResponse metResponse = metNorway ? response as HttpWebResponse : null;
+                        if (metResponse != null && metResponse.StatusCode == HttpStatusCode.NotModified)
+                        {
+                            if (cachedMet == null)
+                                throw new InvalidDataException(stage + ": 304 без сохранённого ответа.");
+                            T unchanged = ParseMetCachedJson<T>(cachedMet.Body, stage);
+                            token.ThrowIfCancellationRequested();
+                            MetHttpResponseCache.Save(url, cachedMet.Body,
+                                metResponse.Headers[HttpResponseHeader.LastModified],
+                                metResponse.Headers[HttpResponseHeader.Expires], cachedMet);
+                            return unchanged;
+                        }
                         if (stream == null) throw new InvalidDataException(stage + ": пустой ответ сервера.");
                         if (response.ContentLength > MaxWeatherJsonBytes)
                             throw new InvalidDataException(stage + ": JSON превышает лимит 2 МиБ.");
@@ -970,12 +1023,19 @@ namespace AppShelf
                                     error, WebExceptionStatus.ReceiveFailure, null);
                             }
                             token.ThrowIfCancellationRequested();
-                            if (response.ContentLength >= 0 && json.Length < response.ContentLength)
+                            // Content-Length is measured on the HTTP wire. For compressed
+                            // MET responses it cannot be compared to decompressed JSON.
+                            if (!metNorway && response.ContentLength >= 0 &&
+                                json.Length < response.ContentLength)
                                 throw new WebException(stage + ": соединение закрыто до получения полного JSON.",
                                     WebExceptionStatus.ConnectionClosed);
                             json.Position = 0;
                             T result = (T)new DataContractJsonSerializer(typeof(T)).ReadObject(json);
                             token.ThrowIfCancellationRequested();
+                            if (metNorway)
+                                MetHttpResponseCache.Save(url, json.ToArray(),
+                                    response.Headers[HttpResponseHeader.LastModified],
+                                    response.Headers[HttpResponseHeader.Expires], null);
                             return result;
                         }
                     }
@@ -987,9 +1047,26 @@ namespace AppShelf
                         if (ex.Response != null) ex.Response.Dispose();
                         throw new TimeoutException(stage + ": превышено время ожидания (9 с).", ex);
                     }
+                    HttpWebResponse response = ex.Response as HttpWebResponse;
+                    // HttpWebRequest exposes 304 as ProtocolError on .NET Framework.
+                    if (metNorway && response != null &&
+                        response.StatusCode == HttpStatusCode.NotModified && cachedMet != null)
+                    {
+                        using (response)
+                        {
+                            if (response.ResponseUri == null ||
+                                response.ResponseUri.Scheme != Uri.UriSchemeHttps)
+                                throw new InvalidDataException(stage + ": ответ 304 получен не по HTTPS.");
+                            T unchanged = ParseMetCachedJson<T>(cachedMet.Body, stage);
+                            token.ThrowIfCancellationRequested();
+                            MetHttpResponseCache.Save(url, cachedMet.Body,
+                                response.Headers[HttpResponseHeader.LastModified],
+                                response.Headers[HttpResponseHeader.Expires], cachedMet);
+                            return unchanged;
+                        }
+                    }
                     retryTls = allowTlsRetry && ex.Status == WebExceptionStatus.SecureChannelFailure &&
                         NetworkTls.RetryWithTls12();
-                    HttpWebResponse response = ex.Response as HttpWebResponse;
                     string detail = response == null ? ex.Message : "HTTP " + (int)response.StatusCode + " " + response.StatusDescription;
                     // RefreshWeather classifies this error after the response has been disposed.
                     if (response != null) ex.Data["AppShelf.HttpStatusCode"] = (int)response.StatusCode;
