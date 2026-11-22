@@ -29,7 +29,7 @@ jobs:
           }
 
       - name: Upload Windows application
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: AppShelf-${{ github.sha }}
           path: AppShelf.exe
