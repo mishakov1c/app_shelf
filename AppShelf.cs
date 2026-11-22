@@ -4413,6 +4413,33 @@ namespace AppShelf
                         groupMenu.Items.Add(new Separator());
                         groupMenu.Items.Add(MenuAction("Переименовать группу", delegate { RenameGroup(selectedGroup); }));
                         groupMenu.Items.Add(MenuAction("Удалить группу", delegate { DeleteGroup(selectedGroup); }));
+                        // Individual overrides are meaningful only for vertically
+                        // stacked groups sized to their tiles, never in a compact grid.
+                        if (NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "vertical" &&
+                            NormalizeGroupWidthMode(_config.GroupWidthMode) == "content")
+                        {
+                            groupMenu.Items.Add(new Separator());
+                            MenuItem alignMenu = new MenuItem { Header = "Выравнивание группы" };
+                            string current = null;
+                            if (_config.GroupAlignmentOverrides != null)
+                                _config.GroupAlignmentOverrides.TryGetValue(selectedGroup, out current);
+                            foreach (string option in new[] { "inherit", "left", "center", "right" })
+                            {
+                                string selected = option;
+                                string label = option == "inherit" ? "По общему правилу" :
+                                    option == "left" ? "Слева" :
+                                    option == "center" ? "По центру" : "Справа";
+                                MenuItem choice = MenuAction(label, delegate
+                                { SetGroupAlignmentOverride(selectedGroup, selected); });
+                                choice.IsCheckable = true;
+                                choice.IsChecked = option == "inherit"
+                                    ? NormalizeGroupOverride(current) == null
+                                    : current == option;
+                                choice.IsEnabled = _canSave;
+                                alignMenu.Items.Add(choice);
+                            }
+                            groupMenu.Items.Add(alignMenu);
+                        }
                         headerPanel.ContextMenu = groupMenu;
                         heading.ToolTip = "Правая кнопка — порядок, переименование, удаление";
 
@@ -5041,6 +5068,20 @@ namespace AppShelf
             return SaveGroupOrder(groups);
         }
 
+        private void SetGroupAlignmentOverride(string group, string value)
+        {
+            if (!_canSave) { ShowSaveDisabled(); return; }
+            if (String.IsNullOrWhiteSpace(group) ||
+                (value != "inherit" && NormalizeGroupOverride(value) == null)) return;
+            AppConfig pending = _config.Copy();
+            Dictionary<string, string> overrides = pending.GroupAlignmentOverrides ??
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            overrides.Remove(group);
+            if (value != "inherit") overrides[group] = value;
+            pending.GroupAlignmentOverrides = overrides.Count == 0 ? null : overrides;
+            if (SaveConfigChanges(pending)) UpdateGroupWidths();
+        }
+
         private void RenameGroup(string name)
         {
             if (!_canSave) { ShowSaveDisabled(); return; }
@@ -5058,6 +5099,19 @@ namespace AppShelf
                     pending.Groups[i] = newName;
             foreach (AppItem item in pending.Items)
                 if (String.Equals(GroupOf(item), name, StringComparison.OrdinalIgnoreCase)) item.Group = newName;
+            if (pending.GroupAlignmentOverrides != null)
+            {
+                string previousKey = null;
+                foreach (string key in pending.GroupAlignmentOverrides.Keys)
+                    if (String.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+                        { previousKey = key; break; }
+                if (previousKey != null)
+                {
+                    string preference = pending.GroupAlignmentOverrides[previousKey];
+                    pending.GroupAlignmentOverrides.Remove(previousKey);
+                    pending.GroupAlignmentOverrides[newName] = preference;
+                }
+            }
             if (SaveConfigChanges(pending)) RenderTiles();
         }
 
@@ -5072,6 +5126,12 @@ namespace AppShelf
             { return String.Equals(group, name, StringComparison.OrdinalIgnoreCase); });
             foreach (AppItem item in pending.Items)
                 if (String.Equals(GroupOf(item), name, StringComparison.OrdinalIgnoreCase)) item.Group = "";
+            if (pending.GroupAlignmentOverrides != null)
+            {
+                pending.GroupAlignmentOverrides.Remove(name);
+                if (pending.GroupAlignmentOverrides.Count == 0)
+                    pending.GroupAlignmentOverrides = null;
+            }
             if (SaveConfigChanges(pending)) RenderTiles();
         }
 
