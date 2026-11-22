@@ -699,7 +699,8 @@ public static class Package6Tests
                     Menu(menu, "Настройки…").Icon != null && Menu(menu, "О программе").Icon != null,
                     "Menu icons missing");
                 MenuItem panel = Menu(quick, "Нижняя панель");
-                Assert(panel.Items.Count == 3 && Menu(quick, "Режим плиток").Items.Count == 3,
+                Assert(panel.Items.Count == 3 && Menu(quick, "Режим плиток").Items.Count == 3 &&
+                    Menu(quick, "Размещение групп").Items.Count == 3,
                     "Quick mode choices incomplete");
                 Assert(Menu(quick, "Звук включён").IsCheckable &&
                     Menu(quick, "Группировка приложений").IsCheckable &&
@@ -715,6 +716,78 @@ public static class Package6Tests
                     "Sound toggle not saved");
                 Call(w, "SetRdpKeepAwake", false);
                 Assert(!Live(w).RdpKeepAwake, "RDP mode unexpectedly changed");
+            } finally { w.Close(); }
+        });
+        Case("quick group layout modes save, reflow and keep detailed options", delegate {
+            Seed("normal", 3);
+            AppConfig config = Load();
+            config.GroupWidthMode = "content";
+            config.GroupAlignment = "alternate";
+            config.GroupDefaultZone = "bottom-right";
+            config.GroupZoneOverrides = new Dictionary<string, string>
+                { { "Вторая", "middle-center" } };
+            ConfigStore.Save(config);
+            MainWindow w = Open(); try {
+                MenuItem quick = Menu(Tools(w), "Быстрые настройки");
+                MenuItem modes = Menu(quick, "Размещение групп");
+                MenuItem list = Menu(modes, "Список");
+                MenuItem grid = Menu(modes, "Автоматическая сетка");
+                MenuItem free = Menu(modes, "Свободное размещение");
+                OpenMenu(quick); OpenMenu(modes);
+                Assert(modes.IsEnabled && list.IsChecked && !grid.IsChecked && !free.IsChecked,
+                    "Legacy list mode checkmark is wrong");
+                Click(grid); OpenMenu(modes);
+                Assert(!list.IsChecked && grid.IsChecked && !free.IsChecked &&
+                    Live(w).GroupLayoutMode == "grid" && Load().GroupLayoutMode == "grid",
+                    "Grid quick switch did not persist or update checkmarks");
+                Assert(((StackPanel)Get(w, "_tileHost")).Children[0] is WrapPanel,
+                    "Grid quick switch did not rebuild the layout");
+                Click(free); OpenMenu(modes);
+                Assert(!list.IsChecked && !grid.IsChecked && free.IsChecked &&
+                    Load().GroupLayoutMode == "free" && Get(w, "_freeLayoutGrid") != null,
+                    "Free quick switch did not persist or rebuild zones");
+                Click(list); OpenMenu(modes);
+                Assert(list.IsChecked && !grid.IsChecked && !free.IsChecked &&
+                    Load().GroupLayoutMode == "vertical",
+                    "List quick switch did not restore list mode");
+                AppConfig saved = Load();
+                Assert(saved.GroupWidthMode == "content" &&
+                    saved.GroupAlignment == "alternate" &&
+                    saved.GroupDefaultZone == "bottom-right" &&
+                    saved.GroupZoneOverrides["Вторая"] == "middle-center",
+                    "Quick switching unexpectedly discarded detailed layout preferences");
+                Call(w, "SetGrouping", false);
+                OpenMenu(quick);
+                Assert(!modes.IsEnabled, "Group layout quick switch must be disabled when grouping is off");
+                Call(w, "SetGrouping", true);
+                OpenMenu(quick);
+                Assert(modes.IsEnabled && list.IsChecked,
+                    "Quick switch did not recover after enabling grouping");
+            } finally { w.Close(); }
+        });
+        Case("quick group layout checkmarks roll back on rejected saves", delegate {
+            Seed("normal", 2);
+            MainWindow w = Open(); try {
+                MenuItem modes = Menu(Menu(Tools(w), "Быстрые настройки"), "Размещение групп");
+                MenuItem list = Menu(modes, "Список");
+                MenuItem grid = Menu(modes, "Автоматическая сетка");
+                MenuItem free = Menu(modes, "Свободное размещение");
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    Set(w, "_canSave", attempt == 0);
+                    string before = Snapshot(Live(w));
+                    string disk = File.ReadAllText(ConfigStore.FilePath);
+                    using (FileStream locked = new FileStream(ConfigStore.FilePath,
+                        FileMode.Open, FileAccess.Read, FileShare.Read)) {
+                        OpenMenu(modes);
+                        Click(attempt == 0 ? grid : free);
+                        Assert(Snapshot(Live(w)) == before &&
+                            File.ReadAllText(ConfigStore.FilePath) == disk,
+                            "Rejected quick group layout saved in memory or on disk");
+                        Assert(list.IsChecked && !grid.IsChecked && !free.IsChecked,
+                            "Rejected quick group layout leaves the wrong checkmark");
+                    }
+                }
+                Set(w, "_canSave", true);
             } finally { w.Close(); }
         });
         Case("bottom indicator closes its own tool window only", delegate {
