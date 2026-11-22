@@ -1471,6 +1471,9 @@ namespace AppShelf
         private bool _windowPlacementTrackingReady;
         private bool _lastNonMinimizedWasMaximized;
         private StackPanel _tileHost;
+        private ScrollViewer _tilesScroller;
+        private readonly List<GroupLayoutCard> _groupLayoutCards = new List<GroupLayoutCard>();
+        private bool _updatingGroupWidths;
         private Grid _mainContentGrid;
         private DockPanel _mainBackgroundHost;
         private Border _footerBorder;
@@ -1580,6 +1583,21 @@ namespace AppShelf
         private Point _groupDragStart;
         private bool _groupDragInProgress;
         private Border _highlightedDropZone;
+
+        private sealed class GroupLayoutCard
+        {
+            public readonly Border Card;
+            public readonly string Group;
+            public readonly int TileCount;
+            public readonly int Position;
+            public GroupLayoutCard(Border card, string group, int tileCount, int position)
+            {
+                Card = card;
+                Group = group;
+                TileCount = tileCount;
+                Position = position;
+            }
+        }
 
         private sealed class GroupDropTarget
         {
@@ -2202,6 +2220,12 @@ namespace AppShelf
             };
             // Match Settings and About without affecting nested tile/group controls.
             FluentUi.StyleSettingsScroll(scroller);
+            _tilesScroller = scroller;
+            scroller.SizeChanged += delegate { UpdateGroupWidths(); };
+            scroller.ScrollChanged += delegate(object sender, ScrollChangedEventArgs e)
+            {
+                if (Math.Abs(e.ViewportWidthChange) > 0.5) UpdateGroupWidths();
+            };
             _tileHost = new StackPanel { AllowDrop = true };
             scroller.AllowDrop = true;
             contentGrid.AllowDrop = true;
@@ -4203,6 +4227,100 @@ namespace AppShelf
             return query.Length == 0 || (item.Name ?? "").IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private static string NormalizeGroupWidthMode(string value)
+        {
+            return value == "content" ? "content" : "full";
+        }
+
+        private static string NormalizeGroupLayoutMode(string value)
+        {
+            return value == "grid" ? "grid" : "vertical";
+        }
+
+        private static string NormalizeGroupAlignment(string value)
+        {
+            return value == "center" || value == "right" || value == "alternate"
+                ? value : "left";
+        }
+
+        private static string NormalizeGroupOverride(string value)
+        {
+            return value == "left" || value == "center" || value == "right"
+                ? value : null;
+        }
+
+        private string GroupAlignmentFor(string group, int position)
+        {
+            if (_config.GroupAlignmentOverrides != null && !String.IsNullOrWhiteSpace(group))
+            {
+                string preference;
+                if (_config.GroupAlignmentOverrides.TryGetValue(group, out preference))
+                {
+                    string valid = NormalizeGroupOverride(preference);
+                    if (valid != null) return valid;
+                }
+            }
+            string alignment = NormalizeGroupAlignment(_config.GroupAlignment);
+            return alignment == "alternate" ? (position % 2 == 0 ? "left" : "right") : alignment;
+        }
+
+        // Width is based on tile slots (including their margins), not a fixed
+        // percentage of the window. The final column count is limited by the
+        // viewport so WrapPanel can flow into additional lines.
+        private double NaturalGroupWidth(int itemCount, double available)
+        {
+            string mode = CurrentTileDisplayMode();
+            double scale = FluentUi.NormalizeTileScale(_config.TileScalePercent) / 100.0;
+            double tileWidth = Math.Round((mode == "compact" ? 78 :
+                mode == "labeled" ? 124 : 100) * scale) + 11;
+            const double chrome = 38; // Group border/padding and drop-zone padding.
+            int columns = Math.Min(Math.Max(1, itemCount),
+                Math.Max(1, (int)Math.Floor(Math.Max(1, available - chrome) / tileWidth)));
+            return Math.Max(1, Math.Min(available,
+                Math.Max(190, Math.Ceiling(columns * tileWidth + chrome))));
+        }
+
+        private void UpdateGroupWidths()
+        {
+            if (_updatingGroupWidths || _tilesScroller == null ||
+                _groupLayoutCards.Count == 0) return;
+            double available = _tilesScroller.ViewportWidth;
+            if (Double.IsNaN(available) || Double.IsInfinity(available) || available <= 1)
+                available = _tilesScroller.ActualWidth - _tilesScroller.Padding.Left -
+                    _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
+            if (Double.IsNaN(available) || Double.IsInfinity(available) || available <= 1) return;
+
+            bool grid = NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "grid";
+            bool natural = grid || NormalizeGroupWidthMode(_config.GroupWidthMode) == "content";
+            try
+            {
+                _updatingGroupWidths = true;
+                foreach (GroupLayoutCard group in _groupLayoutCards)
+                {
+                    Border card = group.Card;
+                    if (natural)
+                    {
+                        // Reserve the right gap between cards only in grid mode.
+                        double limit = Math.Max(1, available - (grid ? 9 : 0));
+                        double width = NaturalGroupWidth(group.TileCount, limit);
+                        if (Double.IsNaN(card.Width) || Math.Abs(card.Width - width) > 0.5)
+                            card.Width = width;
+                        string align = grid ? "left" : GroupAlignmentFor(group.Group, group.Position);
+                        card.HorizontalAlignment = align == "right" ? HorizontalAlignment.Right :
+                            align == "center" ? HorizontalAlignment.Center : HorizontalAlignment.Left;
+                        card.Margin = new Thickness(0, 0, grid ? 9 : 0, 8);
+                    }
+                    else
+                    {
+                        card.Width = Double.NaN;
+                        card.HorizontalAlignment = HorizontalAlignment.Stretch;
+                        card.Margin = new Thickness(0, 0, 0, 8);
+                    }
+                }
+            }
+            finally { _updatingGroupWidths = false; }
+        }
+
         // Used by the appearance slider. Changing brush values in place preserves
         // the live group expansion state, app tiles, keyboard focus and drag targets.
         private void ApplyGroupAppearancePreview(string preset, int opacity)
@@ -4210,13 +4328,10 @@ namespace AppShelf
             if (_tileHost == null) return;
             Brush groupBrush = FluentUi.MainGroupBackground(preset, opacity);
             Brush borderBrush = FluentUi.MainGroupBorder(preset);
-            foreach (UIElement child in _tileHost.Children)
+            foreach (GroupLayoutCard group in _groupLayoutCards)
             {
-                Border card = child as Border;
-                if (card == null || !Object.Equals(card.Tag, "AppShelfMainGroupCard"))
-                    continue;
-                card.Background = groupBrush;
-                card.BorderBrush = borderBrush;
+                group.Card.Background = groupBrush;
+                group.Card.BorderBrush = borderBrush;
             }
         }
 
@@ -4224,6 +4339,7 @@ namespace AppShelf
         {
             if (_tileHost == null) return;
             _tileHost.Children.Clear();
+            _groupLayoutCards.Clear();
             int count = 0;
             if (!_config.GroupingEnabled)
             {
@@ -4240,6 +4356,13 @@ namespace AppShelf
             else
             {
                 List<string> groups = AllGroups();
+                bool gridMode = NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "grid";
+                WrapPanel gridHost = null;
+                if (gridMode)
+                {
+                    gridHost = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
+                    _tileHost.Children.Add(gridHost);
+                }
                 // The special ungrouped section is only useful when it contains
                 // visible applications. Keep it last, after the user-defined groups.
                 bool hasUngrouped = false;
@@ -4351,9 +4474,13 @@ namespace AppShelf
                         CornerRadius = new CornerRadius(13),
                         Padding = new Thickness(10, 7, 10, 7), Margin = new Thickness(0, 0, 0, 8)
                     };
-                    _tileHost.Children.Add(groupCard);
+                    _groupLayoutCards.Add(new GroupLayoutCard(groupCard, group, inGroup,
+                        _groupLayoutCards.Count));
+                    if (gridHost != null) gridHost.Children.Add(groupCard);
+                    else _tileHost.Children.Add(groupCard);
                 }
             }
+            UpdateGroupWidths();
             _empty.Text = _config.Items.Count == 0
                 ? "Пока здесь пусто.\n\nПеретащи EXE или ярлык из Проводника\nили нажми «+ Добавить»."
                 : "Ничего не найдено.";
