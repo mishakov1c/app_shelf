@@ -2,13 +2,14 @@
 // At release preparation, update the version AND the matching release notes below.
 // The About dialog reads only metadata embedded in the compiled executable.
 using System.Reflection;
-[assembly: AssemblyVersion("2.20.0.0")]
-[assembly: AssemblyFileVersion("2.20.0.0")]
-[assembly: AssemblyInformationalVersion("2.20.0")]
-[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.20.0")]
+[assembly: AssemblyVersion("2.21.0.0")]
+[assembly: AssemblyFileVersion("2.21.0.0")]
+[assembly: AssemblyInformationalVersion("2.21.0")]
+[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.21.0")]
 [assembly: AssemblyMetadata("AppShelf.ReleaseNotes",
-    "Настройки: шесть основных разделов; «Нижняя панель» перенесена во «Внешний вид».\n" +
-    "Во «Внешнем виде» появились подразделы «Плитки и группы», «Фон главного окна» и «Нижняя панель».\n" +
-    "Напоминания: у каждого одновременного срабатывания свои «Готово» и кнопки отложения.\n" +
-    "Закрытие окна не подтверждает оставшиеся напоминания — они сохраняются до следующего запуска.\n" +
-    "Существующие настройки, быстрые переключатели и расписания повторов сохранены.")]
+    "Группы: три варианта размещения — список, автоматическая сетка и девять свободных зон.\n" +
+    "В списке доступна ширина по содержимому с выравниванием слева, по центру, справа или чередованием.\n" +
+    "В сетке группы автоматически размещаются рядом и переносятся по доступной ширине.\n" +
+    "В свободном режиме группу можно перетащить в зону; зона по умолчанию выбирается сеткой 3×3.\n" +
+    "Переключить режим можно через «Быстрые настройки»; выбранный вариант сохраняется сразу.\n" +
+    "Старые настройки работают без миграции; параметры других режимов при переключении сохраняются.")]
