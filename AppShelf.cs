@@ -4446,8 +4446,25 @@ namespace AppShelf
                                     ? NormalizeGroupOverride(current) == null
                                     : current == option;
                                 choice.IsEnabled = _canSave;
+                                choice.Tag = selected;
                                 alignMenu.Items.Add(choice);
                             }
+                            // Menu is retained when alignment changes in place.
+                            // Refresh checkmarks every time the submenu opens.
+                            alignMenu.SubmenuOpened += delegate
+                            {
+                                string selectedPreference = null;
+                                if (_config.GroupAlignmentOverrides != null)
+                                    _config.GroupAlignmentOverrides.TryGetValue(selectedGroup,
+                                        out selectedPreference);
+                                foreach (MenuItem item in alignMenu.Items)
+                                {
+                                    string value = item.Tag as string;
+                                    item.IsChecked = value == "inherit"
+                                        ? NormalizeGroupOverride(selectedPreference) == null
+                                        : selectedPreference == value;
+                                }
+                            };
                             groupMenu.Items.Add(alignMenu);
                         }
                         headerPanel.ContextMenu = groupMenu;
