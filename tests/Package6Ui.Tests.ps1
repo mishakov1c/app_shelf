@@ -304,6 +304,18 @@ public static class Package6Tests
             }
         throw new Exception("Settings combo missing option " + optionTag);
     }
+    private static RadioButton RadioWithTag(Window d, string tag)
+    {
+        foreach (RadioButton radio in Controls<RadioButton>(d))
+            if (Object.Equals(radio.Tag, tag)) return radio;
+        throw new Exception("Settings radio missing: " + tag);
+    }
+    private static Button ButtonWithTag(Window d, string tag)
+    {
+        foreach (Button button in Controls<Button>(d))
+            if (Object.Equals(button.Tag, tag)) return button;
+        throw new Exception("Settings button missing: " + tag);
+    }
     private static ComboBox NetworkMode(Window d, int slot)
     {
         foreach (ComboBox c in Controls<ComboBox>(d))
@@ -1857,20 +1869,29 @@ public static class Package6Tests
                     "Drag-and-drop did not move group to the empty zone");
             } finally { w.Close(); }
         });
-        Case("free layout settings persist and keep old layout options hidden", delegate {
+        Case("free layout radio options and 3x3 zone picker save settings", delegate {
             Seed("normal", 1);
             MainWindow w = Open(); try {
                 settings = delegate(Window d) {
-                    ComboBox layout = ComboWithOption(d, "free");
-                    ComboBox width = ComboWithOption(d, "content");
+                    RadioButton free = RadioWithTag(d, "GroupLayoutMode:free");
+                    RadioButton width = RadioWithTag(d, "GroupWidthMode:content");
                     ComboBox align = ComboWithOption(d, "alternate");
-                    ComboBox zone = ComboWithOption(d, "bottom-right");
-                    layout.SelectedIndex = 2; Drain();
+                    free.IsChecked = true; Drain();
+                    System.Windows.Controls.Primitives.UniformGrid grid = null;
+                    foreach (System.Windows.Controls.Primitives.UniformGrid panel
+                        in Controls<System.Windows.Controls.Primitives.UniformGrid>(d))
+                        if (Object.Equals(panel.Tag, "GroupZonePicker")) grid = panel;
+                    Assert(grid != null && grid.Columns == 3 && grid.Rows == 3 &&
+                        grid.Children.Count == 9,
+                        "Free mode must show 3x3 zone picker");
                     Assert(width.Visibility == Visibility.Collapsed &&
                         align.Visibility == Visibility.Collapsed &&
-                        zone.Visibility == Visibility.Visible,
+                        grid.Visibility == Visibility.Visible,
                         "Free mode exposes settings that are not applicable");
-                    zone.SelectedIndex = 8;
+                    Button zone = ButtonWithTag(d, "GroupZone:bottom-right");
+                    Click(zone);
+                    Assert(zone.BorderThickness.Left >= 2,
+                        "Selected zone does not receive an indicator");
                     Click(ButtonNamed(d, "Сохранить"));
                 };
                 Call(w, "ShowSettings");
@@ -1879,25 +1900,32 @@ public static class Package6Tests
                     "Free layout or global zone was not saved");
             } finally { w.Close(); }
         });
-        Case("group layout settings hide inapplicable controls and persist choices", delegate {
+        Case("group layout radio controls show only applicable options and persist", delegate {
             Seed("normal", 1);
             MainWindow w = Open(); try {
                 settings = delegate(Window d) {
-                    ComboBox layout = ComboWithOption(d, "grid");
-                    ComboBox width = ComboWithOption(d, "content");
+                    RadioButton list = RadioWithTag(d, "GroupLayoutMode:vertical");
+                    RadioButton grid = RadioWithTag(d, "GroupLayoutMode:grid");
+                    RadioButton free = RadioWithTag(d, "GroupLayoutMode:free");
+                    RadioButton width = RadioWithTag(d, "GroupWidthMode:content");
                     ComboBox align = ComboWithOption(d, "alternate");
-                    Assert(layout.Visibility == Visibility.Visible &&
-                        width.Visibility == Visibility.Visible &&
+                    Assert(list.IsChecked == true && grid.IsChecked == false &&
+                        free.IsChecked == false && width.Visibility == Visibility.Visible &&
                         align.Visibility == Visibility.Collapsed,
-                        "Default full-width mode incorrectly shows alignment");
-                    width.SelectedIndex = 1; Drain();
+                        "Default list layout selection or dependent controls are wrong");
+                    width.IsChecked = true; Drain();
                     Assert(align.Visibility == Visibility.Visible,
                         "Content width did not reveal alignment");
                     align.SelectedIndex = 3;
-                    layout.SelectedIndex = 1; Drain();
+                    grid.IsChecked = true; Drain();
                     Assert(width.Visibility == Visibility.Collapsed &&
                         align.Visibility == Visibility.Collapsed,
-                        "Compact grid still shows irrelevant controls");
+                        "Automatic grid still shows irrelevant controls");
+                    list.IsChecked = true; Drain();
+                    Assert(width.IsChecked == true && align.SelectedIndex == 3 &&
+                        align.Visibility == Visibility.Visible,
+                        "Switching back to list lost unsaved width/alignment choices");
+                    grid.IsChecked = true; Drain();
                     Click(ButtonNamed(d, "Сохранить"));
                 };
                 Call(w, "ShowSettings");
@@ -1905,6 +1933,19 @@ public static class Package6Tests
                 Assert(saved.GroupLayoutMode == "grid" && saved.GroupWidthMode == "content" &&
                     saved.GroupAlignment == "alternate",
                     "Group layout selectors were not saved");
+                settings = delegate(Window d) {
+                    RadioButton list = RadioWithTag(d, "GroupLayoutMode:vertical");
+                    RadioButton grid = RadioWithTag(d, "GroupLayoutMode:grid");
+                    RadioButton width = RadioWithTag(d, "GroupWidthMode:content");
+                    ComboBox align = ComboWithOption(d, "alternate");
+                    Assert(grid.IsChecked == true && width.IsChecked == true &&
+                        align.SelectedIndex == 3, "Saved mode preferences were lost");
+                    list.IsChecked = true; Drain();
+                    Assert(width.Visibility == Visibility.Visible &&
+                        align.Visibility == Visibility.Visible,
+                        "Returning to list did not restore saved dependent settings");
+                };
+                Call(w, "ShowSettings");
             } finally { w.Close(); }
         });
         Console.WriteLine("Package6 scenarios passed=" + passed + "; failed=" + failed);
