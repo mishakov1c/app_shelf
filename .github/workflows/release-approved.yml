@@ -19,7 +19,7 @@ jobs:
       contents: write
     steps:
       - name: Check out reviewed main commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Verify release metadata and extract notes
         shell: pwsh
