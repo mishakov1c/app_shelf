@@ -4613,7 +4613,7 @@ namespace AppShelf
             license.Click += delegate
             {
                 try { Process.Start(new ProcessStartInfo(
-                    "https://github.com/mishakov1c/app_shelf/blob/main/LICENSE")
+                    "https://github.com/mishakov1c/app_shelf_clean/blob/main/LICENSE")
                     { UseShellExecute = true }); }
                 catch (Exception ex) { ShowError("Не удалось открыть лицензию.", ex); }
             };
@@ -4621,7 +4621,7 @@ namespace AppShelf
             Button repository = ActionButton("GitHub", false);
             repository.Click += delegate
             {
-                try { Process.Start(new ProcessStartInfo("https://github.com/mishakov1c/app_shelf")
+                try { Process.Start(new ProcessStartInfo("https://github.com/mishakov1c/app_shelf_clean")
                     { UseShellExecute = true }); }
                 catch (Exception ex) { ShowError("Не удалось открыть репозиторий.", ex); }
             };
