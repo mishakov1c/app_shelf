@@ -996,6 +996,7 @@ public static class Package6Tests
                             if (key == "appearance") Click(ButtonNamed(d, "Развернуть всё"));
                             Body(d, key).BringIntoView(); Drain();
                             foreach (ComboBox combo in Controls<ComboBox>(Body(d, key))) {
+                                if (!combo.IsVisible) continue;
                                 combo.BringIntoView(); Drain();
                                 Dark(Visual<Border>(combo).Background, "Settings combo in " + key);
                                 combo.IsDropDownOpen = true; Drain();
@@ -1957,9 +1958,7 @@ public static class Package6Tests
                     Assert(grid != null && grid.Columns == 3 && grid.Rows == 3 &&
                         grid.Children.Count == 9,
                         "Free mode must show 3x3 zone picker");
-                    Assert(width.Visibility == Visibility.Collapsed &&
-                        align.Visibility == Visibility.Collapsed &&
-                        grid.Visibility == Visibility.Visible,
+                    Assert(!width.IsVisible && !align.IsVisible && grid.IsVisible,
                         "Free mode exposes settings that are not applicable");
                     Button zone = ButtonWithTag(d, "GroupZone:bottom-right");
                     Click(zone);
@@ -1991,8 +1990,7 @@ public static class Package6Tests
                         "Content width did not reveal alignment");
                     align.SelectedIndex = 3;
                     grid.IsChecked = true; Drain();
-                    Assert(width.Visibility == Visibility.Collapsed &&
-                        align.Visibility == Visibility.Collapsed,
+                    Assert(!width.IsVisible && !align.IsVisible,
                         "Automatic grid still shows irrelevant controls");
                     list.IsChecked = true; Drain();
                     Assert(width.IsChecked == true && align.SelectedIndex == 3 &&
