@@ -2,11 +2,13 @@
 // At release preparation, update the version AND the matching release notes below.
 // The About dialog reads only metadata embedded in the compiled executable.
 using System.Reflection;
-[assembly: AssemblyVersion("2.19.3.0")]
-[assembly: AssemblyFileVersion("2.19.3.0")]
-[assembly: AssemblyInformationalVersion("2.19.3")]
-[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.19.3")]
+[assembly: AssemblyVersion("2.20.0.0")]
+[assembly: AssemblyFileVersion("2.20.0.0")]
+[assembly: AssemblyInformationalVersion("2.20.0")]
+[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.20.0")]
 [assembly: AssemblyMetadata("AppShelf.ReleaseNotes",
-    "Обычные окна подтверждений, предупреждений и сообщений теперь оформлены в тёмном стиле AppShelf.\n" +
-    "Сохранены существующие тексты и действия; критические системные ошибки запуска остались стандартными.\n" +
-    "Механизм скачивания и установки обновлений не изменён.")]
+    "Настройки: шесть основных разделов; «Нижняя панель» перенесена во «Внешний вид».\n" +
+    "Во «Внешнем виде» появились подразделы «Плитки и группы», «Фон главного окна» и «Нижняя панель».\n" +
+    "Напоминания: у каждого одновременного срабатывания свои «Готово» и кнопки отложения.\n" +
+    "Закрытие окна не подтверждает оставшиеся напоминания — они сохраняются до следующего запуска.\n" +
+    "Существующие настройки, быстрые переключатели и расписания повторов сохранены.")]
