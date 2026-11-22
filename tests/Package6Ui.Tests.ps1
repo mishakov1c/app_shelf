@@ -1162,12 +1162,13 @@ public static class Package6Tests
                     Assert(ButtonNamed(d, "Сохранить").IsVisible, "Pinned save unavailable");
                 };
                 Call(w, "ShowSettings");
-                Assert(Load().SettingsLastSection == "appearance",
-                    "Last main settings section was not persisted");
+                Assert(Load().SettingsLastSection == "panel",
+                    "Nested Bottom panel navigation was not persisted");
                 settings = delegate(Window d) {
                     Assert(Body(d, "appearance").Visibility == Visibility.Visible &&
-                        Body(d, "network").Visibility == Visibility.Collapsed,
-                        "Reopen ignored last main section");
+                        Body(d, "network").Visibility == Visibility.Collapsed &&
+                        Body(d, "appearance-panel").Visibility == Visibility.Visible,
+                        "Reopen ignored the saved Bottom panel subsection");
                     Assert(Controls<CheckBox>(Body(d, "appearance-tiles")).Contains(Check(d, "Группировка приложений")) &&
                         Controls<CheckBox>(Body(d, "windows")).Contains(Check(d, "Не давать простаивать")) &&
                         Controls<CheckBox>(Body(d, "network")).Contains(Check(d, "Показывать сетевые проверки")) &&
@@ -1189,6 +1190,28 @@ public static class Package6Tests
                         Body(d, "appearance-panel").Visibility == Visibility.Visible &&
                         Body(d, "appearance-tiles").Visibility == Visibility.Collapsed,
                         "Legacy panel section was not mapped to its Appearance subsection");
+                };
+                Call(w, "ShowSettings");
+                Assert(Load().SettingsLastSection == "panel",
+                    "Legacy panel navigation was needlessly rewritten");
+            } finally { w.Close(); }
+        });
+        Case("appearance background subsection is remembered", delegate {
+            Seed("normal", 1); MainWindow w = Open(); try {
+                settings = delegate(Window d) {
+                    Click(Section(d, "appearance-background"));
+                    Assert(Body(d, "appearance-background").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-tiles").Visibility == Visibility.Collapsed,
+                        "Background subsection did not expand");
+                };
+                Call(w, "ShowSettings");
+                Assert(Load().SettingsLastSection == "appearance-background",
+                    "Background subsection preference was not saved");
+                settings = delegate(Window d) {
+                    Assert(Body(d, "appearance").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-background").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-panel").Visibility == Visibility.Collapsed,
+                        "Saved background subsection was not restored");
                 };
                 Call(w, "ShowSettings");
             } finally { w.Close(); }
