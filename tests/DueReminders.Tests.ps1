@@ -250,8 +250,8 @@ public static class DueReminderTests
             Assert(Load().Reminders[1].PendingAlert,
                 "New history occurrence was acknowledged before user dismissed the alert");
             alert.Close();
-            Assert(!Load().Reminders[1].PendingAlert,
-                "Dismissing the alert did not durably acknowledge the occurrence");
+            Assert(Load().Reminders[1].PendingAlert,
+                "Closing the shared alert silently acknowledged an unfinished occurrence");
             Console.WriteLine("PASS: hidden startup 40 minutes late shows actual WPF notification");
         }
         finally { window.Close(); }
@@ -292,8 +292,8 @@ public static class DueReminderTests
             Assert(Load().Reminders.Count == 2,
                 "Recovery created a second history occurrence");
             recovered.Close();
-            Assert(!Load().Reminders[1].PendingAlert,
-                "Recovered alert was not acknowledged when dismissed");
+            Assert(Load().Reminders[1].PendingAlert,
+                "Closing the recovered window should retain the unfinished occurrence");
         }
         finally { second.Close(); }
 
@@ -304,12 +304,29 @@ public static class DueReminderTests
             third.Show();
             third.Dispatcher.Invoke(DispatcherPriority.Loaded, new Action(delegate { }));
             Start(third);
-            Assert(Get(third, "_reminderAlertWindow") == null &&
+            Window replayed = (Window)Get(third, "_reminderAlertWindow");
+            Assert(replayed != null && replayed.IsVisible &&
                 Load().Reminders.Count == 2,
-                "Acknowledged alert unexpectedly returned after restart");
+                "Closing the alert did not preserve its replay on the next restart");
+            // The occurrence has its own ID; the recurring parent stays scheduled.
+            Acknowledge(third, new List<string> { Load().Reminders[1].Id });
+            Assert(!Load().Reminders[1].PendingAlert,
+                "Explicit acknowledgement did not persist");
         }
         finally { third.Close(); }
-        Console.WriteLine("PASS: shutdown without acknowledgement replays exactly one alert");
+        MainWindow fourth = new MainWindow(true);
+        Set(fourth, "_networkTimer", new DispatcherTimer());
+        try
+        {
+            fourth.Show();
+            fourth.Dispatcher.Invoke(DispatcherPriority.Loaded, new Action(delegate { }));
+            Start(fourth);
+            Assert(Get(fourth, "_reminderAlertWindow") == null &&
+                Load().Reminders.Count == 2,
+                "Explicitly acknowledged alert returned on the next restart");
+        }
+        finally { fourth.Close(); }
+        Console.WriteLine("PASS: closing a reminder preserves it until explicit acknowledgement");
     }
 
     public static void Run()
