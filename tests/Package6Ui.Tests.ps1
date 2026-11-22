@@ -1758,6 +1758,26 @@ public static class Package6Tests
                         "Grid card overflows after shrinking the window");
             } finally { w.Close(); }
         });
+        Case("collapsed groups shrink and expand in compact grid", delegate {
+            Seed("normal", 6);
+            AppConfig c = Load();
+            c.GroupLayoutMode = "grid";
+            c.GroupWidthMode = "content";
+            ConfigStore.Save(c);
+            MainWindow w = Open(); try {
+                w.Width = 1000; Drain();
+                StackPanel host = (StackPanel)Get(w, "_tileHost");
+                WrapPanel grid = (WrapPanel)host.Children[0];
+                Border first = (Border)grid.Children[0];
+                Expander section = (Expander)first.Child;
+                double expanded = first.Width;
+                section.IsExpanded = false; Drain();
+                Assert(first.Width < expanded, "Collapsed grid group retained hidden tile width");
+                section.IsExpanded = true; Drain();
+                Assert(Math.Abs(first.Width - expanded) < 0.5,
+                    "Reexpanded grid group did not restore tile-sized width");
+            } finally { w.Close(); }
+        });
         Case("group layout settings hide inapplicable controls and persist choices", delegate {
             Seed("normal", 1);
             MainWindow w = Open(); try {
