@@ -244,7 +244,13 @@ public static class ReminderEditingTests
                 }
             }
             Click(snooze);
-            Click(snooze);
+            Button otherSnooze = Controls<Button>(alert).Find(delegate(Button button)
+            {
+                return !Object.ReferenceEquals(button, snooze) &&
+                    Convert.ToString(button.Content).StartsWith("10 ", StringComparison.Ordinal);
+            });
+            Assert(otherSnooze != null, "Other pending reminder lost its own snooze action");
+            Click(otherSnooze);
             Assert(Live(window).Reminders.Count == 4, "Snooze created a duplicate row");
             foreach (ReminderItem occurrence in Live(window).Reminders.GetRange(2, 2))
             {
