@@ -926,11 +926,25 @@ namespace AppShelf
             request.UserAgent = "AppShelf/" + appVersion +
                 " (+https://github.com/mishakov1c/app_shelf/issues)";
             request.Accept = "application/json";
-            // Open-Meteo's deflate responses can trigger a .NET Framework decompression error
-            // ("Длина блока не соответствует дополнению"). Current-weather JSON is small,
-            // so request an uncompressed response instead of touching TLS or certificates.
-            request.AutomaticDecompression = DecompressionMethods.None;
-            request.Headers[HttpRequestHeader.AcceptEncoding] = "identity";
+            bool metNorway = String.Equals(request.RequestUri.Host, "api.met.no",
+                StringComparison.OrdinalIgnoreCase);
+            if (metNorway)
+            {
+                // MET Norway requires redirect and gzip/deflate support. The framework
+                // advertises both encodings and decodes the response before JSON parsing.
+                request.AllowAutoRedirect = true;
+                request.MaximumAutomaticRedirections = 5;
+                request.AutomaticDecompression =
+                    DecompressionMethods.GZip | DecompressionMethods.Deflate;
+            }
+            else
+            {
+                // Open-Meteo's deflate responses caused a .NET Framework decompression
+                // error ("Длина блока не соответствует дополнению"). Preserve the
+                // working uncompressed request for both its forecast and geocoding.
+                request.AutomaticDecompression = DecompressionMethods.None;
+                request.Headers[HttpRequestHeader.AcceptEncoding] = "identity";
+            }
             request.Timeout = WeatherTimeoutMilliseconds;
             request.ReadWriteTimeout = WeatherTimeoutMilliseconds;
             bool retryTls = false;
@@ -941,6 +955,11 @@ namespace AppShelf
                     using (WebResponse response = request.GetResponse())
                     using (Stream stream = response.GetResponseStream())
                     {
+                        // .NET Framework may follow HTTPS -> HTTP redirects; never use
+                        // an unencrypted final response for a MET Norway request.
+                        if (metNorway && (response.ResponseUri == null ||
+                            response.ResponseUri.Scheme != Uri.UriSchemeHttps))
+                            throw new InvalidDataException(stage + ": ответ получен не по HTTPS.");
                         if (stream == null) throw new InvalidDataException(stage + ": пустой ответ сервера.");
                         if (response.ContentLength > MaxWeatherJsonBytes)
                             throw new InvalidDataException(stage + ": JSON превышает лимит 2 МиБ.");
@@ -970,7 +989,10 @@ namespace AppShelf
                                     error, WebExceptionStatus.ReceiveFailure, null);
                             }
                             token.ThrowIfCancellationRequested();
-                            if (response.ContentLength >= 0 && json.Length < response.ContentLength)
+                            // Content-Length is measured on the HTTP wire. For compressed
+                            // MET responses it cannot be compared to decompressed JSON.
+                            if (!metNorway && response.ContentLength >= 0 &&
+                                json.Length < response.ContentLength)
                                 throw new WebException(stage + ": соединение закрыто до получения полного JSON.",
                                     WebExceptionStatus.ConnectionClosed);
                             json.Position = 0;
