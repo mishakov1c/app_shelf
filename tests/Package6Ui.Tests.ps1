@@ -1723,6 +1723,10 @@ public static class Package6Tests
                 Assert(Load().GroupAlignmentOverrides["Вторая"] == "right" &&
                     second.HorizontalAlignment == HorizontalAlignment.Right,
                     "Per-group context menu did not persist/reflow the new alignment");
+                OpenMenu(alignment);
+                Assert(Menu(alignment, "Справа").IsChecked &&
+                    !Menu(alignment, "По центру").IsChecked,
+                    "Individual alignment checkmark became stale after changing it");
                 Click(Menu(alignment, "По общему правилу"));
                 Assert(Load().GroupAlignmentOverrides == null &&
                     second.HorizontalAlignment == HorizontalAlignment.Right,
