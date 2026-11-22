@@ -1919,7 +1919,7 @@ public static class Package6Tests
             c.GroupLayoutMode = "free";
             c.GroupDefaultZone = "top-left";
             c.GroupZoneOverrides = new Dictionary<string, string> {
-                { "Вторая", "bottom-right" }
+                { "Вторая", "bottom-left" }
             };
             ConfigStore.Save(c);
             MainWindow w = Open(); try {
@@ -1929,7 +1929,7 @@ public static class Package6Tests
                 Dictionary<string, StackPanel> zones =
                     (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
                 Border upper = (Border)zones["top-left"].Children[0];
-                Border lower = (Border)zones["bottom-right"].Children[0];
+                Border lower = (Border)zones["bottom-left"].Children[0];
                 Assert(board.RowDefinitions[0].Height.IsAuto &&
                     board.RowDefinitions[1].Height.IsStar &&
                     board.RowDefinitions[2].Height.IsAuto,
