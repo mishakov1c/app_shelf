@@ -1035,7 +1035,7 @@ namespace AppShelf
                             if (metNorway)
                                 MetHttpResponseCache.Save(url, json.ToArray(),
                                     response.Headers[HttpResponseHeader.LastModified],
-                                    response.Headers[HttpResponseHeader.Expires], cachedMet);
+                                    response.Headers[HttpResponseHeader.Expires], null);
                             return result;
                         }
                     }
