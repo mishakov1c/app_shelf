@@ -10,7 +10,8 @@ $env:APPSHELF_TEST_DATA = $testRoot
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+        if ($Baseline -and $file -in @('AppUpdate.cs','AppUpdateWindow.cs')) { continue }
         $source = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($Baseline -and $file -in @('Collections.cs','CollectionsWindow.cs')) { continue }
         if ($Baseline -and $file -eq 'Reminders.cs') {

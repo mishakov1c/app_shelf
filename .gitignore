@@ -17,6 +17,7 @@ publish/
 artifacts/
 TestResults/
 *.exe
+AppShelf.exe.previous
 *.dll
 *.pdb
 *.ilk

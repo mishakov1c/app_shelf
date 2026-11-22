@@ -2,13 +2,13 @@
 // At release preparation, update the version AND the matching release notes below.
 // The About dialog reads only metadata embedded in the compiled executable.
 using System.Reflection;
-[assembly: AssemblyVersion("2.19.0.0")]
-[assembly: AssemblyFileVersion("2.19.0.0")]
-[assembly: AssemblyInformationalVersion("2.19.0")]
-[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.19.0")]
+[assembly: AssemblyVersion("2.19.1.0")]
+[assembly: AssemblyFileVersion("2.19.1.0")]
+[assembly: AssemblyInformationalVersion("2.19.1")]
+[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.19.1")]
 [assembly: AssemblyMetadata("AppShelf.ReleaseNotes",
-    "Фон главного окна теперь продолжается под нижней панелью.\n" +
-    "Непрозрачность нижней панели настраивается в разделе «Внешний вид» (0–100%).\n" +
-    "Строка состояния остаётся читаемой на светлых фонах благодаря отдельной подложке.\n" +
-    "Сообщения автоматически сменяются подсказками через 5 секунд.\n" +
-    "Кнопка «Подробнее» в компактном режиме выравнивается по высоте карточек.")]
+    "Добавлена ручная проверка новых версий через GitHub Releases.\n" +
+    "Обновление скачивается с проверкой размера, SHA-256 и версии EXE.\n" +
+    "Предыдущий EXE сохраняется для отката при установке.\n" +
+    "Добавлены сведения о GPL-3.0-only и атрибуция погодных источников.\n" +
+    "Улучшена поддержка MET Norway: сжатие, HTTPS-перенаправления и HTTP-кеш.")]
