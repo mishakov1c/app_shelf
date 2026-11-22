@@ -1931,9 +1931,20 @@ public static class Package6Tests
                 Border upper = (Border)zones["top-left"].Children[0];
                 Border lower = (Border)zones["bottom-left"].Children[0];
                 Assert(board.RowDefinitions[0].Height.IsAuto &&
-                    board.RowDefinitions[1].Height.IsStar &&
+                    board.RowDefinitions[1].Height.IsAuto &&
                     board.RowDefinitions[2].Height.IsAuto,
-                    "Free board must size top/bottom by content and stretch only the middle");
+                    "Free board rows must measure natural group heights under ScrollViewer");
+                double viewportHeight = viewport.ActualHeight -
+                    viewport.Padding.Top - viewport.Padding.Bottom;
+                List<Border> cells = (List<Border>)Get(w, "_freeZoneCells");
+                double topHeight = 0, bottomHeight = 0;
+                for (int i = 0; i < cells.Count; i++) {
+                    if (i < 3) topHeight = Math.Max(topHeight, cells[i].DesiredSize.Height);
+                    if (i >= 6) bottomHeight = Math.Max(bottomHeight, cells[i].DesiredSize.Height);
+                }
+                double expectedMiddle = Math.Max(26, viewportHeight - topHeight - bottomHeight);
+                Assert(Math.Abs(board.RowDefinitions[1].MinHeight - expectedMiddle) < 2,
+                    "Middle row did not reserve the actual remaining viewport height");
                 Assert(lower.ActualHeight > viewport.ViewportHeight / 3.0 &&
                     upper.ActualHeight + lower.ActualHeight + 42 < viewport.ViewportHeight,
                     "Free board test fixture must fit overall but overflow a fixed third");
@@ -1956,7 +1967,8 @@ public static class Package6Tests
                 Assert(board.RowDefinitions[1].Height.IsAuto,
                     "Narrow nine-zone layout must restore content-sized list rows");
                 w.Width = 1500; Drain();
-                Assert(board.RowDefinitions[1].Height.IsStar &&
+                Assert(board.RowDefinitions[1].Height.IsAuto &&
+                    board.RowDefinitions[1].MinHeight > 26 &&
                     viewport.ScrollableHeight <= 1.5,
                     "Wide free layout did not restore adaptive middle space");
             } finally { w.Close(); }
