@@ -4289,7 +4289,11 @@ namespace AppShelf
                 _groupLayoutCards.Count == 0) return;
             // Reserve scrollbar room even while hidden: otherwise the scrollbar
             // appearing may alter wrapping and oscillate around the threshold.
-            double available = _tilesScroller.ActualWidth - _tilesScroller.Padding.Left -
+            double outerWidth = _tilesScroller.ActualWidth;
+            if (Double.IsNaN(outerWidth) || outerWidth <= 1)
+                outerWidth = !Double.IsNaN(ActualWidth) && ActualWidth > 1
+                    ? ActualWidth : Width;
+            double available = outerWidth - _tilesScroller.Padding.Left -
                 _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
             if (Double.IsNaN(available) || Double.IsInfinity(available) || available <= 1) return;
 
