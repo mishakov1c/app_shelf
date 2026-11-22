@@ -1947,7 +1947,10 @@ public static class Package6Tests
                     "Middle row did not reserve the actual remaining viewport height");
                 Assert(lower.ActualHeight > viewport.ViewportHeight / 3.0 &&
                     upper.ActualHeight + lower.ActualHeight + 42 < viewport.ViewportHeight,
-                    "Free board test fixture must fit overall but overflow a fixed third");
+                    "Free board test fixture must fit overall but overflow a fixed third: " +
+                    "top=" + upper.ActualHeight + ", bottom=" + lower.ActualHeight +
+                    ", viewport=" + viewport.ViewportHeight + ", grid=" + board.ActualHeight +
+                    ", scrollable=" + viewport.ScrollableHeight);
                 Assert(viewport.ScrollableHeight <= 1.5,
                     "Free layout scrolls although its groups fit in the viewport");
                 Point lowerBottom = lower.TranslatePoint(new Point(0, lower.ActualHeight), board);
