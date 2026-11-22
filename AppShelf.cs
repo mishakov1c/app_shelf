@@ -6312,8 +6312,14 @@ namespace AppShelf
             };
             // Old profiles used a separate main "panel" section. Keep the
             // user's last destination, now nested under "appearance".
-            bool fromLegacyPanel = _config.SettingsLastSection == "panel";
-            string lastSection = fromLegacyPanel ? "appearance" : _config.SettingsLastSection;
+            string savedSection = _config.SettingsLastSection;
+            string lastAppearance = savedSection == "panel" || savedSection == "appearance-panel"
+                ? "appearance-panel" : savedSection == "appearance-background"
+                ? "appearance-background" : "appearance-tiles";
+            string lastSection = savedSection == "panel" ||
+                savedSection == "appearance-panel" ||
+                savedSection == "appearance-background" || savedSection == "appearance-tiles"
+                ? "appearance" : savedSection;
             if (lastSection != "network" && lastSection != "weather" &&
                 lastSection != "time" && lastSection != "windows" &&
                 lastSection != "appearance" && lastSection != "data")
@@ -6366,6 +6372,7 @@ namespace AppShelf
                 {
                     appearanceBodies[key].Visibility = Visibility.Visible;
                     SetSettingsArrow(appearanceArrows[key], true);
+                    lastAppearance = key;
                 }
                 refreshAppearanceHeadings();
             };
@@ -6401,9 +6408,8 @@ namespace AppShelf
                 bottomPanelItems, appearanceBodies, appearanceArrows,
                 appearanceHeaders, toggleAppearance);
 
-            string firstAppearance = fromLegacyPanel ? "appearance-panel" : "appearance-tiles";
-            appearanceBodies[firstAppearance].Visibility = Visibility.Visible;
-            SetSettingsArrow(appearanceArrows[firstAppearance], true);
+            appearanceBodies[lastAppearance].Visibility = Visibility.Visible;
+            SetSettingsArrow(appearanceArrows[lastAppearance], true);
             refreshAppearanceHeadings();
 
             Button expandAll = ActionButton("Развернуть всё", false);
@@ -6506,6 +6512,14 @@ namespace AppShelf
             buttons.Children.Add(ok);
             buttons.Children.Add(cancel);
             bool? savedSettings = dialog.ShowDialog();
+            // The existing navigation preference holds the last Appearance
+            // subsection too, without introducing another apps.json field.
+            // "panel" remains the canonical value for the historical panel view.
+            string selectedSettingsSection = lastSection == "appearance"
+                ? lastAppearance == "appearance-panel" ? "panel"
+                    : lastAppearance == "appearance-background" ? "appearance-background"
+                    : "appearance"
+                : lastSection;
             // Restore before applying the saved configuration; Cancel and failed saves
             // must never leave preview-only changes on the main window.
             if (_mainBackgroundHost != null)
@@ -6560,7 +6574,7 @@ namespace AppShelf
                 pending.ShowCountdownTimer = countdown.IsChecked == true;
                 pending.ShowCollections = collectionsSetting.IsChecked == true;
                 pending.RdpKeepAwake = rdp.IsChecked == true;
-                pending.SettingsLastSection = lastSection;
+                pending.SettingsLastSection = selectedSettingsSection;
                 pending.GroupingEnabled = groupingSetting.IsChecked == true;
                 pending.AlwaysOnTop = topmostSetting.IsChecked == true;
                 pending.TileDisplayMode = (string)((ComboBoxItem)tileSetting.SelectedItem).Tag;
@@ -6648,11 +6662,11 @@ namespace AppShelf
                 if (changedCity || changedProvider || _config.ShowWeather != _weatherSettingsVisible || _config.ShowWeather)
                     RefreshWeather();
             }
-            else if (_canSave && _config.SettingsLastSection != lastSection)
+            else if (_canSave && _config.SettingsLastSection != selectedSettingsSection)
             {
                 // A navigation preference is independent of edits cancelled in the dialog.
                 AppConfig navigation = _config.Copy();
-                navigation.SettingsLastSection = lastSection;
+                navigation.SettingsLastSection = selectedSettingsSection;
                 SaveConfigChanges(navigation, false);
             }
             }
