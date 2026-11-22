@@ -4279,8 +4279,11 @@ namespace AppShelf
             const double chrome = 38; // Group border/padding and drop-zone padding.
             int columns = Math.Min(Math.Max(1, itemCount),
                 Math.Max(1, (int)Math.Floor(Math.Max(1, available - chrome) / tileWidth)));
+            // Empty groups need a larger visible drop target; nonempty cards
+            // may hug their last tile with only modest room for the header.
+            double minimum = itemCount == 0 ? 190 : 168;
             return Math.Max(1, Math.Min(available,
-                Math.Max(190, Math.Ceiling(columns * tileWidth + chrome))));
+                Math.Max(minimum, Math.Ceiling(columns * tileWidth + chrome))));
         }
 
         private void UpdateGroupWidths()
