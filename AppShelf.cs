@@ -4441,8 +4441,10 @@ namespace AppShelf
                 hint.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         }
 
-        // Nine independent drop targets; on narrow screens arrange them in a
-        // vertical list rather than clip cards or introduce horizontal scrolling.
+        // Nine independent drop targets. On a wide viewport, top and bottom
+        // rows take their actual card heights while the middle row absorbs the
+        // spare space. The ScrollViewer scrolls only when the content truly
+        // exceeds its viewport. Narrow windows keep all nine zones in a list.
         private void UpdateFreeBoardLayout(double available)
         {
             if (_freeLayoutGrid == null) return;
@@ -4465,9 +4467,11 @@ namespace AppShelf
                     col == 1 ? HorizontalAlignment.Center : HorizontalAlignment.Right;
                 stack.VerticalAlignment = narrow || row == 0 ? VerticalAlignment.Top :
                     row == 1 ? VerticalAlignment.Center : VerticalAlignment.Bottom;
-                _freeLayoutGrid.RowDefinitions[i].MinHeight =
-                    narrow ? (stack.Children.Count == 0 ? 26 : 70) :
-                    i < 3 ? Math.Max(90, viewportHeight / 3) : 0;
+                RowDefinition definition = _freeLayoutGrid.RowDefinitions[i];
+                definition.Height = !narrow && i == 1
+                    ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
+                definition.MinHeight = narrow ? (stack.Children.Count == 0 ? 26 : 70) :
+                    i == 1 ? 26 : 0;
             }
         }
 
