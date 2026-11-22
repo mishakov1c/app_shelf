@@ -37,7 +37,10 @@ try {
             if ($text.Split(@($storage), [StringSplitOptions]::None).Length -ne 2) { throw 'Data isolation anchor missing.' }
             $text = $text.Replace($storage, 'Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"')
             $start = $text.IndexOf('        private static async Task<T> ReadJson<T>')
-            $end = $text.IndexOf('        private static T ReadJsonWorker<T>', $start)
+            # Preserve the HTTP-cache parser inserted between ReadJson and ReadJsonWorker.
+            # Older baseline sources do not have it; keep their original boundary.
+            $end = $text.IndexOf('        private static T ParseMetCachedJson<T>', $start)
+            if ($end -lt 0) { $end = $text.IndexOf('        private static T ReadJsonWorker<T>', $start) }
             if ($start -lt 0 -or $end -le $start) { throw 'JSON interception anchor missing.' }
             $jsonMethod = @'
         private static Task<T> ReadJson<T>(string url, string stage, bool allowTlsRetry = true)
