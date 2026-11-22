@@ -25,6 +25,9 @@ namespace AppShelf
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "AppShelf", "Updates");
 
+        // DataContractJsonSerializer assigns these fields via reflection.
+        // The test harness treats compiler warnings as errors (CS0649).
+#pragma warning disable 0649
         [DataContract]
         private sealed class GithubRelease
         {
@@ -43,6 +46,7 @@ namespace AppShelf
             [DataMember(Name = "digest")] public string Digest;
             [DataMember(Name = "browser_download_url")] public string DownloadUrl;
         }
+#pragma warning restore 0649
 
         internal sealed class Release
         {
