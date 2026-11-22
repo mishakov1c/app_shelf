@@ -83,6 +83,8 @@ namespace AppShelf
         {
             AppConfig copy = (AppConfig)MemberwiseClone();
             copy.Groups = new List<string>(Groups);
+            copy.GroupAlignmentOverrides = GroupAlignmentOverrides == null ? null :
+                new Dictionary<string, string>(GroupAlignmentOverrides, StringComparer.OrdinalIgnoreCase);
             copy.SnoozeQuickMinutes = SnoozeQuickMinutes == null ? null : (int[])SnoozeQuickMinutes.Clone();
             copy.BottomPanelFavorites = BottomPanelFavorites == null ? null : new List<string>(BottomPanelFavorites);
             copy.BottomPanelCategories = BottomPanelCategories == null ? null : new List<string>(BottomPanelCategories);
@@ -115,6 +117,21 @@ namespace AppShelf
 
         [DataMember(Name = "groupingEnabled", EmitDefaultValue = false)]
         public bool GroupingEnabled;
+
+        // Optional group layout; missing fields retain the original full-width,
+        // vertically stacked appearance of existing apps.json profiles.
+        [DataMember(Name = "groupWidthMode", EmitDefaultValue = false)]
+        public string GroupWidthMode;
+
+        [DataMember(Name = "groupLayoutMode", EmitDefaultValue = false)]
+        public string GroupLayoutMode;
+
+        [DataMember(Name = "groupAlignment", EmitDefaultValue = false)]
+        public string GroupAlignment;
+
+        // Only non-default overrides are stored, keyed by the group's name.
+        [DataMember(Name = "groupAlignmentOverrides", EmitDefaultValue = false)]
+        public Dictionary<string, string> GroupAlignmentOverrides;
 
         [DataMember(Name = "groups")]
         public List<string> Groups = new List<string>();
