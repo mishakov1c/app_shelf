@@ -122,8 +122,8 @@ namespace AppShelf
                     if (dialog.IsVisible)
                     {
                         state.Text = "Не удалось проверить обновления: " + error.Message;
-                        notes.Text = "Проверка доступна после перевода app_shelf в публичный " +
-                            "репозиторий. Для обновления нужен стабильный GitHub Release с AppShelf.exe.";
+                        notes.Text = "Проверьте доступ к GitHub и наличие опубликованного " +
+                            "стабильного Release с AppShelf.exe. Установленная версия не изменена.";
                     }
                 }
                 finally { if (dialog.IsVisible) setBusy(false); }
