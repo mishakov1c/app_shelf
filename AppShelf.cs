@@ -4312,7 +4312,10 @@ namespace AppShelf
                     {
                         // Reserve the right gap between cards only in grid mode.
                         double limit = Math.Max(1, available - (grid ? 9 : 0));
-                        double width = NaturalGroupWidth(group.TileCount, limit);
+                        // Collapsed groups have no visible tiles; keep only a small drop target.
+                        Expander expander = card.Child as Expander;
+                        int visibleTiles = expander != null && !expander.IsExpanded ? 0 : group.TileCount;
+                        double width = NaturalGroupWidth(visibleTiles, limit);
                         if (Double.IsNaN(card.Width) || Math.Abs(card.Width - width) > 0.5)
                             card.Width = width;
                         string align = grid ? "left" : GroupAlignmentFor(group.Group, group.Position);
@@ -4519,6 +4522,8 @@ namespace AppShelf
                     headerPanel.Children.Add(heading);
                     section.Header = headerPanel;
                     section.Content = zone;
+                    section.Expanded += delegate { UpdateGroupWidths(); };
+                    section.Collapsed += delegate { UpdateGroupWidths(); };
                     section.Tag = new GroupDropTarget(group, zone);
                     section.AllowDrop = true;
                     Border groupCard = new Border
