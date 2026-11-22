@@ -144,6 +144,10 @@ public static class IndependentAudit
         foreach (Button b in Controls<Button>(client))
         {
             if (!b.IsVisible) continue;
+            // Alert rows now scroll independently: validate buttons after bringing
+            // each one into the viewport rather than rejecting offscreen rows.
+            b.BringIntoView();
+            w.Dispatcher.Invoke(DispatcherPriority.ApplicationIdle, new Action(delegate { }));
             Rect r = b.TransformToAncestor(viewport).TransformBounds(new Rect(b.RenderSize));
             Assert(r.Top >= -0.5 && r.Bottom <= viewport.ActualHeight + 0.5 &&
                 r.Left >= -0.5 && r.Right <= viewport.ActualWidth + 0.5,
