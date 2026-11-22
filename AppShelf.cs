@@ -22,6 +22,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -918,7 +919,12 @@ namespace AppShelf
             token.ThrowIfCancellationRequested();
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.Method = "GET";
-            request.UserAgent = "AppShelf/2.5 (personal Windows desktop weather widget)";
+            Version version = typeof(WeatherClient).Assembly.GetName().Version;
+            string appVersion = version == null ? "unknown" :
+                version.Major + "." + version.Minor + "." + version.Build;
+            // Public Issues URL provides a project contact without exposing a personal email.
+            request.UserAgent = "AppShelf/" + appVersion +
+                " (+https://github.com/mishakov1c/app_shelf/issues)";
             request.Accept = "application/json";
             // Open-Meteo's deflate responses can trigger a .NET Framework decompression error
             // ("Длина блока не соответствует дополнению"). Current-weather JSON is small,
@@ -1107,6 +1113,7 @@ namespace AppShelf
         private readonly StackPanel _details;
         private readonly TextBlock _location;
         private readonly TextBlock _source;
+        private readonly TextBlock _credits;
         private static readonly Brush ForegroundBrush = FluentUi.Foreground;
         private static readonly Brush Muted = FluentUi.Secondary;
         private static readonly Brush Surface = FluentUi.Surface;
@@ -1116,6 +1123,19 @@ namespace AppShelf
         {
             return new TextBlock { Text = text, FontSize = size, Foreground = brush,
                 VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+        }
+
+        private static void AddCreditLink(TextBlock target, string label, string url)
+        {
+            Hyperlink link = new Hyperlink(new Run(label));
+            link.Foreground = FluentUi.Accent;
+            link.NavigateUri = new Uri(url);
+            link.Click += delegate
+            {
+                try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+                catch (Exception ex) { ConfigStore.Log(ex); }
+            };
+            target.Inlines.Add(link);
         }
 
         public WeatherForecastWindow(Action refresh, Action changeCity)
@@ -1150,6 +1170,9 @@ namespace AppShelf
             layout.Children.Add(bottom);
             _source = Label("Источник погоды", 11, Muted);
             bottom.Children.Add(_source);
+            _credits = Label("", 11, Muted);
+            _credits.Margin = new Thickness(0, 5, 0, 0);
+            bottom.Children.Add(_credits);
             WrapPanel controls = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right,
                 Margin = new Thickness(0, 9, 0, 0) };
             bottom.Children.Add(controls);
@@ -1186,6 +1209,27 @@ namespace AppShelf
         public void UpdateForecast(WeatherSnapshot snapshot, string city, string error, bool pending, bool saved = false)
         {
             _details.Children.Clear();
+            _credits.Inlines.Clear();
+            _credits.Visibility = snapshot == null ? Visibility.Collapsed : Visibility.Visible;
+            if (snapshot != null)
+            {
+                bool met = String.Equals(snapshot.Source, "MET Norway", StringComparison.OrdinalIgnoreCase);
+                bool openMeteo = String.Equals(snapshot.Source, "Open-Meteo", StringComparison.OrdinalIgnoreCase);
+                if (met || openMeteo)
+                {
+                    _credits.Inlines.Add(new Run("Погодные данные: "));
+                    AddCreditLink(_credits, snapshot.Source,
+                        met ? "https://api.met.no/" : "https://open-meteo.com/");
+                    _credits.Inlines.Add(new Run(" · "));
+                    AddCreditLink(_credits, "CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/");
+                    if (met)
+                    {
+                        _credits.Inlines.Add(new Run(" / "));
+                        AddCreditLink(_credits, "NLOD 2.0", "https://api.met.no/doc/License");
+                    }
+                    _credits.Inlines.Add(new Run(". AppShelf форматирует и агрегирует прогноз."));
+                }
+            }
             _source.Text = snapshot == null ? "Источник: выбранный в настройках" :
                 "Источник: " + (snapshot.Source ?? "неизвестен") +
                 " · вероятность осадков отображается, только если доступна в ответе" +
@@ -3101,6 +3145,8 @@ namespace AppShelf
                     ? "Ожидается обновление прогноза."
                     : "Не удалось обновить: " + _lastWeatherError + ".")
                 : "Источник: " + _lastWeather.Source + ".") +
+                "\nДанные: " + _lastWeather.Source +
+                " (CC BY 4.0). Прогноз обработан AppShelf; ссылки на лицензии — в окне прогноза." +
                 "\nНажми для прогноза на 7 дней. Правая кнопка — настройки города.";
         }
 
@@ -4563,6 +4609,15 @@ namespace AppShelf
             };
             DockPanel.SetDock(actions, Dock.Bottom);
             root.Children.Add(actions);
+            Button license = ActionButton("Лицензия", false);
+            license.Click += delegate
+            {
+                try { Process.Start(new ProcessStartInfo(
+                    "https://github.com/mishakov1c/app_shelf/blob/main/LICENSE")
+                    { UseShellExecute = true }); }
+                catch (Exception ex) { ShowError("Не удалось открыть лицензию.", ex); }
+            };
+            actions.Children.Add(license);
             Button repository = ActionButton("GitHub", false);
             repository.Click += delegate
             {
@@ -4601,8 +4656,15 @@ namespace AppShelf
             description.TextWrapping = TextWrapping.Wrap;
             header.Children.Add(description);
             TextBlock author = Text("Автор: mishakov1c", 12, MutedBrush);
-            author.Margin = new Thickness(0, 10, 0, 12);
+            author.Margin = new Thickness(0, 10, 0, 8);
             header.Children.Add(author);
+            TextBlock licenseNotice = Text(
+                "© 2026 mishakov1c · GNU GPL v3 (GPL-3.0-only).\n" +
+                "Программа предоставляется без каких-либо гарантий. Полный текст — «Лицензия».",
+                11, MutedBrush);
+            licenseNotice.TextWrapping = TextWrapping.Wrap;
+            licenseNotice.Margin = new Thickness(0, 0, 0, 12);
+            header.Children.Add(licenseNotice);
 
             StackPanel notesContent = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
             scrollContent.Children.Add(notesContent);
@@ -5727,7 +5789,7 @@ namespace AppShelf
             }
             if (weatherProvider.SelectedIndex < 0) weatherProvider.SelectedIndex = 0;
             layout.Children.Add(weatherProvider);
-            TextBlock providerNote = Text("MET Norway и Open-Meteo не требуют API-ключа для личного некоммерческого использования. Доступность сервисов зависит от сети и условий провайдера.", 11, MutedBrush);
+            TextBlock providerNote = Text("MET Norway и Open-Meteo не требуют API-ключа для личного некоммерческого использования. Данные имеют отдельную лицензию CC BY 4.0; источники и ссылки на лицензии указаны в окне прогноза. Для коммерческого использования Open-Meteo нужен соответствующий тариф.", 11, MutedBrush);
             providerNote.TextWrapping = TextWrapping.Wrap;
             providerNote.Margin = new Thickness(0, 0, 0, 12);
             layout.Children.Add(providerNote);
