@@ -6533,31 +6533,53 @@ namespace AppShelf
             {
                 tileScaleValue.Text = FluentUi.NormalizeTileScale((int)Math.Round(tileScaleSlider.Value)) + "%";
             };
-            // Layout controls are hidden when grouping is disabled; the width
-            // and alignment choices are not applicable to the compact grid.
-            TextBlock groupLayoutLabel = Text("Компоновка групп:", 12, MutedBrush);
-            ComboBox groupLayoutSetting = new ComboBox
-            {
-                MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
-                Style = tileSetting.Style
-            };
-            groupLayoutSetting.Items.Add(new ComboBoxItem { Content = "Вертикально", Tag = "vertical" });
-            groupLayoutSetting.Items.Add(new ComboBoxItem { Content = "Компактная сетка", Tag = "grid" });
-            groupLayoutSetting.Items.Add(new ComboBoxItem { Content = "Свободное размещение (9 зон)", Tag = "free" });
+            // Keep the existing JSON settings and layout logic; only their editor changes.
+            TextBlock groupLayoutLabel = Text("Размещение групп:", 12, MutedBrush);
+            groupLayoutLabel.Margin = new Thickness(0, 4, 0, 5);
+            StackPanel groupLayoutChoices = new StackPanel { Margin = new Thickness(4, 0, 0, 0) };
             string activeLayoutMode = NormalizeGroupLayoutMode(_config.GroupLayoutMode);
-            groupLayoutSetting.SelectedIndex =
-                activeLayoutMode == "grid" ? 1 : activeLayoutMode == "free" ? 2 : 0;
+            RadioButton groupLayoutList = new RadioButton
+            {
+                Content = "Список — группы одна под другой", Tag = "GroupLayoutMode:vertical",
+                GroupName = "AppShelfSettingsGroupLayout", IsChecked = activeLayoutMode == "vertical",
+                Foreground = WhiteBrush, Margin = new Thickness(0, 3, 0, 5)
+            };
+            RadioButton groupLayoutGrid = new RadioButton
+            {
+                Content = "Автоматическая сетка — с переносом", Tag = "GroupLayoutMode:grid",
+                GroupName = "AppShelfSettingsGroupLayout", IsChecked = activeLayoutMode == "grid",
+                Foreground = WhiteBrush, Margin = new Thickness(0, 3, 0, 5)
+            };
+            RadioButton groupLayoutFree = new RadioButton
+            {
+                Content = "Свободное размещение — девять зон", Tag = "GroupLayoutMode:free",
+                GroupName = "AppShelfSettingsGroupLayout", IsChecked = activeLayoutMode == "free",
+                Foreground = WhiteBrush, Margin = new Thickness(0, 3, 0, 5)
+            };
+            groupLayoutChoices.Children.Add(groupLayoutList);
+            groupLayoutChoices.Children.Add(groupLayoutGrid);
+            groupLayoutChoices.Children.Add(groupLayoutFree);
+            TextBlock groupModeDescription = Text("", 11, MutedBrush);
+            groupModeDescription.TextWrapping = TextWrapping.Wrap;
+            groupModeDescription.Margin = new Thickness(3, 0, 0, 11);
 
             TextBlock groupWidthLabel = Text("Ширина групп:", 12, MutedBrush);
-            ComboBox groupWidthSetting = new ComboBox
+            WrapPanel groupWidthChoices = new WrapPanel { Margin = new Thickness(4, 5, 0, 9) };
+            bool contentWidthSelected = NormalizeGroupWidthMode(_config.GroupWidthMode) == "content";
+            RadioButton groupWidthFull = new RadioButton
             {
-                MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
-                Style = tileSetting.Style
+                Content = "На всю ширину", Tag = "GroupWidthMode:full",
+                GroupName = "AppShelfSettingsGroupWidth", IsChecked = !contentWidthSelected,
+                Foreground = WhiteBrush, Margin = new Thickness(0, 0, 16, 6)
             };
-            groupWidthSetting.Items.Add(new ComboBoxItem { Content = "На всю ширину", Tag = "full" });
-            groupWidthSetting.Items.Add(new ComboBoxItem { Content = "По содержимому", Tag = "content" });
-            groupWidthSetting.SelectedIndex =
-                NormalizeGroupWidthMode(_config.GroupWidthMode) == "content" ? 1 : 0;
+            RadioButton groupWidthContent = new RadioButton
+            {
+                Content = "По содержимому", Tag = "GroupWidthMode:content",
+                GroupName = "AppShelfSettingsGroupWidth", IsChecked = contentWidthSelected,
+                Foreground = WhiteBrush, Margin = new Thickness(0, 0, 12, 6)
+            };
+            groupWidthChoices.Children.Add(groupWidthFull);
+            groupWidthChoices.Children.Add(groupWidthContent);
 
             TextBlock groupAlignmentLabel = Text("Выравнивание групп:", 12, MutedBrush);
             ComboBox groupAlignmentSetting = new ComboBox
@@ -6572,67 +6594,115 @@ namespace AppShelf
             string activeGroupAlignment = NormalizeGroupAlignment(_config.GroupAlignment);
             groupAlignmentSetting.SelectedIndex = activeGroupAlignment == "center" ? 1 :
                 activeGroupAlignment == "right" ? 2 : activeGroupAlignment == "alternate" ? 3 : 0;
-            TextBlock groupDefaultZoneLabel = Text("Общая зона размещения:", 12, MutedBrush);
-            ComboBox groupDefaultZoneSetting = new ComboBox
-            {
-                MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
-                Style = tileSetting.Style
-            };
-            for (int i = 0; i < FreeGroupZones.Length; i++)
-                groupDefaultZoneSetting.Items.Add(new ComboBoxItem
-                { Content = FreeGroupZoneLabel(FreeGroupZones[i]), Tag = FreeGroupZones[i] });
-            groupDefaultZoneSetting.SelectedIndex =
-                Array.IndexOf(FreeGroupZones, NormalizeGroupZone(_config.GroupDefaultZone));
-            TextBlock freeGroupHint = Text(
-                "Каждую группу можно перетащить в отдельную зону или разместить " +
-                "через правую кнопку на её заголовке.", 11, MutedBrush);
-            freeGroupHint.TextWrapping = TextWrapping.Wrap;
-            freeGroupHint.Margin = new Thickness(0, 0, 0, 10);
-            foreach (ComboBox field in new ComboBox[]
-                { groupLayoutSetting, groupWidthSetting, groupAlignmentSetting, groupDefaultZoneSetting })
-            {
-                foreach (ResourceDictionary styles in tileSetting.Resources.MergedDictionaries)
-                    field.Resources.MergedDictionaries.Add(styles);
-                field.Background = FluentUi.Brush("#101A2A");
-                field.BorderBrush = FluentUi.Brush("#34465F");
-                field.FontWeight = FontWeights.Normal;
-            }
+            foreach (ResourceDictionary styles in tileSetting.Resources.MergedDictionaries)
+                groupAlignmentSetting.Resources.MergedDictionaries.Add(styles);
+            groupAlignmentSetting.Background = FluentUi.Brush("#101A2A");
+            groupAlignmentSetting.BorderBrush = FluentUi.Brush("#34465F");
+            groupAlignmentSetting.FontWeight = FontWeights.Normal;
             TextBlock groupLayoutHint = Text(
-                "В режиме «По содержимому» можно задать отдельное выравнивание " +
-                "через правую кнопку на заголовке группы.", 11, MutedBrush);
+                "Для отдельных групп выравнивание задаётся через правую кнопку на заголовке.",
+                11, MutedBrush);
             groupLayoutHint.TextWrapping = TextWrapping.Wrap;
             groupLayoutHint.Margin = new Thickness(0, 0, 0, 10);
+
+            TextBlock groupDefaultZoneLabel = Text("Положение новых групп по умолчанию:", 12, MutedBrush);
+            groupDefaultZoneLabel.Margin = new Thickness(0, 0, 0, 5);
+            System.Windows.Controls.Primitives.UniformGrid groupZonePicker =
+                new System.Windows.Controls.Primitives.UniformGrid
+                {
+                    Columns = 3, Rows = 3, MaxWidth = 255,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Margin = new Thickness(0, 0, 0, 5), Tag = "GroupZonePicker"
+                };
+            string selectedGroupZone = NormalizeGroupZone(_config.GroupDefaultZone);
+            string[] zoneSymbols = { "↖", "↑", "↗", "←", "●", "→", "↙", "↓", "↘" };
+            List<Button> zoneButtons = new List<Button>();
+            for (int i = 0; i < FreeGroupZones.Length; i++)
+            {
+                string chosenZone = FreeGroupZones[i];
+                Button zoneButton = ActionButton(zoneSymbols[i], false);
+                zoneButton.Tag = "GroupZone:" + chosenZone;
+                zoneButton.ToolTip = FreeGroupZoneLabel(chosenZone);
+                zoneButton.FontSize = 18;
+                zoneButton.Margin = new Thickness(3);
+                zoneButton.Padding = new Thickness(0);
+                zoneButton.MinHeight = 38;
+                zoneButton.Height = 40;
+                zoneButton.HorizontalAlignment = HorizontalAlignment.Stretch;
+                System.Windows.Automation.AutomationProperties.SetName(zoneButton,
+                    "Зона размещения: " + FreeGroupZoneLabel(chosenZone));
+                zoneButtons.Add(zoneButton);
+                groupZonePicker.Children.Add(zoneButton);
+            }
+            TextBlock groupZoneSelection = Text("", 11, WhiteBrush);
+            groupZoneSelection.Margin = new Thickness(3, 0, 0, 8);
+            Action refreshZonePicker = delegate
+            {
+                foreach (Button button in zoneButtons)
+                {
+                    bool selected = String.Equals(
+                        ((string)button.Tag).Substring("GroupZone:".Length),
+                        selectedGroupZone, StringComparison.Ordinal);
+                    button.Background = selected ? FluentUi.Brush("#244B65") : TileBrush;
+                    button.BorderBrush = selected ? AccentBrush : StrokeBrush;
+                    button.BorderThickness = new Thickness(selected ? 2 : 1);
+                }
+                groupZoneSelection.Text = "Выбрана зона: " + FreeGroupZoneLabel(selectedGroupZone);
+            };
+            foreach (Button button in zoneButtons)
+            {
+                Button selectedButton = button;
+                selectedButton.Click += delegate
+                {
+                    selectedGroupZone = ((string)selectedButton.Tag).Substring("GroupZone:".Length);
+                    refreshZonePicker();
+                };
+            }
+            refreshZonePicker();
+            TextBlock freeGroupHint = Text(
+                "Перетаскивай группы мышью или выбирай зону через меню заголовка. " +
+                "Общее положение также действует для групп с правилом «По общему правилу».",
+                11, MutedBrush);
+            freeGroupHint.TextWrapping = TextWrapping.Wrap;
+            freeGroupHint.Margin = new Thickness(0, 0, 0, 10);
 
             Action refreshGroupLayoutControls = delegate
             {
                 bool grouped = groupingSetting.IsChecked == true;
-                ComboBoxItem layoutChoice = groupLayoutSetting.SelectedItem as ComboBoxItem;
-                ComboBoxItem widthChoice = groupWidthSetting.SelectedItem as ComboBoxItem;
-                bool grid = layoutChoice != null && (string)layoutChoice.Tag == "grid";
-                bool free = layoutChoice != null && (string)layoutChoice.Tag == "free";
-                bool contentWidth = widthChoice != null && (string)widthChoice.Tag == "content";
-                Visibility layoutVisibility = grouped ? Visibility.Visible : Visibility.Collapsed;
-                Visibility widthVisibility = grouped && !grid && !free ? Visibility.Visible : Visibility.Collapsed;
-                Visibility alignVisibility = grouped && !grid && !free && contentWidth
+                bool list = groupLayoutList.IsChecked == true;
+                bool grid = groupLayoutGrid.IsChecked == true;
+                bool free = groupLayoutFree.IsChecked == true;
+                bool contentWidth = groupWidthContent.IsChecked == true;
+                Visibility basic = grouped ? Visibility.Visible : Visibility.Collapsed;
+                Visibility listOnly = grouped && list ? Visibility.Visible : Visibility.Collapsed;
+                Visibility alignmentOnly = grouped && list && contentWidth
                     ? Visibility.Visible : Visibility.Collapsed;
-                groupLayoutLabel.Visibility = layoutVisibility;
-                groupLayoutSetting.Visibility = layoutVisibility;
-                groupWidthLabel.Visibility = widthVisibility;
-                groupWidthSetting.Visibility = widthVisibility;
-                groupAlignmentLabel.Visibility = alignVisibility;
-                groupAlignmentSetting.Visibility = alignVisibility;
-                groupLayoutHint.Visibility = alignVisibility;
-                groupDefaultZoneLabel.Visibility = grouped && free
-                    ? Visibility.Visible : Visibility.Collapsed;
-                groupDefaultZoneSetting.Visibility = grouped && free
-                    ? Visibility.Visible : Visibility.Collapsed;
-                freeGroupHint.Visibility = grouped && free
-                    ? Visibility.Visible : Visibility.Collapsed;
+                Visibility freeOnly = grouped && free ? Visibility.Visible : Visibility.Collapsed;
+                groupLayoutLabel.Visibility = basic;
+                groupLayoutChoices.Visibility = basic;
+                groupModeDescription.Visibility = basic;
+                groupModeDescription.Text = free
+                    ? "Размещай группы независимо по девяти зонам рабочего пространства."
+                    : grid
+                        ? "Ширина рассчитывается автоматически; группы переносятся на следующую строку."
+                        : "Группы располагаются последовательно сверху вниз.";
+                groupWidthLabel.Visibility = listOnly;
+                groupWidthChoices.Visibility = listOnly;
+                groupAlignmentLabel.Visibility = alignmentOnly;
+                groupAlignmentSetting.Visibility = alignmentOnly;
+                groupLayoutHint.Visibility = alignmentOnly;
+                groupDefaultZoneLabel.Visibility = freeOnly;
+                groupZonePicker.Visibility = freeOnly;
+                groupZoneSelection.Visibility = freeOnly;
+                freeGroupHint.Visibility = freeOnly;
             };
             groupingSetting.Checked += delegate { refreshGroupLayoutControls(); };
             groupingSetting.Unchecked += delegate { refreshGroupLayoutControls(); };
-            groupLayoutSetting.SelectionChanged += delegate { refreshGroupLayoutControls(); };
-            groupWidthSetting.SelectionChanged += delegate { refreshGroupLayoutControls(); };
+            groupLayoutList.Checked += delegate { refreshGroupLayoutControls(); };
+            groupLayoutGrid.Checked += delegate { refreshGroupLayoutControls(); };
+            groupLayoutFree.Checked += delegate { refreshGroupLayoutControls(); };
+            groupWidthFull.Checked += delegate { refreshGroupLayoutControls(); };
+            groupWidthContent.Checked += delegate { refreshGroupLayoutControls(); };
             refreshGroupLayoutControls();
 
             TextBlock backgroundSettingLabel = Text("Фон главного окна:", 12, MutedBrush);
@@ -7015,9 +7085,10 @@ namespace AppShelf
             AddSettingsSection(appearanceRows, "appearance-tiles", "Плитки и группы",
                 new List<UIElement> { groupingSetting, tileSettingLabel, tileSetting,
                     tileScaleLabel, tileScaleRow,
-                    groupLayoutLabel, groupLayoutSetting, groupWidthLabel, groupWidthSetting,
-                    groupAlignmentLabel, groupAlignmentSetting, groupLayoutHint,
-                    groupDefaultZoneLabel, groupDefaultZoneSetting, freeGroupHint,
+                    groupLayoutLabel, groupLayoutChoices, groupModeDescription,
+                    groupWidthLabel, groupWidthChoices, groupAlignmentLabel, groupAlignmentSetting,
+                    groupLayoutHint, groupDefaultZoneLabel, groupZonePicker, groupZoneSelection,
+                    freeGroupHint,
                     groupOpacityLabel, opacityRow, previewCaption, previewBackdrop },
                 appearanceBodies, appearanceArrows, appearanceHeaders, toggleAppearance);
             AddSettingsSection(appearanceRows, "appearance-background", "Фон главного окна",
@@ -7203,10 +7274,11 @@ namespace AppShelf
                 pending.RdpKeepAwake = rdp.IsChecked == true;
                 pending.SettingsLastSection = selectedSettingsSection;
                 pending.GroupingEnabled = groupingSetting.IsChecked == true;
-                pending.GroupLayoutMode = (string)((ComboBoxItem)groupLayoutSetting.SelectedItem).Tag;
-                pending.GroupWidthMode = (string)((ComboBoxItem)groupWidthSetting.SelectedItem).Tag;
+                pending.GroupLayoutMode = groupLayoutFree.IsChecked == true ? "free" :
+                    groupLayoutGrid.IsChecked == true ? "grid" : "vertical";
+                pending.GroupWidthMode = groupWidthContent.IsChecked == true ? "content" : "full";
                 pending.GroupAlignment = (string)((ComboBoxItem)groupAlignmentSetting.SelectedItem).Tag;
-                pending.GroupDefaultZone = (string)((ComboBoxItem)groupDefaultZoneSetting.SelectedItem).Tag;
+                pending.GroupDefaultZone = selectedGroupZone;
                 pending.AlwaysOnTop = topmostSetting.IsChecked == true;
                 pending.TileDisplayMode = (string)((ComboBoxItem)tileSetting.SelectedItem).Tag;
                 pending.TileScalePercent = FluentUi.NormalizeTileScale((int)Math.Round(tileScaleSlider.Value));
