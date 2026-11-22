@@ -64,6 +64,158 @@ namespace AppShelf
         [DataMember(Name = "probability_of_precipitation")] public double? Probability;
     }
 
+
+    // HTTP response cache for MET Norway only. The existing 24-hour weather
+    // snapshot cache stays independent and compatible with old installations.
+    [DataContract]
+    internal sealed class MetHttpCacheEntry
+    {
+        [DataMember(Name = "url")] public string Url;
+        [DataMember(Name = "body")] public byte[] Body;
+        [DataMember(Name = "expiresUtcTicks")] public long ExpiresUtcTicks;
+        [DataMember(Name = "lastModified")] public string LastModified;
+        [DataMember(Name = "savedUtcTicks")] public long SavedUtcTicks;
+    }
+
+    [DataContract]
+    internal sealed class MetHttpCacheDocument
+    {
+        [DataMember(Name = "version")] public int Version;
+        [DataMember(Name = "entries")] public List<MetHttpCacheEntry> Entries;
+    }
+
+    internal static class MetHttpResponseCache
+    {
+        internal static readonly string FilePath =
+            Path.Combine(ConfigStore.DirectoryPath, "met-http-cache.json");
+        private const int MaxEntries = 6;
+        private const int MaxBodyBytes = 2 * 1024 * 1024;
+        // Serialized byte[] is base64; six 2 MiB entries fit within 20 MiB.
+        private const long MaxFileBytes = 20L * 1024 * 1024;
+        private static readonly object Sync = new object();
+
+        private static bool Valid(MetHttpCacheEntry entry)
+        {
+            return entry != null && !String.IsNullOrWhiteSpace(entry.Url) &&
+                entry.Url.StartsWith("https://api.met.no/weatherapi/locationforecast/2.0/compact?",
+                    StringComparison.Ordinal) &&
+                entry.Body != null && entry.Body.Length > 0 &&
+                entry.Body.Length <= MaxBodyBytes &&
+                entry.ExpiresUtcTicks >= DateTime.MinValue.Ticks &&
+                entry.ExpiresUtcTicks <= DateTime.MaxValue.Ticks &&
+                entry.SavedUtcTicks >= DateTime.MinValue.Ticks &&
+                entry.SavedUtcTicks <= DateTime.MaxValue.Ticks;
+        }
+
+        private static MetHttpCacheDocument Read()
+        {
+            if (!File.Exists(FilePath)) return null;
+            try
+            {
+                using (FileStream input = File.OpenRead(FilePath))
+                {
+                    if (input.Length == 0 || input.Length > MaxFileBytes) return null;
+                    MetHttpCacheDocument doc = (MetHttpCacheDocument)
+                        new DataContractJsonSerializer(typeof(MetHttpCacheDocument)).ReadObject(input);
+                    return doc != null && doc.Version == 1 && doc.Entries != null &&
+                        doc.Entries.Count <= MaxEntries ? doc : null;
+                }
+            }
+            catch (Exception error)
+            {
+                ConfigStore.Log(new InvalidDataException("MET Norway: ошибка чтения HTTP-кеша.", error));
+                return null;
+            }
+        }
+
+        internal static MetHttpCacheEntry Get(string url)
+        {
+            lock (Sync)
+            {
+                MetHttpCacheDocument doc = Read();
+                if (doc != null)
+                    foreach (MetHttpCacheEntry entry in doc.Entries)
+                        if (Valid(entry) && String.Equals(entry.Url, url, StringComparison.Ordinal))
+                            return entry;
+                return null;
+            }
+        }
+
+        private static long NextRequestTicks(string expiresHeader, DateTime nowUtc)
+        {
+            // AppShelf uses the conservative Locationforecast interval (3 hours)
+            // even inside Nordics; the server's Expires can extend that interval.
+            DateTime earliest = nowUtc.AddHours(3);
+            DateTimeOffset expires;
+            if (!String.IsNullOrWhiteSpace(expiresHeader) &&
+                DateTimeOffset.TryParse(expiresHeader, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal, out expires) &&
+                expires.UtcDateTime > earliest)
+                earliest = expires.UtcDateTime;
+            return earliest.Ticks;
+        }
+
+        internal static void Save(string url, byte[] json, string lastModified,
+            string expiresHeader, MetHttpCacheEntry previous)
+        {
+            if (String.IsNullOrWhiteSpace(url) || json == null ||
+                json.Length == 0 || json.Length > MaxBodyBytes) return;
+            lock (Sync)
+            {
+                string temporary = FilePath + ".tmp";
+                try
+                {
+                    DateTime now = DateTime.UtcNow;
+                    List<MetHttpCacheEntry> entries = new List<MetHttpCacheEntry>();
+                    MetHttpCacheDocument old = Read();
+                    if (old != null)
+                        foreach (MetHttpCacheEntry entry in old.Entries)
+                            if (Valid(entry) &&
+                                !String.Equals(entry.Url, url, StringComparison.Ordinal))
+                                entries.Add(entry);
+
+                    entries.Add(new MetHttpCacheEntry
+                    {
+                        Url = url,
+                        Body = json,
+                        LastModified = !String.IsNullOrWhiteSpace(lastModified)
+                            ? lastModified : (previous == null ? null : previous.LastModified),
+                        ExpiresUtcTicks = NextRequestTicks(expiresHeader, now),
+                        SavedUtcTicks = now.Ticks
+                    });
+                    entries.Sort(delegate(MetHttpCacheEntry a, MetHttpCacheEntry b)
+                    {
+                        return b.SavedUtcTicks.CompareTo(a.SavedUtcTicks);
+                    });
+                    if (entries.Count > MaxEntries)
+                        entries.RemoveRange(MaxEntries, entries.Count - MaxEntries);
+
+                    Directory.CreateDirectory(ConfigStore.DirectoryPath);
+                    using (FileStream output = new FileStream(temporary, FileMode.Create,
+                        FileAccess.Write, FileShare.None))
+                    {
+                        new DataContractJsonSerializer(typeof(MetHttpCacheDocument))
+                            .WriteObject(output, new MetHttpCacheDocument { Version = 1, Entries = entries });
+                        if (output.Length > MaxFileBytes)
+                            throw new InvalidDataException("MET Norway: HTTP-кеш превышает лимит.");
+                        output.Flush(true);
+                    }
+                    if (File.Exists(FilePath)) File.Replace(temporary, FilePath, null);
+                    else File.Move(temporary, FilePath);
+                }
+                catch (Exception error)
+                {
+                    ConfigStore.Log(new IOException("MET Norway: не удалось сохранить HTTP-кеш.", error));
+                }
+                finally
+                {
+                    try { if (File.Exists(temporary)) File.Delete(temporary); }
+                    catch { }
+                }
+            }
+        }
+    }
+
     // Disposable cache, keyed by the user's city and weather source.
     [DataContract]
     internal sealed class WeatherCacheEntry
