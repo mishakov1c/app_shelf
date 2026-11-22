@@ -1427,6 +1427,18 @@ namespace AppShelf
 
     public sealed partial class MainWindow : Window
     {
+        // Ordinary dialogs in all MainWindow partials use the dark WPF dialog.
+        // Keeping this call shape preserves existing test-source interceptors.
+        // Program.Main and global startup/rendering failures remain native.
+        private static class MessageBox
+        {
+            internal static MessageBoxResult Show(Window owner, string message, string title,
+                MessageBoxButton buttons, MessageBoxImage image)
+            {
+                return AppDialog.Show(owner, message, title, buttons, image);
+            }
+        }
+
         private static readonly Brush BackgroundBrush = FluentUi.Background;
         private static readonly Brush HeaderBrush = FluentUi.Surface;
         private static readonly Brush TileBrush = FluentUi.SurfaceRaised;

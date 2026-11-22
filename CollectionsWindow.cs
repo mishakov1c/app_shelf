@@ -9,6 +9,8 @@ using System.IO;
 using System.Threading.Tasks;
 using Microsoft.Win32;
 using System.Windows;
+// Ordinary messages follow AppShelf's dark dialog; no native startup errors here.
+using MessageBox = AppShelf.AppDialog;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;

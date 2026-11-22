@@ -415,6 +415,174 @@ namespace AppShelf
         }
     }
 
+
+    // Shared modal replacement for ordinary in-app WPF message boxes.
+    // Startup and WPF-render-failure paths deliberately keep native MessageBox.Show.
+    internal static class AppDialog
+    {
+        internal static MessageBoxResult Show(Window owner, string message, string title,
+            MessageBoxButton buttons, MessageBoxImage image)
+        {
+            double width = Math.Min(540, Math.Max(320, SystemParameters.WorkArea.Width - 40));
+            Window dialog = new Window
+            {
+                Title = String.IsNullOrWhiteSpace(title) ? "AppShelf" : title,
+                Width = width,
+                MinWidth = Math.Min(350, width),
+                SizeToContent = SizeToContent.Height,
+                MaxHeight = Math.Max(260, SystemParameters.WorkArea.Height - 60),
+                ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false,
+                WindowStartupLocation = owner != null && owner.IsVisible
+                    ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen
+            };
+            if (owner != null && owner.IsVisible) dialog.Owner = owner;
+            FluentUi.PrepareWindow(dialog);
+
+            DockPanel layout = new DockPanel { Margin = new Thickness(22, 20, 22, 20) };
+            dialog.Content = layout;
+
+            StackPanel actions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 19, 0, 0)
+            };
+            DockPanel.SetDock(actions, Dock.Bottom);
+            layout.Children.Add(actions);
+
+            Border card = new Border
+            {
+                Background = FluentUi.Surface,
+                BorderBrush = FluentUi.BorderColor,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(11),
+                Padding = new Thickness(16)
+            };
+            layout.Children.Add(card);
+
+            ScrollViewer scroll = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                MaxHeight = Math.Max(135, Math.Min(350, SystemParameters.WorkArea.Height * 0.46))
+            };
+            FluentUi.StyleSettingsScroll(scroll);
+            card.Child = scroll;
+
+            Grid content = new Grid();
+            bool withIcon = image != MessageBoxImage.None;
+            if (withIcon)
+                content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(42) });
+            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            if (withIcon)
+            {
+                bool isError = image == MessageBoxImage.Error;
+                bool isWarning = image == MessageBoxImage.Warning;
+                Brush tone = isError ? FluentUi.Brush("#FF9298")
+                    : isWarning ? FluentUi.Amber : FluentUi.Accent;
+                string symbol = isError ? "×" : isWarning ? "!" :
+                    image == MessageBoxImage.Question ? "?" : "i";
+                Border mark = new Border
+                {
+                    Width = 34, Height = 34,
+                    Background = FluentUi.SurfaceRaised,
+                    BorderBrush = tone,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(17),
+                    VerticalAlignment = VerticalAlignment.Top,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Child = new TextBlock
+                    {
+                        Text = symbol, FontSize = 21, FontWeight = FontWeights.SemiBold,
+                        Foreground = tone,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center
+                    }
+                };
+                content.Children.Add(mark);
+            }
+
+            TextBlock text = new TextBlock
+            {
+                Text = message ?? "",
+                FontSize = 14,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = FluentUi.Foreground,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = withIcon ? new Thickness(5, 1, 0, 1) : new Thickness(0)
+            };
+            Grid.SetColumn(text, withIcon ? 1 : 0);
+            content.Children.Add(text);
+            scroll.Content = content;
+
+            string[] captions;
+            MessageBoxResult[] values;
+            switch (buttons)
+            {
+                case MessageBoxButton.OK:
+                    captions = new[] { "ОК" };
+                    values = new[] { MessageBoxResult.OK };
+                    break;
+                case MessageBoxButton.OKCancel:
+                    captions = new[] { "ОК", "Отмена" };
+                    values = new[] { MessageBoxResult.OK, MessageBoxResult.Cancel };
+                    break;
+                case MessageBoxButton.YesNo:
+                    captions = new[] { "Да", "Нет" };
+                    values = new[] { MessageBoxResult.Yes, MessageBoxResult.No };
+                    break;
+                case MessageBoxButton.YesNoCancel:
+                    captions = new[] { "Да", "Нет", "Отмена" };
+                    values = new[] { MessageBoxResult.Yes, MessageBoxResult.No,
+                        MessageBoxResult.Cancel };
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException("buttons");
+            }
+
+            // X and Esc never count as affirmative confirmation.
+            MessageBoxResult selected = buttons == MessageBoxButton.OK
+                ? MessageBoxResult.OK : buttons == MessageBoxButton.YesNo
+                    ? MessageBoxResult.No : MessageBoxResult.Cancel;
+            for (int i = 0; i < captions.Length; i++)
+            {
+                MessageBoxResult answer = values[i];
+                bool primary = i == 0;
+                Button button = new Button
+                {
+                    Content = captions[i],
+                    MinWidth = 90, MinHeight = 36,
+                    Padding = new Thickness(16, 7, 16, 7),
+                    Margin = new Thickness(i == 0 ? 0 : 9, 0, 0, 0),
+                    Background = primary ? FluentUi.Brush("#29486A") : FluentUi.SurfaceRaised,
+                    Foreground = FluentUi.Foreground,
+                    BorderBrush = primary ? FluentUi.Accent : FluentUi.BorderColor,
+                    BorderThickness = new Thickness(1),
+                    FontWeight = FontWeights.SemiBold,
+                    Cursor = Cursors.Hand,
+                    IsDefault = primary,
+                    IsCancel = answer == MessageBoxResult.Cancel ||
+                        (buttons == MessageBoxButton.YesNo && answer == MessageBoxResult.No)
+                };
+                button.Click += delegate { selected = answer; dialog.Close(); };
+                actions.Children.Add(button);
+            }
+
+            dialog.PreviewKeyDown += delegate(object sender, KeyEventArgs e)
+            {
+                if (e.Key != Key.Escape) return;
+                selected = buttons == MessageBoxButton.OK ? MessageBoxResult.OK :
+                    buttons == MessageBoxButton.YesNo ? MessageBoxResult.No : MessageBoxResult.Cancel;
+                e.Handled = true;
+                dialog.Close();
+            };
+            dialog.ShowDialog();
+            return selected;
+        }
+    }
+
     internal static class FluentUi
     {
         public static readonly Brush Background = Brush("#0E1420");
