@@ -130,6 +130,7 @@ public static class RestoreBackupTests
     private static AppConfig Config(string name)
     {
         AppConfig config = new AppConfig();
+        config.MinimizeToTray = false; // Restore tests must exercise a real Close.
         config.GroupingEnabled = true;
         config.Groups.Add("Group-" + name);
         config.Items.Add(new AppItem { Name = "Application-" + name,
