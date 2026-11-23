@@ -98,7 +98,7 @@ public static class CountdownTests
     private static void EditSettings(MainWindow w, bool save, Action<Window> action) { settings = action; saveSettings = save; Call(w, "ShowSettings"); }
     private static MainWindow Open(bool hidden)
     {
-        ConfigStore.Save(new AppConfig { ShowWeather = false, ShowNetwork = false, RdpKeepAwake = false, CountdownDurationSeconds = 300 });
+        ConfigStore.Save(new AppConfig { ShowWeather = false, ShowNetwork = false, RdpKeepAwake = false, CountdownDurationSeconds = 300, MinimizeToTray = false });
         ReminderStore.Save(new ReminderDocument()); MainWindow w = new MainWindow(hidden);
         w.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), w, typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
         w.ShowInTaskbar = false; w.Show(); Drain(); return w;
