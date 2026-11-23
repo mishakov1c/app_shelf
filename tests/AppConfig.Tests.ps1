@@ -135,7 +135,7 @@ public static class ConfigTests
             File.WriteAllText(External(file), file.EndsWith(".url") ? "[InternetShortcut]\r\nURL=https://example.com/\r\n" : "@echo off\r\n");
         string owned = Path.Combine(ConfigStore.ShortcutsDirectory, "First.url");
         File.Copy(External("First.url"), owned, true);
-        AppConfig config = new AppConfig { GroupingEnabled = true, ShowWeather = false, ShowNetwork = false };
+        AppConfig config = new AppConfig { GroupingEnabled = true, ShowWeather = false, ShowNetwork = false, MinimizeToTray = false };
         config.Groups.AddRange(new string[] { "A", "B" });
         config.Items.Add(new AppItem { Path = owned, SourcePath = External("First.url"), Name = "First", Group = "A" });
         config.Items.Add(new AppItem { Path = External("New.cmd"), Name = "Second", Group = "A" });
