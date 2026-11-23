@@ -1311,6 +1311,55 @@ public static class Package6Tests
                 Call(w, "ShowSettings");
             } finally { w.Close(); }
         });
+        Case("weather and RDP entry points open their own settings sections", delegate {
+            Seed("normal", 1);
+            AppConfig config = Load();
+            config.SettingsLastSection = "network";
+            config.WeatherCity = "";
+            ConfigStore.Save(config);
+            MainWindow w = Open(); try {
+                settings = delegate(Window d) {
+                    Assert(Body(d, "weather").Visibility == Visibility.Visible &&
+                        Body(d, "network").Visibility == Visibility.Collapsed &&
+                        Body(d, "windows").Visibility == Visibility.Collapsed,
+                        "Weather entry point opened a stale settings section");
+                };
+                ContextMenu weather = (ContextMenu)Call(w, "CreateWeatherContextMenu");
+                Click(Menu(weather, "Изменить город"));
+                Assert(Load().SettingsLastSection == "weather",
+                    "Weather navigation did not keep the selected settings section");
+                settings = delegate(Window d) {
+                    Assert(Body(d, "weather").Visibility == Visibility.Visible,
+                        "No-city forecast did not open Weather settings");
+                };
+                Call(w, "ShowForecastWindow");
+                settings = delegate(Window d) {
+                    Assert(Body(d, "windows").Visibility == Visibility.Visible &&
+                        Body(d, "weather").Visibility == Visibility.Collapsed &&
+                        Controls<CheckBox>(Body(d, "windows")).Contains(
+                            Check(d, "При закрытии окна сворачивать в трей")),
+                        "RDP entry point did not open Windows behaviour settings");
+                };
+                Call(w, "ToggleBottomModuleWindow", "rdp");
+                Assert(Load().SettingsLastSection == "windows",
+                    "RDP navigation did not keep the selected section");
+                settings = delegate(Window d) {
+                    Assert(Body(d, "appearance").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-panel").Visibility == Visibility.Visible &&
+                        Body(d, "appearance-tiles").Visibility == Visibility.Collapsed,
+                        "Bottom-panel context menu did not open its nested section");
+                };
+                Border footer = (Border)Get(w, "_monitorBorder");
+                Click(Menu(footer.ContextMenu, "Настроить нижнюю панель…"));
+                Assert(Load().SettingsLastSection == "panel",
+                    "Bottom-panel context navigation lost its historical saved key");
+                settings = delegate(Window d) {
+                    Assert(Body(d, "appearance-panel").Visibility == Visibility.Visible,
+                        "Normal Settings forgot the last directly opened panel");
+                };
+                Call(w, "ShowSettings");
+            } finally { w.Close(); }
+        });
         Case("full settings synchronize quick switches, cancel and failed save", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
                 settings = delegate(Window d) {
