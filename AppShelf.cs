@@ -198,8 +198,15 @@ namespace AppShelf
         [DataMember(Name = "weatherProvider", EmitDefaultValue = false)]
         public string WeatherProvider = "metno";
 
+        // Legacy preference: old releases used this flag for minimizing.
+        // When closeToTray is absent, keep that user's previous preference.
         [DataMember(Name = "minimizeToTray")]
         public bool MinimizeToTray = true;
+
+        [DataMember(Name = "closeToTray", EmitDefaultValue = false)]
+        public bool? CloseToTray;
+
+        public bool CloseToTrayEnabled { get { return CloseToTray ?? MinimizeToTray; } }
 
         // Nullable fields retain legacy defaults when absent from older apps.json.
         [DataMember(Name = "soundsEnabled", EmitDefaultValue = false)]
@@ -1575,6 +1582,8 @@ namespace AppShelf
             new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private WeatherForecastWindow _forecastWindow;
         private bool _startupHidePending;
+        private bool _explicitExitRequested;
+        private bool _sessionEnding;
         private Forms.NotifyIcon _trayIcon;
         private Drawing.Icon _trayDrawingIcon;
         private HwndSource _hwndSource;
@@ -1774,6 +1783,8 @@ namespace AppShelf
             StateChanged += OnWindowStateChanged;
             Closing += OnWindowClosing;
             Closed += OnClosed;
+            if (Application.Current != null)
+                Application.Current.SessionEnding += OnApplicationSessionEnding;
             if (startInTray)
             {
                 // No visible taskbar button or active window on Windows logon.
@@ -2230,7 +2241,7 @@ namespace AppShelf
             _countdownChip.ToolTip = "Нажми, чтобы открыть обычный таймер.";
             _countdownChip.MouseLeftButtonUp += delegate { ToggleBottomModuleWindow("countdown"); };
             _rdpChip.ToolTip = "Режим антипростоя RDP. Нажми, чтобы открыть настройки.";
-            _rdpChip.MouseLeftButtonUp += delegate { ShowSettings(); };
+            _rdpChip.MouseLeftButtonUp += delegate { ShowSettingsSection("windows"); };
             _weatherChip.ToolTip = "Нажми для прогноза на 7 дней. Правая кнопка — параметры.";
             _weatherChip.MouseLeftButtonUp += delegate { ToggleBottomModuleWindow("weather"); };
             AttachWeatherContextMenu(_weatherChip);
@@ -2344,7 +2355,12 @@ namespace AppShelf
                 remindersMenu.Click += delegate { Dispatcher.BeginInvoke(new Action(ShowRemindersWindow)); };
                 menu.Items.Add(remindersMenu);
                 Forms.ToolStripMenuItem exit = new Forms.ToolStripMenuItem("Выход");
-                exit.Click += delegate { Close(); };
+                exit.Click += delegate
+                {
+                    // Closing from the tray is an explicit exit, never a hide.
+                    _explicitExitRequested = true;
+                    Close();
+                };
                 menu.Items.Add(exit);
                 _trayIcon.ContextMenuStrip = menu;
                 _trayIcon.DoubleClick += delegate { ShowPanel(); };
@@ -2459,25 +2475,39 @@ namespace AppShelf
             catch (Exception ex) { ConfigStore.Log(ex); }
         }
 
+        private void OnApplicationSessionEnding(object sender, SessionEndingCancelEventArgs e)
+        {
+            // Windows logoff/shutdown must not be turned into "hide to tray".
+            _sessionEnding = true;
+        }
+
         private void OnWindowClosing(object sender, CancelEventArgs e)
         {
             if (_windowPlacementSaveTimer != null) _windowPlacementSaveTimer.Stop();
             SaveWindowPlacement();
+            if (!_explicitExitRequested && !_sessionEnding &&
+                _config != null && _config.CloseToTrayEnabled &&
+                _trayIcon != null && _trayIcon.Visible && _trayIcon.Icon != null &&
+                (Application.Current == null || !Application.Current.Dispatcher.HasShutdownStarted))
+            {
+                // Alt+F4 and the title-bar X both keep the application running.
+                // If the tray icon is unavailable, Close is allowed to exit.
+                e.Cancel = true;
+                Hide();
+            }
         }
 
         private void OnWindowStateChanged(object sender, EventArgs e)
         {
             if (WindowState != WindowState.Minimized)
                 _lastNonMinimizedWasMaximized = WindowState == WindowState.Maximized;
-            // Capture the normal bounds before hiding; never persist Minimized as a mode.
+            // Always use the ordinary Windows taskbar when the user minimizes.
+            // Capture normal bounds, not the transient minimized state.
             if (WindowState == WindowState.Minimized && _windowPlacementSaveTimer != null)
             {
                 _windowPlacementSaveTimer.Stop();
                 SaveWindowPlacement();
             }
-            if (!_startupHidePending && WindowState == WindowState.Minimized &&
-                _config.MinimizeToTray && _trayIcon != null && _trayIcon.Visible && _trayIcon.Icon != null)
-                Hide();
             else if (_windowPlacementTrackingReady) OnWindowGeometryChanged(sender, e);
         }
 
@@ -2511,6 +2541,8 @@ namespace AppShelf
 
         private void OnClosed(object sender, EventArgs e)
         {
+            if (Application.Current != null)
+                Application.Current.SessionEnding -= OnApplicationSessionEnding;
             if (_windowPlacementSaveTimer != null) _windowPlacementSaveTimer.Stop();
             if (_statusMessageTimer != null) _statusMessageTimer.Stop();
             if (_networkTimer != null) _networkTimer.Stop();
@@ -2677,7 +2709,7 @@ namespace AppShelf
             else if (key == "weather") ShowForecastWindow();
             else if (key == "pomodoro") ShowPomodoroWindow();
             else if (key == "countdown") ShowCountdownWindow();
-            else if (key == "rdp") ShowSettings();
+            else if (key == "rdp") ShowSettingsSection("windows");
             else ShowRemindersWindow();
         }
 
@@ -2827,7 +2859,7 @@ namespace AppShelf
             }
             menu.Items.Add(new Separator());
             MenuItem configure = new MenuItem { Header = "Настроить нижнюю панель…" };
-            configure.Click += delegate { ShowSettings(); };
+            configure.Click += delegate { ShowSettingsSection("appearance-panel"); };
             menu.Items.Add(configure);
             _monitorBorder.ContextMenu = menu;
         }
@@ -3191,7 +3223,7 @@ namespace AppShelf
         {
             if (String.IsNullOrWhiteSpace(_config.WeatherCity))
             {
-                ShowSettings();
+                ShowSettingsSection("weather");
                 return;
             }
             if (_forecastWindow != null)
@@ -3202,7 +3234,7 @@ namespace AppShelf
                 return;
             }
             _forecastWindow = new WeatherForecastWindow(
-                delegate { RefreshWeather(); }, delegate { ShowSettings(); });
+                delegate { RefreshWeather(); }, delegate { ShowSettingsSection("weather"); });
             _forecastWindow.Owner = this;
             _forecastWindow.Closed += delegate { _forecastWindow = null; };
             UpdateForecastWindow();
@@ -3264,7 +3296,7 @@ namespace AppShelf
             };
             menu.Items.Add(new Separator());
             MenuItem city = new MenuItem { Header = "Изменить город" };
-            city.Click += delegate { ShowSettings(); };
+            city.Click += delegate { ShowSettingsSection("weather"); };
             menu.Items.Add(city);
             return menu;
         }
@@ -6256,6 +6288,13 @@ namespace AppShelf
 
         private void ShowSettings()
         {
+            ShowSettingsSection(null);
+        }
+
+        // Direct entry points open a specific section without changing the user's
+        // normal entry point from the main Settings menu.
+        private void ShowSettingsSection(string requestedSection)
+        {
             WindowsStartup.State startupState;
             try { startupState = WindowsStartup.Read(); }
             catch (Exception ex)
@@ -6490,7 +6529,7 @@ namespace AppShelf
             layout.Children.Add(providerNote);
             CheckBox tray = new CheckBox
             {
-                Content = "При сворачивании скрывать в трей", IsChecked = _config.MinimizeToTray,
+                Content = "При закрытии окна сворачивать в трей", IsChecked = _config.CloseToTrayEnabled,
                 Foreground = WhiteBrush, Margin = new Thickness(0, 0, 0, 12)
             };
             layout.Children.Add(tray);
@@ -7091,6 +7130,15 @@ namespace AppShelf
                 lastSection != "time" && lastSection != "windows" &&
                 lastSection != "appearance" && lastSection != "data")
                 lastSection = "appearance";
+            if (requestedSection == "appearance-panel")
+            {
+                lastSection = "appearance";
+                lastAppearance = "appearance-panel";
+            }
+            else if (requestedSection == "network" || requestedSection == "weather" ||
+                requestedSection == "time" || requestedSection == "windows" ||
+                requestedSection == "appearance" || requestedSection == "data")
+                lastSection = requestedSection;
             Action<string> toggleSection = delegate(string key)
             {
                 bool expand = sections[key].Visibility != Visibility.Visible;
@@ -7340,7 +7388,7 @@ namespace AppShelf
                 }
                 pending.ShowWeather = weather.IsChecked == true;
                 pending.WeatherCity = city.Text.Trim();
-                pending.MinimizeToTray = tray.IsChecked == true;
+                pending.CloseToTray = tray.IsChecked == true;
                 pending.ShowPomodoro = pomodoro.IsChecked == true;
                 pending.ShowCountdownTimer = countdown.IsChecked == true;
                 pending.ShowCollections = collectionsSetting.IsChecked == true;
