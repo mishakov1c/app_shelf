@@ -2,14 +2,13 @@
 // At release preparation, update the version AND the matching release notes below.
 // The About dialog reads only metadata embedded in the compiled executable.
 using System.Reflection;
-[assembly: AssemblyVersion("2.21.0.0")]
-[assembly: AssemblyFileVersion("2.21.0.0")]
-[assembly: AssemblyInformationalVersion("2.21.0")]
-[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.21.0")]
+[assembly: AssemblyVersion("2.21.1.0")]
+[assembly: AssemblyFileVersion("2.21.1.0")]
+[assembly: AssemblyInformationalVersion("2.21.1")]
+[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.21.1")]
 [assembly: AssemblyMetadata("AppShelf.ReleaseNotes",
-    "Группы: три варианта размещения — список, автоматическая сетка и девять свободных зон.\n" +
-    "В списке доступна ширина по содержимому с выравниванием слева, по центру, справа или чередованием.\n" +
-    "В сетке группы автоматически размещаются рядом и переносятся по доступной ширине.\n" +
-    "В свободном режиме группу можно перетащить в зону; зона по умолчанию выбирается сеткой 3×3.\n" +
-    "Переключить режим можно через «Быстрые настройки»; выбранный вариант сохраняется сразу.\n" +
-    "Старые настройки работают без миграции; параметры других режимов при переключении сохраняются.")]
+    "Исправлено свободное размещение групп на небольших экранах.\n" +
+    "Верхние и нижние зоны занимают высоту содержимого, средняя — оставшееся место.\n" +
+    "Если группы помещаются, лишняя вертикальная прокрутка не появляется.\n" +
+    "Если высоты действительно недостаточно, прокрутка сохраняется и группы не обрезаются.\n" +
+    "Перерасчёт работает при изменении размеров окна; плитки и настройки не меняются.")]
