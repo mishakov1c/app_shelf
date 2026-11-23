@@ -35,6 +35,7 @@ jobs:
           $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
           $tests = @(Get-ChildItem -LiteralPath tests -Filter '*.Tests.ps1' | Sort-Object Name)
           if ($tests.Count -lt 15) { throw "Expected at least 15 regression test files" }
+          $failures = @()
           foreach ($test in $tests) {
             Write-Host "START $($test.Name)"
             $process = New-Object System.Diagnostics.Process
@@ -52,13 +53,17 @@ jobs:
               $process.WaitForExit()
               Write-Host $out.Result
               Write-Host $err.Result
-              throw "TIMEOUT $($test.Name) after 180 seconds"
+              $failures += "$($test.Name) TIMEOUT"; continue
             }
             Write-Host $out.Result
             Write-Host $err.Result
-            if ($process.ExitCode -ne 0) { throw "FAIL $($test.Name) (exit $($process.ExitCode))" }
+            if ($process.ExitCode -ne 0) {
+              Write-Host "FAIL $($test.Name) (exit $($process.ExitCode))"
+              $failures += $test.Name; continue
+            }
             Write-Host "PASS $($test.Name)"
           }
+          if ($failures.Count -gt 0) { throw "Regression failures: $($failures -join ', ')" }
 
       - name: Upload Windows application
         uses: actions/upload-artifact@v6
