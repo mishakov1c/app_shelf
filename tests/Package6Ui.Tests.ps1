@@ -1910,6 +1910,72 @@ public static class Package6Tests
                         "Wide free placement did not restore three columns");
             } finally { w.Close(); }
         });
+        Case("free zones use content heights before scrolling a small viewport", delegate {
+            Seed("compact", 10);
+            AppConfig c = Load();
+            c.Groups.Clear();
+            c.Groups.AddRange(new string[] { "Первая", "Вторая" });
+            for (int i = 1; i < c.Items.Count; i++) c.Items[i].Group = "Вторая";
+            c.GroupLayoutMode = "free";
+            c.GroupDefaultZone = "top-left";
+            c.GroupZoneOverrides = new Dictionary<string, string> {
+                { "Вторая", "bottom-left" }
+            };
+            ConfigStore.Save(c);
+            MainWindow w = Open(); try {
+                w.Width = 1500; w.Height = 830; Drain();
+                Grid board = (Grid)Get(w, "_freeLayoutGrid");
+                ScrollViewer viewport = (ScrollViewer)Get(w, "_tilesScroller");
+                Dictionary<string, StackPanel> zones =
+                    (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
+                Border upper = (Border)zones["top-left"].Children[0];
+                Border lower = (Border)zones["bottom-left"].Children[0];
+                Assert(board.RowDefinitions[0].Height.IsAuto &&
+                    board.RowDefinitions[1].Height.IsAuto &&
+                    board.RowDefinitions[2].Height.IsAuto,
+                    "Free board rows must measure natural group heights under ScrollViewer");
+                double viewportHeight = viewport.ActualHeight -
+                    viewport.Padding.Top - viewport.Padding.Bottom;
+                List<Border> cells = (List<Border>)Get(w, "_freeZoneCells");
+                double topHeight = 0, bottomHeight = 0;
+                for (int i = 0; i < cells.Count; i++) {
+                    if (i < 3) topHeight = Math.Max(topHeight, cells[i].DesiredSize.Height);
+                    if (i >= 6) bottomHeight = Math.Max(bottomHeight, cells[i].DesiredSize.Height);
+                }
+                double expectedMiddle = Math.Max(26, viewportHeight - topHeight - bottomHeight);
+                Assert(Math.Abs(board.RowDefinitions[1].MinHeight - expectedMiddle) < 2,
+                    "Middle row did not reserve the actual remaining viewport height");
+                Assert(lower.ActualHeight > viewport.ViewportHeight / 3.0 &&
+                    upper.ActualHeight + lower.ActualHeight + 42 < viewport.ViewportHeight,
+                    "Free board test fixture must fit overall but overflow a fixed third: " +
+                    "top=" + upper.ActualHeight + ", bottom=" + lower.ActualHeight +
+                    ", viewport=" + viewport.ViewportHeight + ", grid=" + board.ActualHeight +
+                    ", scrollable=" + viewport.ScrollableHeight);
+                Assert(viewport.ScrollableHeight <= 1.5,
+                    "Free layout scrolls although its groups fit in the viewport");
+                Point lowerBottom = lower.TranslatePoint(new Point(0, lower.ActualHeight), board);
+                Assert(lowerBottom.Y <= board.ActualHeight + 0.5 &&
+                    board.ActualHeight - lowerBottom.Y < 23,
+                    "Bottom zone is not anchored to the bottom of the free board");
+                w.Height = w.MinHeight; Drain();
+                Assert(viewport.ScrollableHeight > 1,
+                    "Truly oversized group must remain scrollable instead of being clipped");
+                viewport.ScrollToBottom(); Drain();
+                Assert(viewport.VerticalOffset > 0,
+                    "Scrollbar cannot reach an oversized bottom group");
+                w.Height = 830; Drain();
+                Assert(viewport.ScrollableHeight <= 1.5,
+                    "Free layout did not relinquish its scrollbar after growing the window");
+                w.Width = w.MinWidth; Drain();
+                Assert(board.RowDefinitions[1].Height.IsAuto,
+                    "Narrow nine-zone layout must restore content-sized list rows");
+                w.Width = 1500; Drain();
+                Assert(board.RowDefinitions[1].Height.IsAuto &&
+                    board.RowDefinitions[1].MinHeight > 26 &&
+                    viewport.ScrollableHeight <= 1.5,
+                    "Wide free layout did not restore adaptive middle space");
+            } finally { w.Close(); }
+        });
         Case("free placement context menu and empty-zone group drop", delegate {
             Seed("normal", 2);
             AppConfig c = Load();

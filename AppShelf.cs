@@ -4441,8 +4441,10 @@ namespace AppShelf
                 hint.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         }
 
-        // Nine independent drop targets; on narrow screens arrange them in a
-        // vertical list rather than clip cards or introduce horizontal scrolling.
+        // Nine independent drop targets. In a vertically scrolling host, star
+        // rows may be measured with unbounded height and cannot reliably absorb
+        // the remaining viewport. Keep all rows Auto and explicitly reserve only
+        // the space left between the measured top and bottom rows.
         private void UpdateFreeBoardLayout(double available)
         {
             if (_freeLayoutGrid == null) return;
@@ -4465,10 +4467,36 @@ namespace AppShelf
                     col == 1 ? HorizontalAlignment.Center : HorizontalAlignment.Right;
                 stack.VerticalAlignment = narrow || row == 0 ? VerticalAlignment.Top :
                     row == 1 ? VerticalAlignment.Center : VerticalAlignment.Bottom;
-                _freeLayoutGrid.RowDefinitions[i].MinHeight =
-                    narrow ? (stack.Children.Count == 0 ? 26 : 70) :
-                    i < 3 ? Math.Max(90, viewportHeight / 3) : 0;
+                RowDefinition definition = _freeLayoutGrid.RowDefinitions[i];
+                definition.Height = GridLength.Auto;
+                definition.MinHeight = narrow ? (stack.Children.Count == 0 ? 26 : 70) :
+                    i == 1 ? 26 : 0;
             }
+        }
+
+        private void FitFreeBoardToViewport(double available)
+        {
+            if (_freeLayoutGrid == null || available < 600) return;
+            double viewportHeight = _tilesScroller.ActualHeight -
+                _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
+            if (Double.IsNaN(viewportHeight) || viewportHeight <= 0) return;
+            double topHeight = 0;
+            double bottomHeight = 0;
+            double columnWidth = Math.Max(1, available / 3);
+            // All card widths have already been updated. Measure unconstrained
+            // card heights at the real zone width so wrapped rows are included.
+            for (int i = 0; i < FreeGroupZones.Length; i++)
+            {
+                if (i >= 3 && i < 6) continue;
+                Border cell = _freeZoneCells[i];
+                cell.Measure(new Size(columnWidth, Double.PositiveInfinity));
+                if (i < 3) topHeight = Math.Max(topHeight, cell.DesiredSize.Height);
+                else bottomHeight = Math.Max(bottomHeight, cell.DesiredSize.Height);
+            }
+            // An Auto middle row may grow beyond this minimum when it contains
+            // taller cards; ScrollViewer can then scroll to the entire content.
+            _freeLayoutGrid.RowDefinitions[1].MinHeight =
+                Math.Max(26, viewportHeight - topHeight - bottomHeight);
         }
 
         private void UpdateGroupWidths()
@@ -4523,6 +4551,7 @@ namespace AppShelf
                         group.Heading.MaxWidth = Double.PositiveInfinity;
                     }
                 }
+                if (free) FitFreeBoardToViewport(available);
             }
             finally { _updatingGroupWidths = false; }
         }
