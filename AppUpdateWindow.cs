@@ -60,6 +60,10 @@ namespace AppShelf
             state.TextWrapping = TextWrapping.Wrap;
             state.Margin = new Thickness(0, 0, 0, 10);
             top.Children.Add(state);
+            TextBlock lastCheck = Text("", 12, MutedBrush);
+            lastCheck.TextWrapping = TextWrapping.Wrap;
+            lastCheck.Margin = new Thickness(0, 0, 0, 8);
+            top.Children.Add(lastCheck);
 
             StackPanel actions = new StackPanel
             {
@@ -143,6 +147,7 @@ namespace AppShelf
                 }
                 clearVersions();
                 setBusy(false);
+                lastCheck.Text = "";
                 state.Text = "Канал обновлений изменён. Нажми «Проверить».";
                 notes.Text = "";
             };
@@ -158,11 +163,29 @@ namespace AppShelf
                 state.Text = includeBeta ? "Проверяю стабильные и бета-релизы GitHub…" :
                     "Проверяю стабильный релиз GitHub…";
                 notes.Text = "";
+                lastCheck.Text = "";
                 try
                 {
-                    AppUpdate.Release[] releases = await Task.Run<AppUpdate.Release[]>(
-                        delegate { return AppUpdate.CheckAvailable(includeBeta); });
+                    AppUpdate.CheckResult result = await Task.Run<AppUpdate.CheckResult>(
+                        delegate { return AppUpdate.CheckWithDetails(includeBeta); });
                     if (!dialog.IsVisible) return;
+                    lastCheck.Text = result.CheckedUtc.HasValue
+                        ? "Последняя успешная проверка: " +
+                            result.CheckedUtc.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") +
+                            (result.FromCache ? " (из кэша)" : "")
+                        : "Успешных проверок этого канала пока нет.";
+                    if (result.RetryUtc.HasValue)
+                    {
+                        state.Text = "GitHub временно ограничил запросы. Следующая проверка доступна после " +
+                            result.RetryUtc.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") + ".";
+                        notes.Text = result.Releases == null
+                            ? "Нет сохранённого результата проверки. Установка недоступна."
+                            : "По предыдущей проверке последний релиз: " +
+                                result.Releases[0].VersionText +
+                                ". Для установки нужна новая проверка.";
+                        return;
+                    }
+                    AppUpdate.Release[] releases = result.Releases;
                     string installedVersion = AppUpdate.InstalledVersionText();
                     foreach (AppUpdate.Release latest in releases)
                     {
