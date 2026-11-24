@@ -4,8 +4,8 @@
 using System.Reflection;
 [assembly: AssemblyVersion("2.23.0.0")]
 [assembly: AssemblyFileVersion("2.23.0.0")]
-[assembly: AssemblyInformationalVersion("2.23.0-beta.6")]
-[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.23.0-beta.6")]
+[assembly: AssemblyInformationalVersion("2.23.0-beta.7")]
+[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.23.0-beta.7")]
 [assembly: AssemblyMetadata("AppShelf.ReleaseNotes",
     "Автоматические резервные копии в выбранную папку с ограничением количества и объёма.\n" +
     "Перед обновлением сохраняются данные и предыдущий EXE.\n" +
@@ -13,4 +13,5 @@ using System.Reflection;
     "Окно резервных копий разделено на три сворачиваемые группы; статус копирования всегда виден.\n" +
     "Подборки вынесены в отдельный раздел настроек, резервные копии выделены отдельно; подсказка о закрытии окна перенесена в Поведение Windows.\n" +
     "Исправлена публикация резервных копий перед обновлением в папках облачной синхронизации.\n" +
+    "Обновление переименованного EXE, повтор бэкапа при изменении данных, кэш проверки и обработка лимита GitHub.\n" +
     "Предварительный выпуск для ручной проверки.")]
