@@ -672,21 +672,21 @@ public static class BackupTests
         config.AutomaticBackupKeep = 3;
         ConfigStore.Save(config);
         string daily = Path.Combine(config.BackupDirectory, "Automatic");
-        Assert(BackupAutomation.CreateAutomatic(config, Reminders("B")), "First daily archive was not created");
+        Assert(BackupAutomation.CreateAutomatic(config), "First daily archive was not created");
         Assert(Directory.GetFiles(daily, "*.zip").Length == 1, "Expected one daily archive");
         string zip = Directory.GetFiles(daily, "*.zip")[0];
         using (ZipArchive archive = ZipFile.OpenRead(zip))
             Assert(archive.GetEntry("apps.json") != null &&
                 archive.GetEntry("reminders.json") != null, "Portable ZIP entries missing");
-        Assert(!BackupAutomation.CreateAutomatic(config, Reminders("B")),
+        Assert(!BackupAutomation.CreateAutomatic(config),
             "Second same-day run created duplicate");
         File.SetLastWriteTimeUtc(zip, DateTime.UtcNow.AddDays(-2));
-        Assert(!BackupAutomation.CreateAutomatic(config, Reminders("B")),
+        Assert(!BackupAutomation.CreateAutomatic(config),
             "Identical old data unexpectedly created a second ZIP");
         for (int i = 0; i < 4; i++)
         {
             File.WriteAllText(Shortcut(0), "changed backup version " + i);
-            Assert(BackupAutomation.CreateAutomatic(config, Reminders("B")),
+            Assert(BackupAutomation.CreateAutomatic(config),
                 "Changed source was not backed up");
             zip = Directory.GetFiles(daily, "*.zip")
                 .OrderByDescending(delegate(string name) { return File.GetLastWriteTimeUtc(name); }).First();
@@ -702,7 +702,7 @@ public static class BackupTests
         ConfigStore.Save(config);
         string executable = Path.Combine(Path.GetDirectoryName(Root), "Original-AppShelf.exe");
         File.WriteAllText(executable, "original executable bytes 2.22.0");
-        string result = BackupAutomation.CreateBeforeUpdate(config, Reminders("B"),
+        string result = BackupAutomation.CreateBeforeUpdate(config,
             executable, "2.22.0", "2.23.0");
         Assert(Directory.Exists(result) &&
             Directory.GetFiles(result, "*.zip").Length == 1 &&
@@ -726,13 +726,13 @@ public static class BackupTests
         ConfigStore.Save(config);
         string executable = Path.Combine(Path.GetDirectoryName(Root), "AppShelf-old.exe");
         File.WriteAllText(executable, "old executable to keep");
-        string keep = BackupAutomation.CreateBeforeUpdate(config, Reminders("B"),
+        string keep = BackupAutomation.CreateBeforeUpdate(config,
             executable, "2.22.0", "2.23.0");
         failCommit = true;
         try
         {
             Throws(delegate {
-                BackupAutomation.CreateBeforeUpdate(config, Reminders("B"),
+                BackupAutomation.CreateBeforeUpdate(config,
                     executable, "2.22.0", "2.23.1");
             });
         }
