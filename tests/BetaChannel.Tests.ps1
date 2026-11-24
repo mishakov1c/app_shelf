@@ -45,8 +45,59 @@ namespace AppShelf
             throw new Exception(name);
         }
 
+        private static void CacheChecks()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "AppShelf-UpdateCache-" + Guid.NewGuid().ToString("N"));
+            DateTime now = new DateTime(2026, 11, 24, 7, 0, 0, DateTimeKind.Utc);
+            int calls = 0;
+            Func<bool, string> fetch = delegate(bool beta)
+            {
+                calls++;
+                return "[" + Entry("2.23.0", false, false) +
+                    (beta ? "," + Entry("2.24.0-beta.1", true, false) : "") + "]";
+            };
+            try
+            {
+                AppUpdate.CheckResult first = AppUpdate.CheckWithCache(true, root, fetch, now);
+                Assert(calls == 1 && !first.FromCache && first.Releases[0].IsBeta, "fresh beta check");
+                AppUpdate.CheckResult again = AppUpdate.CheckWithCache(true, root, fetch, now.AddSeconds(30));
+                Assert(calls == 1 && again.FromCache && again.CheckedUtc == now, "cache hit and persisted timestamp");
+                AppUpdate.CheckResult stable = AppUpdate.CheckWithCache(false, root, fetch, now.AddSeconds(30));
+                Assert(calls == 2 && !stable.Releases[0].IsBeta, "separate stable cache");
+                AppUpdate.CheckResult fresh = AppUpdate.CheckWithCache(true, root, fetch, now.AddSeconds(60));
+                Assert(calls == 3 && !fresh.FromCache, "cache expires after sixty seconds");
+                DateTime blockedUntil = now.AddMinutes(10);
+                AppUpdate.CheckResult limited = AppUpdate.CheckWithCache(true, root, delegate(bool beta)
+                {
+                    calls++;
+                    throw new AppUpdate.GithubRateLimitException(blockedUntil);
+                }, now.AddMinutes(2));
+                Assert(calls == 4 && limited.RetryUtc == blockedUntil &&
+                    limited.FromCache && limited.CheckedUtc == now.AddSeconds(60), "rate limit retains old timestamp");
+                AppUpdate.CheckResult blocked = AppUpdate.CheckWithCache(false, root, fetch, now.AddMinutes(3));
+                Assert(calls == 4 && blocked.RetryUtc == blockedUntil && !blocked.Releases[0].IsBeta,
+                    "persisted cooldown applies to both channels");
+                AppUpdate.CheckResult recovered = AppUpdate.CheckWithCache(true, root, fetch, blockedUntil);
+                Assert(calls == 5 && !recovered.RetryUtc.HasValue, "network resumes at reset");
+                File.WriteAllText(Path.Combine(root, "beta.json"), "invalid");
+                Assert(!AppUpdate.CheckWithCache(true, root, fetch, blockedUntil.AddSeconds(1)).FromCache &&
+                    calls == 6, "corrupt cache falls back to network");
+            }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+            Assert(!AppUpdate.RateLimitUntil(403, "12", "", "", now).HasValue,
+                "ordinary forbidden is not falsely called rate limit");
+            Assert(AppUpdate.RateLimitUntil(429, null, null, "120", now) == now.AddMinutes(2),
+                "retry-after seconds");
+            Assert(AppUpdate.RateLimitUntil(403, "0", "1795507200", "", now) ==
+                new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(1795507200),
+                "primary limit reset");
+            Assert(AppUpdate.RateLimitUntil(429, null, null, null, now) == now.AddMinutes(1),
+                "429 fallback cooldown");
+        }
+
         public static int Run()
         {
+            CacheChecks();
             Assert(AppUpdate.CompareReleaseVersions("2.24.0-beta.10", "2.24.0-beta.2") > 0, "numeric beta order");
             Assert(AppUpdate.CompareReleaseVersions("2.24.0", "2.24.0-beta.999") > 0, "final beats beta");
             Assert(AppUpdate.CompareReleaseVersions("2.25.0-beta.1", "2.24.0") > 0, "next beta beats previous stable");
