@@ -81,6 +81,7 @@ public static class BackupTests
     private const long MiB = 1024 * 1024;
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     private static bool failCommit, failImport;
+    private static int changesDuringExport, archiveCommits;
     private static bool lockCopiedExe;
     private static FileStream copiedExeLock;
     private static bool failImageCopy;
@@ -104,6 +105,15 @@ public static class BackupTests
     {
         if (failCommit) throw new IOException("export-commit-failure");
         File.Move(temp, filename);
+        if (Path.GetFileName(filename) == "AppShelf-data.zip")
+        {
+            archiveCommits++;
+            if (changesDuringExport > 0)
+            {
+                changesDuringExport--;
+                File.WriteAllText(Shortcut(0), "concurrent change " + archiveCommits);
+            }
+        }
     }
     public static void Replace(string temp, string filename)
     {
@@ -163,6 +173,7 @@ public static class BackupTests
     private static void Reset()
     {
         failCommit = failImport = false;
+        changesDuringExport = archiveCommits = 0;
         rollbackFailures.Clear(); rollbackAttempts.Clear();
         Assert(Root == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         // Delete only this test run's verified data directory, never a real profile.
@@ -772,6 +783,33 @@ public static class BackupTests
             "Stale incomplete set not cleaned or prior completed set lost");
     }
 
+    private static void RetryChangedData(bool persistent)
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string executable = Path.Combine(Path.GetDirectoryName(Root), "Retry-test.exe");
+        File.WriteAllText(executable, "test executable");
+        changesDuringExport = persistent ? 3 : 1;
+        if (persistent)
+        {
+            Exception error = Throws(delegate {
+                BackupAutomation.CreateBeforeUpdate(config, executable, "2.23.0-beta.6", "2.23.0-beta.7");
+            });
+            Assert(error is IOException && archiveCommits == 3 &&
+                Directory.GetDirectories(Path.Combine(config.BackupDirectory, "BeforeUpdate")).Length == 0,
+                "Persistent changes did not stop after three clean attempts");
+        }
+        else
+        {
+            string result = BackupAutomation.CreateBeforeUpdate(config, executable,
+                "2.23.0-beta.6", "2.23.0-beta.7");
+            Assert(archiveCommits == 2 && File.Exists(Path.Combine(result, ".complete")) &&
+                Directory.GetDirectories(Path.GetDirectoryName(result)).Length == 1,
+                "Transient data change did not recover on second attempt");
+        }
+    }
+
     private static void FailedPreUpdateKeepsOldCopies()
     {
         AppConfig config = Loaded();
@@ -851,6 +889,8 @@ public static class BackupTests
         Case("failed automatic copy preserves existing ZIP", FailedAutomaticPreservesPrevious);
         Case("paired pre-update ZIP, EXE and external restore safety", PreUpdateBackupAndRestoreLocation);
         Case("failed pre-update keeps prior archives", FailedPreUpdateKeepsOldCopies);
+        Case("transient data change retries backup", delegate { RetryChangedData(false); });
+        Case("persistent data changes stop after three attempts", delegate { RetryChangedData(true); });
         Case("cloud reader locks copied EXE without blocking publication", CloudReaderDoesNotBlockBackupPublication);
         Case("stale incomplete update set cleanup", IncompleteUpdateSetsAreNotRetained);
         Case("legacy .previous moves to selected backup directory", MigrateOldAdjacentExecutable);
