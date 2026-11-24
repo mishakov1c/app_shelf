@@ -9,7 +9,7 @@ $env:APPSHELF_TEST_DATA = $temp
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs')) {
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
@@ -1244,9 +1244,10 @@ public static class Package6Tests
             string profile = Path.Combine(ConfigStore.DirectoryPath, "PluginUiCase");
             Directory.CreateDirectory(profile);
             PluginPackageStore store = new PluginPackageStore(profile);
+            PluginRuntime runtime = new PluginRuntime(store);
             try {
                 Assert(Menu(Tools(w), "Плагины") != null, "Tools menu entry missing");
-                PluginManagerWindow empty = new PluginManagerWindow(w, store);
+                PluginManagerWindow empty = new PluginManagerWindow(w, store, runtime);
                 empty.ShowInTaskbar = false; empty.Show(); Drain();
                 try {
                     bool found = false;
@@ -1265,7 +1266,7 @@ public static class Package6Tests
                 }
                 store.Install(package, delegate { return true; });
                 Directory.CreateDirectory(Path.Combine(profile, "Plugins", "Installed", "example.broken"));
-                PluginManagerWindow manager = new PluginManagerWindow(w, store);
+                PluginManagerWindow manager = new PluginManagerWindow(w, store, runtime);
                 manager.ShowInTaskbar = false; manager.Show(); Drain();
                 try {
                     CheckBox good = null, broken = null;
@@ -1276,14 +1277,18 @@ public static class Package6Tests
                     Assert(good != null && good.IsEnabled && good.IsChecked == false, "Installed row not disabled");
                     Assert(broken != null && !broken.IsEnabled, "Broken package not disabled");
                     good.IsChecked = true;
-                    good.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent)); Drain();
+                    good.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+                    Stopwatch limit = Stopwatch.StartNew();
+                    while (!store.List().Find(delegate(InstalledPlugin p) { return p.Id == "example.hello"; }).Enabled && limit.ElapsedMilliseconds < 5000)
+                    { System.Threading.Thread.Sleep(10); Drain(); }
+                    Drain();
                     bool enabled = false;
                     foreach (InstalledPlugin plugin in store.List())
                         if (plugin.Id == "example.hello") enabled = plugin.Enabled;
                     Assert(enabled, "UI toggle did not persist enabled state");
                     Picture(manager, "plugin-manager");
                 } finally { manager.Close(); }
-            } finally { w.Close(); Directory.Delete(profile, true); }
+            } finally { runtime.Dispose(); w.Close(); Directory.Delete(profile, true); }
         });
         Case("settings accordion and saved navigation", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
