@@ -23,6 +23,7 @@ namespace AppShelf
         [DataMember(Name = "description", EmitDefaultValue = false)] public string Description { get; set; }
         [DataMember(Name = "publisher", EmitDefaultValue = false)] public string Publisher { get; set; }
         [DataMember(Name = "capabilities", IsRequired = true)] public string[] Capabilities { get; set; }
+        [DataMember(Name = "backupFiles", EmitDefaultValue = false)] public string[] BackupFiles { get; set; }
     }
 
     internal sealed class InstalledPlugin
@@ -31,6 +32,31 @@ namespace AppShelf
         internal PluginManifest Manifest;
         internal bool Enabled;
         internal string Error;
+    }
+
+    [DataContract]
+    internal sealed class PluginBackupFile
+    {
+        [DataMember(Name = "path", IsRequired = true)] public string Path { get; set; }
+        [DataMember(Name = "base64", IsRequired = true)] public string Base64 { get; set; }
+    }
+
+    [DataContract]
+    internal sealed class PluginBackupItem
+    {
+        [DataMember(Name = "id", IsRequired = true)] public string Id { get; set; }
+        [DataMember(Name = "name", IsRequired = true)] public string Name { get; set; }
+        [DataMember(Name = "version", IsRequired = true)] public string Version { get; set; }
+        [DataMember(Name = "enabled", IsRequired = true)] public bool Enabled { get; set; }
+        [DataMember(Name = "dataIncluded", IsRequired = true)] public bool DataIncluded { get; set; }
+        [DataMember(Name = "files", IsRequired = true)] public List<PluginBackupFile> Files { get; set; }
+    }
+
+    [DataContract]
+    internal sealed class PluginBackupDocument
+    {
+        [DataMember(Name = "schemaVersion", IsRequired = true)] public int SchemaVersion { get; set; }
+        [DataMember(Name = "plugins", IsRequired = true)] public List<PluginBackupItem> Plugins { get; set; }
     }
 
     internal sealed class PluginPackageStore
@@ -173,6 +199,7 @@ namespace AppShelf
             foreach (string capability in manifest.Capabilities)
                 if (capability == null || !Capabilities.Contains(capability) || !seen.Add(capability))
                     Reject("Неизвестная или повторяющаяся возможность плагина.");
+            ValidateBackupPaths(manifest.BackupFiles);
             return manifest;
         }
 
@@ -498,6 +525,297 @@ namespace AppShelf
             string directory = Child(DataRoot, id);
             EnsurePlainDirectory(directory);
             return directory;
+        }
+
+        internal const int MaxBackupDocument = 16 * 1024 * 1024;
+        private const int MaxBackupFile = 4 * 1024 * 1024;
+        private const int MaxBackupTotal = 8 * 1024 * 1024;
+        internal const string BackupArchiveEntry = "Plugins/backup.json";
+        internal const string RecoveredRelativePath = "Plugins/recovered-backup.json";
+
+        private static void ValidateBackupPaths(string[] paths)
+        {
+            if (paths == null) return;
+            if (paths.Length > 64) Reject("Слишком много файлов данных плагина для копирования.");
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string path in paths)
+            {
+                if (String.IsNullOrEmpty(path) || path.Length > 180 || path.IndexOf('\\') >= 0)
+                    Reject("Недопустимый путь данных плагина.");
+                foreach (string part in path.Split('/'))
+                    if (!ValidSegment(part)) Reject("Недопустимый путь данных плагина: " + path);
+                if (!seen.Add(path)) Reject("Повторяющийся путь данных плагина.");
+            }
+            foreach (string path in paths)
+                foreach (string other in paths)
+                    if (other.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase))
+                        Reject("Конфликт путей данных плагина.");
+        }
+
+        // No links in host-owned policy/recovery locations or declared data paths.
+        private static void PlainIfPresent(string path)
+        {
+            if ((File.Exists(path) || Directory.Exists(path)) &&
+                (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                Reject("Ссылки в данных плагина не поддерживаются.");
+        }
+
+        private string PolicyPath(string id)
+        {
+            ValidateId(id);
+            PlainIfPresent(root);
+            string folder = Path.Combine(root, "BackupPolicy");
+            PlainIfPresent(folder);
+            string path = Child(folder, id + ".flag");
+            PlainIfPresent(path);
+            return path;
+        }
+
+        internal bool BackupDataEnabled(string id)
+        {
+            lock (CommitGate)
+            {
+                string path = PolicyPath(id);
+                return File.Exists(path) && new FileInfo(path).Length == 0;
+            }
+        }
+
+        internal void SetBackupDataEnabled(string id, bool enabled)
+        {
+            lock (CommitGate)
+            {
+                string path = PolicyPath(id);
+                if (!enabled) { File.Delete(path); return; }
+                PluginManifest manifest = ReadInstalled(id);
+                if (manifest.BackupFiles == null || manifest.BackupFiles.Length == 0)
+                    Reject("Плагин не объявляет файлы для резервирования.");
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                using (FileStream output = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
+                    output.Flush(true);
+            }
+        }
+
+        private string DataFile(string id, string relative)
+        {
+            ValidateId(id);
+            ValidateBackupPaths(new[] { relative });
+            string folder = Child(DataRoot, id);
+            PlainIfPresent(root); PlainIfPresent(DataRoot); PlainIfPresent(folder);
+            string current = folder;
+            foreach (string part in relative.Split('/'))
+            {
+                current = Child(current, part);
+                PlainIfPresent(current);
+            }
+            return current;
+        }
+
+        private static byte[] ReadBounded(Stream input, int max)
+        {
+            using (MemoryStream output = new MemoryStream())
+            {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.Read(buffer, 0, buffer.Length)) != 0)
+                {
+                    if (read > max - output.Length) Reject("Превышен лимит резервной копии плагинов.");
+                    output.Write(buffer, 0, read);
+                }
+                return output.ToArray();
+            }
+        }
+
+        internal byte[] CaptureBackup()
+        {
+            lock (CommitGate)
+            {
+                if (!HasInstalledDirectory) return null;
+                PluginBackupDocument document = new PluginBackupDocument
+                { SchemaVersion = 1, Plugins = new List<PluginBackupItem>() };
+                int total = 0;
+                List<InstalledPlugin> installed = List();
+                installed.Sort(delegate(InstalledPlugin a, InstalledPlugin b) { return StringComparer.Ordinal.Compare(a.Id,b.Id); });
+                foreach (InstalledPlugin plugin in installed)
+                {
+                    if (plugin.Error != null || plugin.Manifest == null)
+                    {
+                        // Don't silently omit data that the user opted into.
+                        if (plugin.Id != null && IdPattern.IsMatch(plugin.Id) && BackupDataEnabled(plugin.Id))
+                            Reject("Нельзя сохранить данные повреждённого плагина: " + plugin.Id);
+                        continue;
+                    }
+                    PluginManifest m = plugin.Manifest;
+                    PluginBackupItem item = new PluginBackupItem { Id = m.Id, Name = m.Name,
+                        Version = m.Version, Enabled = plugin.Enabled,
+                        DataIncluded = BackupDataEnabled(m.Id) && m.BackupFiles != null && m.BackupFiles.Length != 0,
+                        Files = new List<PluginBackupFile>() };
+                    if (item.DataIncluded)
+                    {
+                        string[] names = (string[])m.BackupFiles.Clone();
+                        Array.Sort(names, StringComparer.Ordinal);
+                        foreach (string name in names)
+                        {
+                            string path = DataFile(m.Id, name);
+                            if (Directory.Exists(path)) Reject("Ожидался файл данных плагина: " + name);
+                            if (!File.Exists(path)) continue; // optional declared file
+                            byte[] bytes;
+                            using (FileStream input = File.OpenRead(path))
+                                bytes = ReadBounded(input, Math.Min(MaxBackupFile, MaxBackupTotal - total));
+                            total += bytes.Length;
+                            item.Files.Add(new PluginBackupFile { Path = name, Base64 = Convert.ToBase64String(bytes) });
+                        }
+                    }
+                    document.Plugins.Add(item);
+                }
+                if (document.Plugins.Count == 0) return null;
+                return EncodeBackup(document);
+            }
+        }
+
+        private static byte[] EncodeBackup(PluginBackupDocument document)
+        {
+            ValidateBackup(document);
+            using (MemoryStream output = new MemoryStream())
+            {
+                new DataContractJsonSerializer(typeof(PluginBackupDocument)).WriteObject(output, document);
+                if (output.Length > MaxBackupDocument) Reject("Слишком большой архив данных плагинов.");
+                return output.ToArray();
+            }
+        }
+
+        private static void ValidateBackup(PluginBackupDocument document)
+        {
+            if (document == null || document.SchemaVersion != 1 || document.Plugins == null ||
+                document.Plugins.Count > 256) Reject("Некорректный список резервных копий плагинов.");
+            HashSet<string> ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int total = 0;
+            foreach (PluginBackupItem item in document.Plugins)
+            {
+                if (item == null) Reject("Некорректная запись плагина.");
+                ValidateId(item.Id);
+                if (!ids.Add(item.Id) || String.IsNullOrWhiteSpace(item.Name) || item.Name.Length > 100 ||
+                    item.Version == null || !VersionPattern.IsMatch(item.Version) || item.Files == null ||
+                    item.Files.Count > 64 || (!item.DataIncluded && item.Files.Count != 0))
+                    Reject("Некорректная запись плагина в архиве.");
+                List<string> paths = new List<string>();
+                foreach (PluginBackupFile file in item.Files)
+                {
+                    if (file == null || file.Base64 == null || file.Base64.Length > ((MaxBackupFile + 2) / 3) * 4)
+                        Reject("Некорректный файл данных плагина.");
+                    paths.Add(file.Path);
+                    byte[] bytes;
+                    try { bytes = Convert.FromBase64String(file.Base64); }
+                    catch (FormatException error) { throw new InvalidDataException("Некорректные данные плагина.", error); }
+                    if (bytes.Length > MaxBackupFile || bytes.Length > MaxBackupTotal - total)
+                        Reject("Превышен лимит данных плагинов.");
+                    total += bytes.Length;
+                }
+                ValidateBackupPaths(paths.ToArray());
+            }
+        }
+
+        internal static byte[] ReadBackupBytes(Stream input)
+        {
+            byte[] bytes = ReadBounded(input, MaxBackupDocument);
+            DecodeBackup(bytes);
+            return bytes;
+        }
+
+        private static PluginBackupDocument DecodeBackup(byte[] bytes)
+        {
+            PluginBackupDocument document;
+            using (MemoryStream input = new MemoryStream(bytes, false))
+                document = (PluginBackupDocument)new DataContractJsonSerializer(typeof(PluginBackupDocument)).ReadObject(input);
+            ValidateBackup(document);
+            return document;
+        }
+
+        internal string RecoveredPath()
+        {
+            PlainIfPresent(root);
+            string path = Path.Combine(root, "recovered-backup.json");
+            PlainIfPresent(path);
+            return path;
+        }
+
+        internal List<PluginBackupItem> ReadRecovered()
+        {
+            lock (CommitGate)
+            {
+                string path = RecoveredPath();
+                if (!File.Exists(path)) return new List<PluginBackupItem>();
+                using (FileStream input = File.OpenRead(path))
+                    return DecodeBackup(ReadBounded(input, MaxBackupDocument)).Plugins;
+            }
+        }
+
+        internal void ApplyRecoveredData(string id, string version, string backupRoot)
+        {
+            lock (CommitGate)
+            {
+                PluginManifest manifest = ReadInstalled(id);
+                if (manifest.Version != version) Reject("Для восстановления нужна та же версия плагина.");
+                PluginBackupItem item = ReadRecovered().Find(delegate(PluginBackupItem x) { return x.Id == id; });
+                if (item == null || item.Version != version || !item.DataIncluded || item.Files.Count == 0)
+                    Reject("Нет подходящих сохранённых данных плагина.");
+                HashSet<string> allowed = new HashSet<string>(manifest.BackupFiles ?? new string[0], StringComparer.Ordinal);
+                foreach (PluginBackupFile file in item.Files)
+                    if (!allowed.Contains(file.Path)) Reject("Плагин не разрешает восстановление файла: " + file.Path);
+                if (String.IsNullOrWhiteSpace(backupRoot)) Reject("Сначала выберите папку резервных копий AppShelf.");
+                string safety = Path.Combine(backupRoot, "BeforeRestore", "plugin-" + id + "-" + Guid.NewGuid().ToString("N"));
+                // Save only affected existing files; never copy or delete other plugin data.
+                List<string> touched = new List<string>();
+                HashSet<string> existed = new HashSet<string>(StringComparer.Ordinal);
+                foreach (PluginBackupFile file in item.Files)
+                {
+                    string active = DataFile(id, file.Path);
+                    if (Directory.Exists(active)) Reject("Конфликт файла данных: " + file.Path);
+                    if (File.Exists(active))
+                    {
+                        string old = Child(safety, file.Path);
+                        Directory.CreateDirectory(Path.GetDirectoryName(old));
+                        File.Copy(active, old);
+                        existed.Add(file.Path);
+                    }
+                }
+                try
+                {
+                    foreach (PluginBackupFile file in item.Files)
+                    {
+                        string active = DataFile(id, file.Path);
+                        Directory.CreateDirectory(Path.GetDirectoryName(active));
+                        string temp = active + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                        try
+                        {
+                            byte[] bytes = Convert.FromBase64String(file.Base64);
+                            using (FileStream output = new FileStream(temp, FileMode.CreateNew))
+                            { output.Write(bytes, 0, bytes.Length); output.Flush(true); }
+                            if (existed.Contains(file.Path)) File.Replace(temp, active, null);
+                            else File.Move(temp, active);
+                            touched.Add(file.Path);
+                        }
+                        finally { if (File.Exists(temp)) File.Delete(temp); }
+                    }
+                }
+                catch (Exception error)
+                {
+                    List<Exception> rollback = new List<Exception>();
+                    foreach (string name in touched)
+                    {
+                        try
+                        {
+                            string active = DataFile(id, name);
+                            if (existed.Contains(name)) File.Copy(Child(safety, name), active, true);
+                            else File.Delete(active);
+                        }
+                        catch (Exception failure) { rollback.Add(failure); }
+                    }
+                    if (rollback.Count != 0)
+                        throw new IOException("Не удалось полностью отменить восстановление. Предыдущие файлы: " + safety,
+                            new AggregateException(rollback));
+                    throw new IOException("Восстановление данных отменено. Предыдущие файлы: " + safety, error);
+                }
+            }
         }
 
         private static bool Approved(string directory, PluginManifest manifest)
