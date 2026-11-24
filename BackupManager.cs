@@ -8,6 +8,7 @@ using System.IO.Compression;
 using System.Runtime.Serialization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Threading;
@@ -700,7 +701,11 @@ namespace AppShelf
             foreach (string path in Directory.GetFiles(folder, "*.zip", SearchOption.TopDirectoryOnly))
             {
                 FileInfo info = new FileInfo(path);
-                if ((info.Attributes & FileAttributes.ReparsePoint) == 0)
+                // Only manage archives written by AppShelf, never unrelated user files.
+                // Cloud on-demand files may be reparse-point placeholders; deleting a
+                // file placeholder deletes that entry, not an arbitrary target folder.
+                if (Regex.IsMatch(info.Name, @"\AAppShelf-\d{8}-\d{6}-[0-9a-f]{6}\.zip\z",
+                    RegexOptions.IgnoreCase))
                     files.Add(info);
             }
             files.Sort(delegate(FileInfo a, FileInfo b) { return b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc); });
@@ -777,7 +782,12 @@ namespace AppShelf
                 {
                     DirectoryInfo directory = new DirectoryInfo(path);
                     if ((directory.Attributes & FileAttributes.ReparsePoint) == 0 &&
-                        !directory.Name.StartsWith(".tmp-", StringComparison.OrdinalIgnoreCase))
+                        (Regex.IsMatch(directory.Name,
+                            @"\A\d{8}-\d{6}-v\d+\.\d+\.\d+-to-\d+\.\d+\.\d+-[0-9a-f]{6}\z",
+                            RegexOptions.IgnoreCase) ||
+                         Regex.IsMatch(directory.Name,
+                            @"\Alegacy-\d{8}-\d{6}-[0-9a-f]{6}\z",
+                            RegexOptions.IgnoreCase)))
                         groups.Add(directory);
                 }
                 groups.Sort(delegate(DirectoryInfo a, DirectoryInfo b) {
@@ -814,7 +824,9 @@ namespace AppShelf
                     {
                         DirectoryInfo info = new DirectoryInfo(folder);
                         if ((info.Attributes & FileAttributes.ReparsePoint) == 0 &&
-                            info.CreationTimeUtc < cutoff)
+                            info.CreationTimeUtc < cutoff &&
+                            (Regex.IsMatch(info.Name, @"\A\.tmp-\d{8}-\d{6}-v", RegexOptions.IgnoreCase) ||
+                             Regex.IsMatch(info.Name, @"\A\.tmp-legacy-\d{8}-\d{6}-", RegexOptions.IgnoreCase)))
                             Directory.Delete(folder, true);
                     }
                     catch (Exception error) { ConfigStore.Log(error); }
