@@ -164,7 +164,7 @@ public static class PluginRuntimeTests {
     foreach ($ref in $refs) { [void]$parameters.ReferencedAssemblies.Add($ref) }
     $result = $provider.CompileAssemblyFromSource($parameters,[string[]]$sources)
     if ($result.Errors.Count) { throw ($result.Errors | Out-String) }
-    $result.CompiledAssembly.GetType('PluginRuntimeTests').GetMethod('Run').Invoke($null,[object[]]@($temp,$options.OutputAssembly))
+    $result.CompiledAssembly.GetType('PluginRuntimeTests').GetMethod('Run').Invoke($null,[object[]]@([string]$temp,[string]$options.OutputAssembly))
 } finally {
     $provider.Dispose()
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }
