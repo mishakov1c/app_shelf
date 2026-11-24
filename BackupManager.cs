@@ -783,12 +783,7 @@ namespace AppShelf
                 {
                     DirectoryInfo directory = new DirectoryInfo(path);
                     if ((directory.Attributes & FileAttributes.ReparsePoint) == 0 &&
-                        (Regex.IsMatch(directory.Name,
-                            @"\A\d{8}-\d{6}-v\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?-to-\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?-[0-9a-f]{6}\z",
-                            RegexOptions.IgnoreCase) ||
-                         Regex.IsMatch(directory.Name,
-                            @"\Alegacy-\d{8}-\d{6}-[0-9a-f]{6}\z",
-                            RegexOptions.IgnoreCase)))
+                        IsCompletedUpdateSet(directory))
                         groups.Add(directory);
                 }
                 groups.Sort(delegate(DirectoryInfo a, DirectoryInfo b) {
@@ -802,6 +797,45 @@ namespace AppShelf
                 }
             }
             return entries;
+        }
+
+        // Old releases atomically renamed their folders. New sets use a distinct
+        // suffix and a completion marker instead: cloud clients can open a new
+        // EXE without FILE_SHARE_DELETE and prevent renaming its parent folder.
+        private const string UpdateSetMarker = ".complete";
+        private const string UpdateSetMarkerText = "AppShelf backup complete v1";
+
+        private static bool IsUpdateSetName(string name)
+        {
+            return Regex.IsMatch(name,
+                @"\A(?:\d{8}-\d{6}-v\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?-to-\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?|legacy-\d{8}-\d{6})-[0-9a-f]{6}(?:-set)?\z",
+                RegexOptions.IgnoreCase);
+        }
+
+        private static bool IsCompletedUpdateSet(DirectoryInfo directory)
+        {
+            if (!IsUpdateSetName(directory.Name)) return false;
+            if (!directory.Name.EndsWith("-set", StringComparison.OrdinalIgnoreCase))
+                return true; // Atomic publication by older AppShelf versions.
+            string marker = Path.Combine(directory.FullName, UpdateSetMarker);
+            if (!File.Exists(marker)) return false;
+            // Fail closed on an unreadable marker; cleanup must not delete it.
+            return String.Equals(File.ReadAllText(marker), UpdateSetMarkerText,
+                StringComparison.Ordinal);
+        }
+
+        private static void CompleteUpdateSet(string folder)
+        {
+            // All payload streams are already closed and hashes verified.
+            // No rename or deletion of a payload is needed to publish the set.
+            string marker = Path.Combine(folder, UpdateSetMarker);
+            using (FileStream output = new FileStream(marker, FileMode.CreateNew,
+                FileAccess.Write, FileShare.Read))
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes(UpdateSetMarkerText);
+                output.Write(bytes, 0, bytes.Length);
+                output.Flush(true);
+            }
         }
 
         // An interrupted shutdown may leave only temporary ZIPs or an unpublished
@@ -828,6 +862,18 @@ namespace AppShelf
                             info.CreationTimeUtc < cutoff &&
                             (Regex.IsMatch(info.Name, @"\A\.tmp-\d{8}-\d{6}-v", RegexOptions.IgnoreCase) ||
                              Regex.IsMatch(info.Name, @"\A\.tmp-legacy-\d{8}-\d{6}-", RegexOptions.IgnoreCase)))
+                            Directory.Delete(folder, true);
+                    }
+                    catch (Exception error) { ConfigStore.Log(error); }
+            if (Directory.Exists(beforeUpdate))
+                foreach (string folder in Directory.GetDirectories(beforeUpdate, "*-set",
+                    SearchOption.TopDirectoryOnly))
+                    try
+                    {
+                        DirectoryInfo info = new DirectoryInfo(folder);
+                        if ((info.Attributes & FileAttributes.ReparsePoint) == 0 &&
+                            info.CreationTimeUtc < cutoff && IsUpdateSetName(info.Name) &&
+                            !IsCompletedUpdateSet(info))
                             Directory.Delete(folder, true);
                     }
                     catch (Exception error) { ConfigStore.Log(error); }
@@ -942,18 +988,19 @@ namespace AppShelf
                 Directory.CreateDirectory(parent);
                 string id = "legacy-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" +
                     Guid.NewGuid().ToString("N").Substring(0, 6);
-                string staging = Path.Combine(parent, ".tmp-" + id);
-                string destination = Path.Combine(parent, id);
-                Directory.CreateDirectory(staging);
+                string destination = Path.Combine(parent, id + "-set");
+                Directory.CreateDirectory(destination);
+                bool completed = false;
                 try
                 {
-                    string candidate = Path.Combine(staging, "AppShelf-previous.exe");
+                    string candidate = Path.Combine(destination, "AppShelf-previous.exe");
                     string originalHash = Sha256File(legacy);
                     File.Copy(legacy, candidate, false);
                     if (!String.Equals(originalHash, Sha256File(candidate),
                         StringComparison.OrdinalIgnoreCase))
                         throw new IOException("Не удалось проверить прежнюю копию EXE.");
-                    Directory.Move(staging, destination);
+                    CompleteUpdateSet(destination);
+                    completed = true;
                     // If another process changed the original, preserve it.
                     try
                     {
@@ -969,7 +1016,7 @@ namespace AppShelf
                 }
                 finally
                 {
-                    try { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
+                    try { if (!completed && Directory.Exists(destination)) Directory.Delete(destination, true); }
                     catch (Exception error) { ConfigStore.Log(error); }
                 }
             }
@@ -987,29 +1034,30 @@ namespace AppShelf
                 string name = DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-v" +
                     installedVersion + "-to-" + newVersion + "-" +
                     Guid.NewGuid().ToString("N").Substring(0, 6);
-                string temp = Path.Combine(baseFolder, ".tmp-" + name);
-                string result = Path.Combine(baseFolder, name);
-                Directory.CreateDirectory(temp);
+                string result = Path.Combine(baseFolder, name + "-set");
+                Directory.CreateDirectory(result);
+                bool completed = false;
                 try
                 {
                     string before = DataSignature();
-                    string archive = Path.Combine(temp, "AppShelf-data.zip");
+                    string archive = Path.Combine(result, "AppShelf-data.zip");
                     AppConfig savedConfig;
                     ReminderDocument savedReminders;
                     ReadSavedDocuments(out savedConfig, out savedReminders);
                     BackupStore.ExportAll(archive, savedConfig, savedReminders);
                     if (!String.Equals(before, DataSignature(), StringComparison.Ordinal))
                         throw new IOException("Данные изменились во время резервного копирования.");
-                    string executable = Path.Combine(temp, "AppShelf-" + installedVersion + ".exe");
+                    string executable = Path.Combine(result, "AppShelf-" + installedVersion + ".exe");
                     File.Copy(oldExecutable, executable, false);
                     if (!String.Equals(Sha256File(executable), Sha256File(oldExecutable),
                         StringComparison.OrdinalIgnoreCase))
                         throw new IOException("Копия исполняемого файла не прошла проверку.");
-                    Directory.Move(temp, result);
+                    CompleteUpdateSet(result);
+                    completed = true;
                 }
                 finally
                 {
-                    try { if (Directory.Exists(temp)) Directory.Delete(temp, true); }
+                    try { if (!completed && Directory.Exists(result)) Directory.Delete(result, true); }
                     catch (Exception error) { ConfigStore.Log(error); }
                 }
                 try { Prune(root, config); }
