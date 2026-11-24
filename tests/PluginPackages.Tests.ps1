@@ -137,8 +137,8 @@ public static class PluginPackageTests {
         store.Remove(id);
         Install(store,Package(root,m2,null,true));
         Assert(!store.BackupDataEnabled(id),"reinstall requires consent");
-        string unsafe=Manifest("1.0.0","example.unsafe",1).Replace("\"capabilities\"","\"backupFiles\":[\"../bad\"],\"capabilities\"");
-        Reject(delegate { Install(store,Package(root,unsafe,null,true)); },"unsafe manifest backup path");
+        string unsafeManifest=Manifest("1.0.0","example.unsafe",1).Replace("\"capabilities\"","\"backupFiles\":[\"../bad\"],\"capabilities\"");
+        Reject(delegate { Install(store,Package(root,unsafeManifest,null,true)); },"unsafe manifest backup path");
     }
     public static void Run() {
         string root = Path.Combine(Path.GetTempPath(), "AppShelf-PluginTests-" + Guid.NewGuid().ToString("N"));
