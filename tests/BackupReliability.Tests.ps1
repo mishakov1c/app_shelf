@@ -131,7 +131,7 @@ public static class BackupTests
     private static string Shortcut(int index) { return Path.Combine(ConfigStore.ShortcutsDirectory, "S" + index + ".url"); }
     private static AppConfig Config(string title, int count)
     {
-        AppConfig config = new AppConfig { WeatherCity = title, ShowWeather = false, ShowNetwork = false };
+        AppConfig config = new AppConfig { WeatherCity = title, ShowWeather = false, ShowNetwork = false, MinimizeToTray = false };
         config.Groups.Add(title);
         for (int i = 0; i < count; i++)
         {

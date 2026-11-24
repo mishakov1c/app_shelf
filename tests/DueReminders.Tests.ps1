@@ -227,7 +227,7 @@ public static class DueReminderTests
         // Use the real Loaded -> StartMonitors -> StartReminderTimer path.
         // Disable optional external probes in the isolated test configuration.
         ConfigStore.Save(new AppConfig { ShowNetwork = false, ShowWeather = false,
-            ShowPomodoro = false, RdpKeepAwake = false, MinimizeToTray = true });
+            ShowPomodoro = false, RdpKeepAwake = false, MinimizeToTray = true, CloseToTray = false });
         MainWindow window = new MainWindow(true);
         try
         {
@@ -333,6 +333,9 @@ public static class DueReminderTests
     {
         Assert(ConfigStore.DirectoryPath == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"),
             "Data isolation failed");
+        // These scenarios simulate an actual process stop, not the title-bar X.
+        ConfigStore.Save(new AppConfig { ShowWeather = false, ShowNetwork = false,
+            ShowPomodoro = false, MinimizeToTray = false });
         foreach (string mode in new string[] { "once", "daily", "weekly" })
         {
             Scenario(false, mode);

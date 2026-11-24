@@ -190,7 +190,7 @@ public static class StartupSoundTests
     {
         FailWrite = FailAfterWrite = FailRead = FailTray = NullIcon = FailTrayAfterCreate = false;
         ConfigStore.Save(new AppConfig { ShowNetwork = false, ShowWeather = false, RdpKeepAwake = false,
-            WindowPlacementSaved = true, WindowLeft = 80, WindowTop = 90, WindowWidth = 720, WindowHeight = 510, WindowMaximized = maximized, MinimizeToTray = true });
+            WindowPlacementSaved = true, WindowLeft = 80, WindowTop = 90, WindowWidth = 720, WindowHeight = 510, WindowMaximized = maximized, MinimizeToTray = true, CloseToTray = false });
         ReminderStore.Save(new ReminderDocument()); WindowsStartup.WriteRaw(null); Writes = 0;
     }
     private static MainWindow Open(bool tray, bool maximized)
@@ -200,6 +200,7 @@ public static class StartupSoundTests
         w.Show(); Drain(); return w;
     }
     private static void Edit(MainWindow w, bool save, Action<Window> action) { saveSettings = save; settings = action; Call(w, "ShowSettings"); }
+    private static void ForceExit(MainWindow w) { Set(w, "_explicitExitRequested", true); w.Close(); }
     private static void Startup(Window d, bool enabled, bool tray)
     {
         Check(d, "Запускать AppShelf при входе в Windows").IsChecked = enabled;
@@ -263,6 +264,94 @@ public static class StartupSoundTests
                 w.Hide(); object[] args = new object[] { IntPtr.Zero, 0x0312, new IntPtr(0x4711), IntPtr.Zero, false }; Call(w, "GlobalHotKeyMessage", args); Drain(); Assert(w.IsVisible && (bool)args[4], "Hotkey message did not reopen window");
             } finally { w.Close(); }
         }); }
+        Case("legacy close-to-tray fallback and new preference roundtrip", delegate {
+            Seed(false);
+            AppConfig c = Load(); c.CloseToTray = null; c.MinimizeToTray = true; ConfigStore.Save(c);
+            Assert(Load().CloseToTrayEnabled && !Load().CloseToTray.HasValue,
+                "Legacy enabled tray preference was not honored");
+            c.MinimizeToTray = false; ConfigStore.Save(c);
+            Assert(!Load().CloseToTrayEnabled, "Legacy disabled preference was not honored");
+            c.CloseToTray = true; ConfigStore.Save(c);
+            Assert(Load().CloseToTrayEnabled && Load().CloseToTray == true,
+                "Explicit new preference did not override legacy false");
+            c.CloseToTray = false; c.MinimizeToTray = true; ConfigStore.Save(c);
+            Assert(!Load().CloseToTrayEnabled && Load().CloseToTray == false,
+                "Explicit new false preference did not survive serialization");
+        });
+        Case("minimize always stays in taskbar even when close-to-tray enabled", delegate {
+            Seed(false); AppConfig c = Load(); c.CloseToTray = true; ConfigStore.Save(c);
+            MainWindow w = Open(false, false); try {
+                w.WindowState = WindowState.Minimized; Drain();
+                Assert(w.IsVisible && w.ShowInTaskbar &&
+                    w.WindowState == WindowState.Minimized,
+                    "Minimize incorrectly hid the window in the tray");
+                Call(w, "ShowPanel"); Drain();
+                Assert(w.IsVisible && w.WindowState == WindowState.Normal,
+                    "Restoring from the taskbar lost the normal window");
+            } finally { ForceExit(w); }
+        });
+        Case("close button hides into tray and tray Exit always terminates", delegate {
+            Seed(false); AppConfig c = Load(); c.CloseToTray = true; ConfigStore.Save(c);
+            MainWindow w = Open(false, false); int closed = 0;
+            w.Closed += delegate { closed++; };
+            try {
+                Forms.NotifyIcon tray = (Forms.NotifyIcon)Get(w, "_trayIcon");
+                Assert(tray != null && tray.Visible && tray.Icon != null,
+                    "Tray was not available for the close interception test");
+                w.Close(); Drain();
+                Assert(!w.IsVisible && closed == 0 && tray.Visible,
+                    "Close did not leave the application alive in tray");
+                ((Forms.ToolStripMenuItem)tray.ContextMenuStrip.Items[0]).PerformClick(); Drain();
+                Assert(w.IsVisible, "Tray Open did not restore a hidden window");
+                w.Close(); Drain();
+                Assert(!w.IsVisible && closed == 0, "Second close unexpectedly exited");
+                ((Forms.ToolStripMenuItem)tray.ContextMenuStrip.Items[2]).PerformClick(); Drain();
+                Assert(closed == 1, "Tray Exit was intercepted instead of closing the application");
+            } finally { if (closed == 0) ForceExit(w); }
+        });
+        Case("close preference off exits, and shutdown bypasses close-to-tray", delegate {
+            Seed(false); AppConfig c = Load(); c.CloseToTray = false; ConfigStore.Save(c);
+            MainWindow w = Open(false, false); int closed = 0;
+            w.Closed += delegate { closed++; };
+            try { w.Close(); Drain(); Assert(closed == 1, "Disabled preference did not close the application"); }
+            finally { if (closed == 0) ForceExit(w); }
+            c.CloseToTray = true; ConfigStore.Save(c);
+            MainWindow shutdown = Open(false, false); int ended = 0;
+            shutdown.Closed += delegate { ended++; };
+            try {
+                Set(shutdown, "_sessionEnding", true);
+                shutdown.Close(); Drain();
+                Assert(ended == 1, "Windows session ending was intercepted by tray hiding");
+            } finally { if (ended == 0) ForceExit(shutdown); }
+        });
+        Case("close preference cannot hide the app when the tray is unavailable", delegate {
+            Seed(false); AppConfig c = Load(); c.CloseToTray = true; ConfigStore.Save(c);
+            FailTray = true; MainWindow w = Open(false, false); int closed = 0;
+            w.Closed += delegate { closed++; };
+            try {
+                w.Close(); Drain();
+                Assert(closed == 1, "Close left an inaccessible background application");
+            } finally { FailTray = false; if (closed == 0) ForceExit(w); }
+        });
+        Case("settings save changes close-to-tray without changing the legacy field", delegate {
+            Seed(false); AppConfig c = Load(); c.MinimizeToTray = false;
+            c.CloseToTray = null; ConfigStore.Save(c);
+            MainWindow w = Open(false, false); try {
+                Edit(w, true, delegate(Window d) {
+                    CheckBox close = Check(d, "При закрытии окна сворачивать в трей");
+                    Assert(close.IsChecked == false, "Previous disabled preference was not shown");
+                    close.IsChecked = true;
+                });
+                c = Load();
+                Assert(c.CloseToTray == true && c.MinimizeToTray == false,
+                    "New preference did not persist independently from legacy minimize flag");
+                Edit(w, false, delegate(Window d) {
+                    Check(d, "При закрытии окна сворачивать в трей").IsChecked = false;
+                });
+                Assert(Load().CloseToTray == true,
+                    "Cancelled tray preference change was written to disk");
+            } finally { ForceExit(w); }
+        });
         Case("ordinary launch is visible without tray argument", delegate { Seed(false); MainWindow w = Open(false, false); try { Assert(w.IsVisible && w.ShowInTaskbar && w.WindowState == WindowState.Normal, "Normal launch hidden"); } finally { w.Close(); } });
         foreach (bool nullIcon in new bool[] { false, true }) { bool n = nullIcon; Case("tray unavailable fallback null icon=" + n, delegate {
             Seed(false); FailTray = !n; NullIcon = n; MainWindow w = Open(true, false); try {
