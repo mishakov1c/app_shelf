@@ -29,3 +29,7 @@ IDs are stable, lowercase ASCII, reverse-domain-like; versions are numeric X.Y.Z
 - Demonstration plugin, Windows regression and manual acceptance before beta publication.
 
 Stage 1 intentionally does not start any plugin, change user settings, or modify the existing updater/backup formats.
+
+## Stage 2: package manager
+
+The window is accessible through the main tools menu and Settings → Plugins. File picker and single-file drag/drop use the same staged installation. Trust is requested after validating the exact staged bytes; the declared publisher is not verified. New installations and updates are disabled by default. Approval and enabled state are host-created marker files in the installed directory; they cannot be supplied in a package. Update-by-row requires matching plugin ID. Uninstall preserves data. Invalid installed entries show errors and can be removed only if the path is a valid non-linked tree. Window size uses the existing window-size service. No process starts, including for enabled packages. Markers are application state, not a security boundary against code running as the same user. Interrupted-update recovery and full runtime integration remain future work.

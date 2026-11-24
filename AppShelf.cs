@@ -2054,6 +2054,9 @@ namespace AppShelf
             };
             _collectionsMenuItem.Click += delegate { ShowCollectionsWindow(); };
             tools.Items.Add(_collectionsMenuItem);
+            MenuItem plugins = new MenuItem { Header = "Плагины", Icon = FluentUi.MenuGlyph("settings") };
+            plugins.Click += delegate { ShowPluginManager(this); };
+            tools.Items.Add(plugins);
             _newGroupMenuItem = new MenuItem
             {
                 Header = "Создать группу", Icon = FluentUi.MenuGlyph("folder"),
@@ -7149,7 +7152,7 @@ namespace AppShelf
                 ? "appearance" : savedSection;
             if (lastSection != "network" && lastSection != "weather" &&
                 lastSection != "time" && lastSection != "windows" &&
-                lastSection != "appearance" && lastSection != "data" && lastSection != "collections")
+                lastSection != "appearance" && lastSection != "data" && lastSection != "collections" && lastSection != "plugins")
                 lastSection = "appearance";
             if (requestedSection == "appearance-panel")
             {
@@ -7158,7 +7161,7 @@ namespace AppShelf
             }
             else if (requestedSection == "network" || requestedSection == "weather" ||
                 requestedSection == "time" || requestedSection == "windows" ||
-                requestedSection == "appearance" || requestedSection == "data" || requestedSection == "collections")
+                requestedSection == "appearance" || requestedSection == "data" || requestedSection == "collections" || requestedSection == "plugins")
                 lastSection = requestedSection;
             Action<string> toggleSection = delegate(string key)
             {
@@ -7311,6 +7314,10 @@ namespace AppShelf
                 windowsItems, sections, arrows, headers, toggleSection);
             AddSettingsSection(accordionRows, "collections", "Подборки",
                 new List<UIElement> { collectionsSetting }, sections, arrows, headers, toggleSection);
+            Button pluginSettings = ActionButton("Управление плагинами…", false);
+            pluginSettings.Click += delegate { ShowPluginManager(dialog); };
+            AddSettingsSection(accordionRows, "plugins", "Плагины",
+                new List<UIElement> { pluginSettings }, sections, arrows, headers, toggleSection);
             AddSettingsSection(accordionRows, "data", "Резервные копии",
                 new List<UIElement> { backupSettings },
                 sections, arrows, headers, toggleSection);

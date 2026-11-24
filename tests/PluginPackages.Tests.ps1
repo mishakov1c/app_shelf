@@ -36,6 +36,7 @@ public static class PluginPackageTests {
         }
         return path;
     }
+    static PluginManifest Install(PluginPackageStore store, string package) { return store.Install(package, delegate { return true; }); }
     public static void Run() {
         string root = Path.Combine(Path.GetTempPath(), "AppShelf-PluginTests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -44,24 +45,34 @@ public static class PluginPackageTests {
             string v1 = Manifest("1.0.0", "example.hello", 1);
             string v2 = Manifest("1.1.0", "example.hello", 1);
             string initial = Package(root, v1, null, true);
-            Assert(store.Install(initial).Id == "example.hello", "install manifest");
+            Assert(Install(store, initial).Id == "example.hello", "install manifest");
             Assert(store.ReadInstalled("example.hello").Version == "1.0.0", "read installed");
+            Assert(store.List().Count == 1 && !store.List()[0].Enabled, "default disabled");
+            store.SetEnabled("example.hello", true);
+            Assert(new PluginPackageStore(root).List()[0].Enabled, "enabled state persisted");
+            Assert(store.Install(Package(root, v2, null, true), delegate { return false; }) == null, "cancelled update");
+            Assert(store.List()[0].Enabled && store.ReadInstalled("example.hello").Version == "1.0.0", "cancel leaves state");
+            Reject(delegate { store.Install(Package(root, v2, null, true), delegate { return true; }, "example.other"); }, "wrong update id");
+            store.SetEnabled("example.hello", false);
+            Assert(!store.List()[0].Enabled, "disabled state persisted");
+            store.SetEnabled("example.hello", true);
             string data = Path.Combine(store.GetDataDirectory("example.hello"), "data.txt");
             File.WriteAllText(data, "keep");
-            Reject(delegate { store.Install(initial); }, "same version");
+            Reject(delegate { Install(store, initial); }, "same version");
             foreach (string bad in new[] { "../escape.txt", "bin/../escape.txt", "C:/escape.txt",
                 "bin/COM1.txt", "bin/evil.txt:stream", "bin/hello.exe", "bin/trailing.",
                 "bin\\evil.exe", "data.json", "/bin/evil.exe" }) {
                 string invalid = Package(root, v2, bad, true);
-                Reject(delegate { store.Install(invalid); }, bad);
+                Reject(delegate { Install(store, invalid); }, bad);
             }
-            Reject(delegate { store.Install(Package(root, v2, null, false)); }, "missing executable");
-            Reject(delegate { store.Install(Package(root, Manifest("1.1.0", "example.hello", 2), null, true)); }, "API");
-            Reject(delegate { store.Install(Package(root, Manifest("1.1.0", "../escape", 1), null, true)); }, "id");
+            Reject(delegate { Install(store, Package(root, v2, null, false)); }, "missing executable");
+            Reject(delegate { Install(store, Package(root, Manifest("1.1.0", "example.hello", 2), null, true)); }, "API");
+            Reject(delegate { Install(store, Package(root, Manifest("1.1.0", "../escape", 1), null, true)); }, "id");
             Assert(store.ReadInstalled("example.hello").Version == "1.0.0", "failed update preserved");
             Assert(!File.Exists(Path.Combine(root, "escape.txt")), "no escape");
-            Assert(store.Install(Package(root, v2, null, true)).Version == "1.1.0", "update");
+            Assert(Install(store, Package(root, v2, null, true)).Version == "1.1.0", "update");
             Assert(File.ReadAllText(data) == "keep", "update preserved data");
+            Assert(!store.List()[0].Enabled, "new version disabled");
             store.Remove("example.hello");
             Assert(File.ReadAllText(data) == "keep", "remove preserved data");
             Assert(!Directory.Exists(Path.Combine(root, "Plugins", "Installed", "example.hello")), "code removed");

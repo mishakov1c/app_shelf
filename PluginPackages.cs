@@ -20,7 +20,16 @@ namespace AppShelf
         [DataMember(Name = "version", IsRequired = true)] public string Version;
         [DataMember(Name = "entryPoint", IsRequired = true)] public string EntryPoint;
         [DataMember(Name = "description", EmitDefaultValue = false)] public string Description;
+        [DataMember(Name = "publisher", EmitDefaultValue = false)] public string Publisher;
         [DataMember(Name = "capabilities", IsRequired = true)] public string[] Capabilities;
+    }
+
+    internal sealed class InstalledPlugin
+    {
+        internal string Id;
+        internal PluginManifest Manifest;
+        internal bool Enabled;
+        internal string Error;
     }
 
     internal sealed class PluginPackageStore
@@ -143,7 +152,8 @@ namespace AppShelf
                 Reject("Несовместимая версия схемы или API плагина.");
             ValidateId(manifest.Id);
             if (String.IsNullOrWhiteSpace(manifest.Name) || manifest.Name.Length > 100 ||
-                (manifest.Description != null && manifest.Description.Length > 2000))
+                (manifest.Description != null && manifest.Description.Length > 2000) ||
+                (manifest.Publisher != null && manifest.Publisher.Length > 100))
                 Reject("Некорректное название или описание плагина.");
             if (manifest.Version == null || !VersionPattern.IsMatch(manifest.Version))
                 Reject("Версия плагина должна иметь формат X.Y.Z.");
@@ -218,8 +228,9 @@ namespace AppShelf
 
         // Stage and validate before replacing the installed code. Runtime must stop the
         // old process before calling this method; data lives in a separate directory.
-        internal PluginManifest Install(string package)
+        internal PluginManifest Install(string package, Func<PluginManifest, bool> confirm, string expectedId = null)
         {
+            if (confirm == null) throw new ArgumentNullException("confirm");
             EnsureInstalledRoot();
             string stage = Path.Combine(InstalledRoot, ".stage-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(stage);
@@ -227,6 +238,8 @@ namespace AppShelf
             {
                 ExtractPackage(package, stage);
                 PluginManifest manifest = ReadManifest(stage);
+                if (expectedId != null && manifest.Id != expectedId)
+                    Reject("Пакет относится к другому плагину.");
                 string target = Child(InstalledRoot, manifest.Id);
                 if (Directory.Exists(target))
                 {
@@ -235,6 +248,8 @@ namespace AppShelf
                     if (previous.Id != manifest.Id) Reject("Идентификатор установленного плагина не совпадает.");
                     if (new Version(manifest.Version).CompareTo(new Version(previous.Version)) <= 0)
                         Reject("Для обновления требуется более новая версия плагина.");
+                    if (!confirm(manifest)) return null;
+                    File.WriteAllText(Path.Combine(stage, "approved.flag"), manifest.Version);
                     string old = Path.Combine(InstalledRoot, ".previous-" + Guid.NewGuid().ToString("N"));
                     Directory.Move(target, old);
                     try { Directory.Move(stage, target); }
@@ -246,7 +261,12 @@ namespace AppShelf
                     }
                     TryRemoveStage(old);
                 }
-                else Directory.Move(stage, target);
+                else
+                {
+                    if (!confirm(manifest)) return null;
+                    File.WriteAllText(Path.Combine(stage, "approved.flag"), manifest.Version);
+                    Directory.Move(stage, target);
+                }
                 return manifest;
             }
             finally { TryRemoveStage(stage); }
@@ -287,11 +307,65 @@ namespace AppShelf
             return directory;
         }
 
+        private static bool Approved(string directory, PluginManifest manifest)
+        {
+            string file = Path.Combine(directory, "approved.flag");
+            return File.Exists(file) && new FileInfo(file).Length <= 32 &&
+                File.ReadAllText(file) == manifest.Version;
+        }
+
+        internal List<InstalledPlugin> List()
+        {
+            EnsureInstalledRoot();
+            List<InstalledPlugin> result = new List<InstalledPlugin>();
+            foreach (string directory in Directory.GetDirectories(InstalledRoot))
+            {
+                string id = Path.GetFileName(directory);
+                if (id.StartsWith(".stage-", StringComparison.Ordinal) ||
+                    id.StartsWith(".previous-", StringComparison.Ordinal)) continue;
+                InstalledPlugin row = new InstalledPlugin { Id = id };
+                try
+                {
+                    row.Manifest = ReadInstalled(id);
+                    if (!Approved(directory, row.Manifest))
+                        Reject("Нет подтверждения доверия для этой версии.");
+                    string flag = Path.Combine(directory, "enabled.flag");
+                    row.Enabled = File.Exists(flag) && new FileInfo(flag).Length == 0;
+                }
+                catch (Exception error) { row.Error = error.Message; row.Enabled = false; }
+                result.Add(row);
+            }
+            result.Sort(delegate(InstalledPlugin a, InstalledPlugin b)
+            {
+                return StringComparer.CurrentCultureIgnoreCase.Compare(
+                    a.Manifest == null ? a.Id : a.Manifest.Name,
+                    b.Manifest == null ? b.Id : b.Manifest.Name);
+            });
+            return result;
+        }
+
+        internal void SetEnabled(string id, bool enabled)
+        {
+            PluginManifest manifest = ReadInstalled(id);
+            string directory = Child(InstalledRoot, id);
+            string flag = Path.Combine(directory, "enabled.flag");
+            if (enabled)
+            {
+                if (!Approved(directory, manifest)) Reject("Нет подтверждения доверия для этой версии.");
+                using (FileStream output = new FileStream(flag, FileMode.Create, FileAccess.Write, FileShare.None))
+                    output.Flush(true);
+            }
+            else File.Delete(flag);
+        }
+
         // Uninstall package code only. Data deletion requires a separate explicit action.
         internal void Remove(string id)
         {
-            ReadInstalled(id);
-            Directory.Delete(Child(InstalledRoot, id), true);
+            ValidateId(id);
+            EnsureInstalledRoot();
+            string path = Child(InstalledRoot, id);
+            CheckPlainTree(path);
+            Directory.Delete(path, true);
         }
     }
 }
