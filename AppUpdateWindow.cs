@@ -175,14 +175,13 @@ namespace AppShelf
                         }
                         state.Text = "Создаю и проверяю резервную копию перед обновлением…";
                         AppConfig backupConfig = _config.Copy();
-                        ReminderDocument backupReminders = BackupAutomation.CopyReminders(_reminderDocument);
                         string oldVersion = AppUpdate.InstalledVersion().ToString(3);
                         string oldExecutable = Process.GetCurrentProcess().MainModule.FileName;
                         try
                         {
                             await Task.Run(delegate
                             {
-                                BackupAutomation.CreateBeforeUpdate(backupConfig, backupReminders,
+                                BackupAutomation.CreateBeforeUpdate(backupConfig,
                                     oldExecutable, oldVersion, release.VersionText);
                             });
                             backupReady = true;
