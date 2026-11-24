@@ -1340,7 +1340,17 @@ public static class Package6Tests
                     MenuItem multiple = (MenuItem)Call(w, "CreatePluginMenuItem", active, known);
                     Assert(multiple.Items.Count == 2 && Convert.ToString(((MenuItem)multiple.Items[0]).Header) == "Open" &&
                         Convert.ToString(((MenuItem)multiple.Items[1]).Header) == "Other", "Multiple commands not nested");
+                    // Exercise the real overflow-open event and its asynchronous refresh.
+                    Click(ToolsButton(w));
+                    limit.Restart();
+                    while (pluginMenu.Visibility != Visibility.Visible && limit.ElapsedMilliseconds < 5000)
+                    { System.Threading.Thread.Sleep(10); Drain(); }
+                    Assert(tools.IsOpen && pluginMenu.Visibility == Visibility.Visible && pluginMenu.Items.Count == 1 &&
+                        Convert.ToString(((MenuItem)pluginMenu.Items[0]).Header) == "Hello", "Real menu did not refresh enabled plugins");
+                    tools.IsOpen = false; Drain();
                     Assert(runtime.State("example.hello").Status == "idle", "Menu discovery started plugin");
+                    Assert(((PluginRuntime)Call(w, "GetPluginRuntime")).State("example.hello").Status == "idle",
+                        "Opening the main menu launched a plugin");
                     refreshed.IsChecked = false;
                     refreshed.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
                     limit.Restart();
@@ -1364,8 +1374,20 @@ public static class Package6Tests
                     Call(w, "PopulatePluginTools", actionMenu, store.List());
                     Assert(actionMenu.Items.Count == 0 && actionMenu.Visibility == Visibility.Collapsed,
                         "Disabled plugin still in actions menu");
+                    Click(ToolsButton(w));
+                    Assert(tools.IsOpen && pluginMenu.Visibility == Visibility.Collapsed, "Previously enabled plugin menu not hidden on reopen");
+                    tools.IsOpen = false; Drain();
                     Picture(manager, "plugin-manager");
                 } finally { manager.Close(); }
+                settings = delegate(Window d) {
+                    Button section = Controls<Button>(d).Find(delegate(Button button) { return Object.Equals(button.Tag, "plugins"); });
+                    Assert(section != null, "Plugin settings section missing");
+                    Button manage = ButtonNamed(d, "Управление плагинами…");
+                    if (!manage.IsVisible) Click(section);
+                    Assert(manage.IsVisible, "Plugin management not available in settings");
+                    Click(ButtonNamed(d, "Отмена"));
+                };
+                Call(w, "ShowSettings");
             } finally { runtime.Dispose(); w.Close(); Directory.Delete(profile, true);
                 string pluginsRoot = Path.Combine(ConfigStore.DirectoryPath, "Plugins");
                 if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
