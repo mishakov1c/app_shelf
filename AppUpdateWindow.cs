@@ -159,7 +159,55 @@ namespace AppShelf
                             });
                         });
                     if (!dialog.IsVisible) return;
-                    state.Text = "Файл проверен. Запускаю установщик…";
+                    // A verified download alone is not enough: save the existing data
+                    // and executable before the external helper replaces AppShelf.exe.
+                    bool backupReady = false;
+                    while (!backupReady)
+                    {
+                        if (!EnsureBackupDirectory(dialog))
+                        {
+                            if (MessageBox.Show(dialog,
+                                "Папка резервных копий не выбрана. Установить обновление без копии данных и EXE?",
+                                "AppShelf — резервная копия", MessageBoxButton.YesNo,
+                                MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                                return;
+                            break; // Explicit user approval to proceed without a backup.
+                        }
+                        state.Text = "Создаю и проверяю резервную копию перед обновлением…";
+                        AppConfig backupConfig = _config.Copy();
+                        ReminderDocument backupReminders = BackupAutomation.CopyReminders(_reminderDocument);
+                        string oldVersion = AppUpdate.InstalledVersion().ToString(3);
+                        string oldExecutable = Process.GetCurrentProcess().MainModule.FileName;
+                        try
+                        {
+                            await Task.Run(delegate
+                            {
+                                BackupAutomation.CreateBeforeUpdate(backupConfig, backupReminders,
+                                    oldExecutable, oldVersion, release.VersionText);
+                            });
+                            backupReady = true;
+                        }
+                        catch (Exception backupError)
+                        {
+                            ConfigStore.Log(backupError);
+                            MessageBoxResult answer = MessageBox.Show(dialog,
+                                "Не удалось сохранить резервную копию:
+" +
+                                backupError.Message + "
+
+Да — повторить.
+Нет — установить без копии.
+Отмена — отказаться от установки.",
+                                "AppShelf — резервная копия", MessageBoxButton.YesNoCancel,
+                                MessageBoxImage.Warning);
+                            if (answer == MessageBoxResult.Yes) continue;
+                            if (answer != MessageBoxResult.No) return;
+                            break; // The skip is a deliberate, explicitly confirmed choice.
+                        }
+                    }
+                    state.Text = backupReady
+                        ? "Копия сохранена. Запускаю установщик…"
+                        : "Установка без резервной копии по твоему подтверждению…";
                     AppUpdate.StartInstaller(prepared);
                     // The staged helper waits for this process to exit before replacing EXE.
                     installing = true;
