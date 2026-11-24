@@ -115,6 +115,9 @@ namespace AppShelf
                 stream.Position = 0;
                 portable = ReadAppConfig(stream);
             }
+            // Backup root is machine-specific and can contain a personal cloud path.
+            // Keep it local rather than exporting it to a portable archive.
+            portable.BackupDirectory = null;
             Dictionary<string, string> owned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (AppItem item in portable.Items)
             {
@@ -528,6 +531,9 @@ namespace AppShelf
                     foreach (KeyValuePair<string, string> item in shortcuts)
                         File.Copy(item.Value, Path.Combine(ConfigStore.ShortcutsDirectory,
                             Path.GetFileName(item.Key)), true);
+                    // Restoring data must not change where backups are stored on this PC.
+                    if (!String.IsNullOrWhiteSpace(selectedBackupRoot))
+                        restored.BackupDirectory = BackupAutomation.ValidateRoot(selectedBackupRoot);
                     ConfigStore.Save(restored, false);
                     ReminderStore.Save(reminders);
                     if (collections != null) CollectionStore.Save(collections);
