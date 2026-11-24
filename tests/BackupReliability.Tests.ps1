@@ -902,7 +902,43 @@ public static class BackupTests
         File.WriteAllText(Path.Combine(data, "history.txt"), "changed private history");
         Assert(opted == BackupAutomation.DataSignature(), "Undeclared data changed signature");
         string zipFile = Path.Combine(Root, "plugins.zip");
-        BackupStore.ExportAll(zipFile, Loaded(), Reminders("B"));
+        string exe = Path.Combine(Root, "renamed.exe");
+        File.WriteAllBytes(exe, new byte[] { 77, 90, 1, 2, 3, 4 });
+        string code = Path.Combine(Root, "Plugins", "Installed", "test.backup", "bin", "dependency.dll");
+        File.WriteAllText(code, "dependency v1");
+        string firstCodeSignature = BackupAutomation.DataSignature();
+        File.WriteAllText(code, "dependency v2");
+        Assert(firstCodeSignature != BackupAutomation.DataSignature(), "Plugin dependency omitted from fingerprint");
+        BackupStore.ExportAll(zipFile, Loaded(), Reminders("B"), exe);
+        using (ZipArchive zip = ZipFile.OpenRead(zipFile))
+        {
+            Assert(zip.GetEntry("Program/AppShelf.exe") != null, "Renamed core missing");
+            Assert(zip.GetEntry("Plugins/Packages/test.backup.asplugin") != null, "Plugin package missing");
+        }
+        string extracted = BackupStore.ExtractPrograms(zipFile, Root, true, true);
+        Assert(File.ReadAllBytes(Path.Combine(extracted, "Program", "AppShelf.exe")).SequenceEqual(File.ReadAllBytes(exe)), "Wrong core bytes");
+        string savedPackage = Path.Combine(extracted, "Plugins", "test.backup.asplugin");
+        using (ZipArchive zip = ZipFile.OpenRead(savedPackage))
+        {
+            Assert(zip.GetEntry("bin/dependency.dll") != null && zip.GetEntry("bin/Test.exe") != null, "Plugin dependencies missing");
+            Assert(zip.GetEntry("enabled.flag") == null && zip.GetEntry("approved.flag") == null, "Trust markers leaked");
+        }
+        PluginPackageStore fresh = new PluginPackageStore(Path.Combine(Root, "fresh-profile"));
+        bool asked = false;
+        Assert(fresh.Install(savedPackage, delegate { asked = true; return false; }) == null && asked, "Restored package bypassed trust");
+        fresh.Install(savedPackage, delegate { return true; });
+        Assert(!fresh.List()[0].Enabled, "Restored package started automatically");
+        string onlyCore = BackupStore.ExtractPrograms(zipFile, Root, true, false);
+        Assert(File.Exists(Path.Combine(onlyCore, "Program", "AppShelf.exe")) && !Directory.Exists(Path.Combine(onlyCore, "Plugins")), "Component selection ignored");
+        string onlyPlugins = BackupStore.ExtractPrograms(zipFile, Root, false, true);
+        Assert(!Directory.Exists(Path.Combine(onlyPlugins, "Program")) && File.Exists(Path.Combine(onlyPlugins, "Plugins", "test.backup.asplugin")), "Package selection ignored");
+        AppConfig excluded = Loaded();
+        excluded.BackupExecutable = false; excluded.BackupPluginPackages = false;
+        string excludedZip = Path.Combine(Root, "excluded.zip");
+        BackupStore.ExportAll(excludedZip, excluded, Reminders("B"), exe);
+        using (ZipArchive zip = ZipFile.OpenRead(excludedZip))
+            Assert(zip.GetEntry("Program/AppShelf.exe") == null && zip.GetEntry("Plugins/Packages/test.backup.asplugin") == null &&
+                zip.GetEntry(PluginPackageStore.BackupArchiveEntry) != null, "Binary opt-out ignored");
         using (ZipArchive zip = ZipFile.OpenRead(zipFile))
         {
             ZipArchiveEntry entry = zip.GetEntry(PluginPackageStore.BackupArchiveEntry);

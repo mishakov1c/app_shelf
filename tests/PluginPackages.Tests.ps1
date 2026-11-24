@@ -125,7 +125,14 @@ public static class PluginPackageTests {
         Reject(delegate { store.ApplyRecoveredData(id,"1.0.0",safety); },"undeclared restoration rejected");
         Assert(File.ReadAllText(privateFile)=="private-current","undeclared restoration preserved data");
         string m2=m.Replace("1.0.0","1.1.0");
-        Install(store,Package(root,m2,null,true));
+        string update=Package(root,m2,null,true);
+        Reject(delegate { store.Install(update,delegate {return true;},null,null,null,true); },"update requires backup root");
+        Assert(store.ReadInstalled(id).Version=="1.0.0","blocked update preserves version");
+        store.Install(update,delegate {return true;},null,null,safety,true);
+        string[] oldPackages=Directory.GetFiles(Path.Combine(safety,"BeforePluginUpdate"),"*.asplugin");
+        Assert(oldPackages.Length==1,"previous package saved");
+        PluginPackageStore previous=new PluginPackageStore(Path.Combine(profile,"previous-test"));
+        Assert(previous.Install(oldPackages[0],delegate{return true;}).Version=="1.0.0","previous package reinstallable");
         Assert(!store.BackupDataEnabled(id),"new version needs consent");
         Assert(!Encoding.UTF8.GetString(store.CaptureBackup()).Contains("settings.json"),"new version no data by default");
         store.SetBackupDataEnabled(id,true);

@@ -326,7 +326,8 @@ namespace AppShelf
             finally
             {
                 DeleteExportTemp(temp);
-                if (Directory.Exists(binaryStage)) Directory.Delete(binaryStage, true);
+                try { if (Directory.Exists(binaryStage)) Directory.Delete(binaryStage, true); }
+                catch (Exception error) { ConfigStore.Log(error); }
             }
         }
 
