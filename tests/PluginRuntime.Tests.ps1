@@ -14,6 +14,13 @@ using System.Threading;
 using AppShelf;
 public static class FakePlugin {
     public static void Main() {
+        try { Run(); }
+        catch(Exception error) {
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"fake-error.txt"),error.ToString());
+            Environment.Exit(14);
+        }
+    }
+    static void Run() {
         Stream input=Console.OpenStandardInput(), output=Console.OpenStandardOutput();
         string data=null;
         while (true) {
@@ -96,6 +103,10 @@ public static class PluginRuntimeTests {
         int last=0, foreground=0;
         using(PluginRuntime runtime=new PluginRuntime(store,1500)) {
             runtime.StartBackgroundsAsync().GetAwaiter().GetResult();
+            if(runtime.State(bg).Status!="running") {
+                string diag=Path.Combine(root,"Plugins","Installed",bg,"bin","fake-error.txt");
+                if(File.Exists(diag)) Console.WriteLine(File.ReadAllText(diag));
+            }
             State(runtime,bg,"running"); State(runtime,fg,"idle");
             Assert(File.Exists(Path.Combine(data,"started")),"background starts");
             Assert(!File.Exists(Path.Combine(fgData,"pid")),"foreground remains idle");
