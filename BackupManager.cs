@@ -783,7 +783,7 @@ namespace AppShelf
                     DirectoryInfo directory = new DirectoryInfo(path);
                     if ((directory.Attributes & FileAttributes.ReparsePoint) == 0 &&
                         (Regex.IsMatch(directory.Name,
-                            @"\A\d{8}-\d{6}-v\d+\.\d+\.\d+-to-\d+\.\d+\.\d+-[0-9a-f]{6}\z",
+                            @"\A\d{8}-\d{6}-v\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?-to-\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?-[0-9a-f]{6}\z",
                             RegexOptions.IgnoreCase) ||
                          Regex.IsMatch(directory.Name,
                             @"\Alegacy-\d{8}-\d{6}-[0-9a-f]{6}\z",
