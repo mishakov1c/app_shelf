@@ -1239,6 +1239,52 @@ public static class Package6Tests
                     "Legacy defaults were not restored");
             } finally { w.Close(); }
         });
+        Case("plugin manager displays installed and invalid packages", delegate {
+            Seed("normal", 1); MainWindow w = Open();
+            string profile = Path.Combine(ConfigStore.DirectoryPath, "PluginUiCase");
+            Directory.CreateDirectory(profile);
+            PluginPackageStore store = new PluginPackageStore(profile);
+            try {
+                Assert(Menu(Tools(w), "Плагины") != null, "Tools menu entry missing");
+                PluginManagerWindow empty = new PluginManagerWindow(w, store);
+                empty.ShowInTaskbar = false; empty.Show(); Drain();
+                try {
+                    bool found = false;
+                    foreach (TextBlock block in Controls<TextBlock>(empty))
+                        if (block.Text == "Плагины пока не установлены.") found = true;
+                    Assert(found, "Empty list hint missing");
+                } finally { empty.Close(); }
+                string package = Path.Combine(profile, "hello.asplugin");
+                using (FileStream stream = File.Create(package))
+                using (System.IO.Compression.ZipArchive zip = new System.IO.Compression.ZipArchive(
+                    stream, System.IO.Compression.ZipArchiveMode.Create)) {
+                    using (StreamWriter writer = new StreamWriter(zip.CreateEntry("plugin.json").Open()))
+                        writer.Write("{\"schemaVersion\":1,\"apiVersion\":1,\"id\":\"example.hello\",\"name\":\"Hello\",\"version\":\"1.0.0\",\"entryPoint\":\"bin/Hello.exe\",\"capabilities\":[\"window\"]}");
+                    using (StreamWriter writer = new StreamWriter(zip.CreateEntry("bin/Hello.exe").Open()))
+                        writer.Write("not executed");
+                }
+                store.Install(package, delegate { return true; });
+                Directory.CreateDirectory(Path.Combine(profile, "Plugins", "Installed", "example.broken"));
+                PluginManagerWindow manager = new PluginManagerWindow(w, store);
+                manager.ShowInTaskbar = false; manager.Show(); Drain();
+                try {
+                    CheckBox good = null, broken = null;
+                    foreach (CheckBox check in Controls<CheckBox>(manager)) {
+                        if (Object.Equals(check.Tag, "PluginEnabled:example.hello")) good = check;
+                        if (Object.Equals(check.Tag, "PluginEnabled:example.broken")) broken = check;
+                    }
+                    Assert(good != null && good.IsEnabled && good.IsChecked == false, "Installed row not disabled");
+                    Assert(broken != null && !broken.IsEnabled, "Broken package not disabled");
+                    good.IsChecked = true;
+                    good.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent)); Drain();
+                    bool enabled = false;
+                    foreach (InstalledPlugin plugin in store.List())
+                        if (plugin.Id == "example.hello") enabled = plugin.Enabled;
+                    Assert(enabled, "UI toggle did not persist enabled state");
+                    Picture(manager, "plugin-manager");
+                } finally { manager.Close(); }
+            } finally { w.Close(); Directory.Delete(profile, true); }
+        });
         Case("settings accordion and saved navigation", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
                 settings = delegate(Window d) {
