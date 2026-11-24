@@ -51,6 +51,9 @@ namespace AppShelf
             betaHelp.TextWrapping = TextWrapping.Wrap;
             betaHelp.Margin = new Thickness(0, 0, 0, 8);
             top.Children.Add(betaHelp);
+            ComboBox versions = new ComboBox { Visibility = Visibility.Collapsed,
+                Margin = new Thickness(0, 0, 0, 8), MinHeight = 28 };
+            top.Children.Add(versions);
 
             TextBlock state = Text("Нажми «Проверить», чтобы узнать о новой версии.",
                 12, MutedBrush);
@@ -101,6 +104,28 @@ namespace AppShelf
                 install.IsEnabled = !busy && selected != null;
                 close.IsEnabled = !busy;
                 beta.IsEnabled = !busy && _canSave;
+                versions.IsEnabled = !busy;
+            };
+
+            Action<AppUpdate.Release> showRelease = delegate(AppUpdate.Release latest)
+            {
+                selected = latest;
+                if (latest == null) { install.IsEnabled = false; return; }
+                state.Text = (latest.IsBeta ? "Доступна бета-версия " : "Доступно обновление до ") + latest.VersionText +
+                    " (" + (latest.Size / 1024) + " КБ).";
+                notes.Text = "Изменения версии " + latest.VersionText + ":\n\n" + latest.Notes;
+                install.IsEnabled = !busy;
+            };
+            versions.SelectionChanged += delegate
+            {
+                ComboBoxItem item = versions.SelectedItem as ComboBoxItem;
+                if (item != null) showRelease(item.Tag as AppUpdate.Release);
+            };
+            Action clearVersions = delegate
+            {
+                versions.Items.Clear();
+                versions.Visibility = Visibility.Collapsed;
+                selected = null;
             };
 
             bool syncingBeta = false;
@@ -116,7 +141,7 @@ namespace AppShelf
                     finally { syncingBeta = false; }
                     return;
                 }
-                selected = null;
+                clearVersions();
                 setBusy(false);
                 state.Text = "Канал обновлений изменён. Нажми «Проверить».";
                 notes.Text = "";
@@ -127,7 +152,7 @@ namespace AppShelf
             check.Click += async delegate
             {
                 if (busy) return;
-                selected = null;
+                clearVersions();
                 setBusy(true);
                 bool includeBeta = _config.CheckBetaUpdates;
                 state.Text = includeBeta ? "Проверяю стабильные и бета-релизы GitHub…" :
@@ -135,22 +160,30 @@ namespace AppShelf
                 notes.Text = "";
                 try
                 {
-                    AppUpdate.Release latest = await Task.Run<AppUpdate.Release>(
-                        delegate { return AppUpdate.CheckChannel(includeBeta); });
+                    AppUpdate.Release[] releases = await Task.Run<AppUpdate.Release[]>(
+                        delegate { return AppUpdate.CheckAvailable(includeBeta); });
                     if (!dialog.IsVisible) return;
-                    if (AppUpdate.CompareReleaseVersions(latest.VersionText, AppUpdate.InstalledVersionText()) <= 0)
+                    string installedVersion = AppUpdate.InstalledVersionText();
+                    foreach (AppUpdate.Release latest in releases)
+                    {
+                        if (AppUpdate.CompareReleaseVersions(latest.VersionText, installedVersion) <= 0)
+                            continue;
+                        versions.Items.Add(new ComboBoxItem
+                        {
+                            Content = latest.VersionText + (latest.IsBeta ? " — бета" : " — стабильная"),
+                            Tag = latest
+                        });
+                    }
+                    if (versions.Items.Count == 0)
                     {
                         state.Text = "Нет более новой версии в выбранном канале. Последний релиз: " +
-                            latest.VersionText + ".";
-                        notes.Text = latest.Notes;
+                            releases[0].VersionText + ".";
+                        notes.Text = releases[0].Notes;
                     }
                     else
                     {
-                        selected = latest;
-                        state.Text = (latest.IsBeta ? "Доступна бета-версия " : "Доступно обновление до ") + latest.VersionText +
-                            " (" + (latest.Size / 1024) + " КБ).";
-                        notes.Text = "Изменения версии " + latest.VersionText + ":\n\n" +
-                            latest.Notes;
+                        versions.Visibility = versions.Items.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+                        versions.SelectedIndex = 0;
                     }
                 }
                 catch (Exception error)
