@@ -136,7 +136,9 @@ namespace AppShelf
                 // Don't carry the old user's desktop path as personal metadata.
                 item.SourcePath = null;
             }
-            if (owned.Count + images.Count + backgrounds.Count + 4 > MaxEntries)
+            PluginPackageStore pluginStore = new PluginPackageStore(ConfigStore.DirectoryPath);
+            byte[] pluginBackup = pluginStore.CaptureBackup();
+            if (owned.Count + images.Count + backgrounds.Count + 4 + (pluginBackup == null ? 0 : 1) > MaxEntries)
                 throw new InvalidDataException("Слишком много файлов для резервной копии.");
             // Write to a temporary file; a failed export does not destroy the old backup.
             string temp = filename + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -149,6 +151,11 @@ namespace AppShelf
                         StoreDocument(archive, "apps.json", portable);
                         StoreDocument(archive, "reminders.json", reminders);
                         StoreDocument(archive, "Collections/collections.json", collections);
+                        if (pluginBackup != null)
+                        {
+                            ZipArchiveEntry plugins = archive.CreateEntry(PluginPackageStore.BackupArchiveEntry, CompressionLevel.Optimal);
+                            using (Stream target = plugins.Open()) target.Write(pluginBackup, 0, pluginBackup.Length);
+                        }
                         foreach (string image in images)
                         {
                             string source = CollectionStore.CoverPath(image);
@@ -191,7 +198,7 @@ namespace AppShelf
                         {
                             writer.WriteLine("AppShelf portable backup 2.5");
                             writer.WriteLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-                            writer.WriteLine("Includes settings, reminders, private shortcuts, collections and custom backgrounds.");
+                            writer.WriteLine("Includes settings, reminders, private shortcuts, collections, custom backgrounds and optional plugin data.");
                         }
                     }
                     output.Flush(true);
@@ -203,6 +210,10 @@ namespace AppShelf
                 Dictionary<string, string> checkedImages;
                 ReadBackup(temp, null, out checkedReminders, out checkedShortcuts,
                     out checkedCollections, out checkedImages);
+                byte[] afterPlugins = pluginStore.CaptureBackup();
+                if ((pluginBackup == null) != (afterPlugins == null) ||
+                    (pluginBackup != null && !System.Linq.Enumerable.SequenceEqual(pluginBackup, afterPlugins)))
+                    throw new IOException("Данные плагинов изменились во время резервного копирования.");
                 CommitExport(temp, filename);
             }
             finally { DeleteExportTemp(temp); }
@@ -267,7 +278,8 @@ namespace AppShelf
                     bool isWallpaper = name.StartsWith("Backgrounds/", StringComparison.OrdinalIgnoreCase)
                         && name.LastIndexOf('/') == "Backgrounds/".Length - 1
                         && CustomBackgroundStore.IsValidFileName(Path.GetFileName(name));
-                    bool allowed = name == "apps.json" || name == "reminders.json" ||
+                    bool isPluginBackup = name == PluginPackageStore.BackupArchiveEntry;
+                    bool allowed = isPluginBackup || name == "apps.json" || name == "reminders.json" ||
                         name == "backup-info.txt" || name == "Collections/collections.json" ||
                         isCover || isWallpaper ||
                         (name.StartsWith("Shortcuts/", StringComparison.OrdinalIgnoreCase) &&
@@ -275,18 +287,25 @@ namespace AppShelf
                             (name.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) ||
                              name.EndsWith(".url", StringComparison.OrdinalIgnoreCase)));
                     // Collections use a larger documented JSON limit than other entries.
-                    long entryLimit = name == "Collections/collections.json"
+                    long entryLimit = isPluginBackup ? PluginPackageStore.MaxBackupDocument : name == "Collections/collections.json"
                         ? CollectionStore.MaxDocumentBytes :
                         isWallpaper ? CustomBackgroundStore.MaxFileBytes : MaxEntryBytes;
                     if (!allowed || !entries.Add(name) || entry.Length > entryLimit)
                         throw new InvalidDataException("Небезопасный или неподдерживаемый файл в ZIP: " + name);
                     if (isCover) coverTotal += entry.Length;
                     else if (isWallpaper) wallpaperTotal += entry.Length;
-                    else total += entry.Length;
+                    else if (!isPluginBackup) total += entry.Length;
                     if (total > MaxTotalBytes || coverTotal > MaxCoverTotalBytes ||
                         wallpaperTotal > MaxBackgroundTotalBytes)
                         throw new InvalidDataException("Резервная копия слишком большая.");
-                    if (name == "apps.json")
+                    if (isPluginBackup)
+                    {
+                        byte[] bytes;
+                        using (Stream content = entry.Open()) bytes = PluginPackageStore.ReadBackupBytes(content);
+                        if (bytes.Length != entry.Length) throw new InvalidDataException("Неполная копия данных плагинов.");
+                        if (stage != null) File.WriteAllBytes(Path.Combine(stage, "plugin-recovery.json"), bytes);
+                    }
+                    else if (name == "apps.json")
                     {
                         using (Stream content = entry.Open()) restored = ReadAppConfig(content);
                     }
@@ -450,9 +469,16 @@ namespace AppShelf
                 string backupDir = Path.Combine(safetyRoot,
                     "before-restore-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6));
                 Directory.CreateDirectory(backupDir);
-                string[] documents = { "apps.json", "apps.json.bak", "reminders.json",
+                List<string> documents = new List<string> { "apps.json", "apps.json.bak", "reminders.json",
                     "reminders.json.bak", "Collections/collections.json",
                     "Collections/collections.json.bak" };
+                string recovered = Path.Combine(stage, "plugin-recovery.json");
+                string recoveredPath = null;
+                if (File.Exists(recovered))
+                {
+                    recoveredPath = new PluginPackageStore(ConfigStore.DirectoryPath).RecoveredPath();
+                    documents.Add(PluginPackageStore.RecoveredRelativePath);
+                }
                 HashSet<string> savedDocuments = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (string name in documents)
                 {
@@ -539,6 +565,11 @@ namespace AppShelf
                     ConfigStore.Save(restored, false);
                     ReminderStore.Save(reminders);
                     if (collections != null) CollectionStore.Save(collections);
+                    if (recoveredPath != null)
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(recoveredPath));
+                        File.Copy(recovered, recoveredPath, true);
+                    }
                 }
                 catch (Exception importError)
                 {
@@ -690,6 +721,10 @@ namespace AppShelf
                 else info.Append("missing");
                 info.Append('\n');
             }
+            byte[] pluginBackup = new PluginPackageStore(root).CaptureBackup();
+            if (pluginBackup != null)
+                using (SHA256 hash = SHA256.Create())
+                    info.Append("plugins|").Append(Convert.ToBase64String(hash.ComputeHash(pluginBackup))).Append('\n');
             using (SHA256 sha = SHA256.Create())
                 return BitConverter.ToString(sha.ComputeHash(
                     Encoding.UTF8.GetBytes(info.ToString()))).Replace("-", "").ToLowerInvariant();
@@ -1256,7 +1291,7 @@ namespace AppShelf
             TextBlock title = Text("Резервные копии", 23, WhiteBrush);
             title.FontWeight = FontWeights.Bold;
             layout.Children.Add(title);
-            TextBlock note = Text("Полная копия содержит приложения, настройки, напоминания, подборки с обложками и скопированные ярлыки. Журнал ошибок и посторонние файлы не экспортируются.", 12, MutedBrush);
+            TextBlock note = Text("Полная копия содержит приложения, настройки, напоминания, подборки, ярлыки, список плагинов и разрешённые данные плагинов. Код плагинов и журнал ошибок не экспортируются.", 12, MutedBrush);
             note.TextWrapping = TextWrapping.Wrap;
             note.Margin = new Thickness(0, 7, 0, 13);
             // Keep the compact status visible even when every group is collapsed.
@@ -1417,6 +1452,7 @@ namespace AppShelf
                 if (picker.ShowDialog(dialog) != true) return;
                 if (MessageBox.Show(dialog, "Заменить текущие приложения, группы, настройки, напоминания и подборки (если они есть в архиве)?\n" +
                     "Перед заменой будет создана резервная копия текущих файлов.\n" +
+                    "Данные плагинов будут доступны для отдельного восстановления в менеджере.\n" +
                     "AppShelf закроется после импорта.", "AppShelf", MessageBoxButton.YesNo,
                     MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
                 try

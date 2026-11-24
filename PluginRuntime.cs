@@ -616,6 +616,15 @@ namespace AppShelf
             });
         }
 
+        internal Task RestoreDataAsync(string id, string version, string backupRoot)
+        {
+            return Run(delegate
+            {
+                StopSlot(GetSlot(id));
+                store.ApplyRecoveredData(id, version, backupRoot);
+            });
+        }
+
         internal Task RemoveAsync(string id)
         {
             return Run(delegate { StopSlot(GetSlot(id)); store.Remove(id); });

@@ -18,6 +18,8 @@ namespace AppShelf
     {
         private readonly PluginPackageStore store;
         private readonly PluginRuntime runtime;
+        private readonly string backupRoot;
+        private List<PluginBackupItem> recovered = new List<PluginBackupItem>();
         private readonly DispatcherTimer stateTimer;
         private readonly List<Action> stateUpdates = new List<Action>();
         private readonly StackPanel rows = new StackPanel();
@@ -25,10 +27,11 @@ namespace AppShelf
         private readonly Button install;
         private bool busy;
 
-        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller)
+        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null)
         {
             store = packages;
             runtime = controller;
+            backupRoot = selectedBackupRoot;
             Owner = owner;
             Title = "AppShelf — Плагины";
             Width = 760; Height = 580; MinWidth = 480; MinHeight = 360;
@@ -89,6 +92,7 @@ namespace AppShelf
             try
             {
                 var plugins = store.List();
+                recovered = store.ReadRecovered();
                 if (plugins.Count == 0)
                 {
                     TextBlock empty = Label("Плагины пока не установлены.", 14, FluentUi.Secondary);
@@ -96,6 +100,15 @@ namespace AppShelf
                     rows.Children.Add(empty);
                 }
                 foreach (InstalledPlugin plugin in plugins) AddRow(plugin);
+                foreach (PluginBackupItem item in recovered)
+                {
+                    if (plugins.Exists(delegate(InstalledPlugin p) { return p.Id == item.Id; })) continue;
+                    TextBlock missing = Label("Из резервной копии: " + item.Name + " · " + item.Version +
+                        " (" + item.Id + "). Установите пакет вручную." +
+                        (item.Files.Count > 0 ? " Сохранённые данные доступны после установки." : ""), 13, FluentUi.Secondary);
+                    missing.Margin = new Thickness(0, 9, 0, 5);
+                    rows.Children.Add(missing);
+                }
                 UpdateStates();
             }
             catch (Exception error) { status.Text = "Не удалось прочитать список: " + error.Message; }
@@ -211,6 +224,54 @@ namespace AppShelf
                 RunAction(delegate { return runtime.RemoveAsync(plugin.Id); }, "Плагин удалён. Данные сохранены.");
             };
             actions.Children.Add(remove);
+            if (manifest != null && plugin.Error == null && manifest.BackupFiles != null && manifest.BackupFiles.Length != 0)
+            {
+                CheckBox backup = new CheckBox { Content = "Включать данные в резервные копии",
+                    IsChecked = store.BackupDataEnabled(plugin.Id), Foreground = FluentUi.Foreground,
+                    Margin = new Thickness(0, 8, 0, 4), Tag = "PluginBackup:" + plugin.Id };
+                backup.Click += delegate
+                {
+                    bool enableBackup = backup.IsChecked == true;
+                    if (enableBackup && AppDialog.Show(this,
+                        "Включать следующие файлы в ручные, автоматические копии и копии перед обновлением?\n\n" +
+                        String.Join("\n", manifest.BackupFiles) +
+                        "\n\nАрхив может синхронизироваться с облаком. Содержимое не шифруется.",
+                        "AppShelf — Данные плагина", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                    { backup.IsChecked = false; return; }
+                    RunAction(delegate { return Task.Run(delegate { store.SetBackupDataEnabled(plugin.Id, enableBackup); }); },
+                        "Настройка резервирования сохранена.");
+                };
+                body.Children.Add(backup);
+            }
+            PluginBackupItem saved = recovered.Find(delegate(PluginBackupItem item) { return item.Id == plugin.Id; });
+            if (saved != null)
+            {
+                body.Children.Add(Label("Резервная копия: " + saved.Version + " · " + saved.Files.Count + " файлов" +
+                    (saved.Enabled ? " · был включён" : " · был отключён"), 12, FluentUi.Secondary));
+                if (saved.Files.Count != 0)
+                {
+                    Button restore = ButtonFor("Восстановить данные…", false);
+                    restore.Tag = "PluginRestore:" + plugin.Id;
+                    restore.IsEnabled = manifest != null && plugin.Error == null && manifest.Version == saved.Version;
+                    restore.Click += delegate
+                    {
+                        if (String.IsNullOrWhiteSpace(backupRoot))
+                        {
+                            AppDialog.Show(this, "Сначала выберите папку резервных копий AppShelf.", "AppShelf — Плагины",
+                                MessageBoxButton.OK, MessageBoxImage.Information);
+                            return;
+                        }
+                        if (AppDialog.Show(this, "Остановить плагин и заменить перечисленные файлы сохранёнными данными?\n\n" +
+                            String.Join("\n", saved.Files.ConvertAll(delegate(PluginBackupFile file) { return file.Path; }).ToArray()) +
+                            "\n\nТекущие файлы будут сохранены в папке резервных копий. Остальные данные не изменятся.",
+                            "AppShelf — Восстановление данных плагина", MessageBoxButton.YesNo, MessageBoxImage.Warning)
+                            != MessageBoxResult.Yes) return;
+                        RunAction(delegate { return runtime.RestoreDataAsync(plugin.Id, saved.Version,
+                            BackupAutomation.ValidateRoot(backupRoot)); }, "Данные восстановлены. При необходимости запустите плагин.");
+                    };
+                    body.Children.Add(restore);
+                }
+            }
         }
 
         private static string DroppedPackage(IDataObject data)
@@ -496,7 +557,7 @@ namespace AppShelf
         {
             try
             {
-                PluginManagerWindow manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime());
+                PluginManagerWindow manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime(), _config.BackupDirectory);
                 manager.ShowDialog();
             }
             catch (Exception error)
