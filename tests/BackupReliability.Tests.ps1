@@ -67,6 +67,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.Serialization.Json;
 using System.Windows.Media;
@@ -80,6 +81,9 @@ public static class BackupTests
     private const long MiB = 1024 * 1024;
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     private static bool failCommit, failImport;
+    private static int changesDuringExport, archiveCommits;
+    private static bool lockCopiedExe;
+    private static FileStream copiedExeLock;
     private static bool failImageCopy;
     public static void CopyImage(Stream input, Stream output)
     {
@@ -101,6 +105,15 @@ public static class BackupTests
     {
         if (failCommit) throw new IOException("export-commit-failure");
         File.Move(temp, filename);
+        if (Path.GetFileName(filename) == "AppShelf-data.zip")
+        {
+            archiveCommits++;
+            if (changesDuringExport > 0)
+            {
+                changesDuringExport--;
+                File.WriteAllText(Shortcut(0), "concurrent change " + archiveCommits);
+            }
+        }
     }
     public static void Replace(string temp, string filename)
     {
@@ -116,6 +129,8 @@ public static class BackupTests
             if (rollbackFailures.Contains(target)) throw new IOException("rollback-failure:" + Path.GetFileName(target));
         }
         File.Copy(source, target, overwrite);
+        if (lockCopiedExe && target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            copiedExeLock = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read);
     }
     public static void SaveImported(ReminderDocument document)
     {
@@ -158,10 +173,13 @@ public static class BackupTests
     private static void Reset()
     {
         failCommit = failImport = false;
+        changesDuringExport = archiveCommits = 0;
         rollbackFailures.Clear(); rollbackAttempts.Clear();
         Assert(Root == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         // Delete only this test run's verified data directory, never a real profile.
         if (Directory.Exists(Root)) Directory.Delete(Root, true);
+        string cloud = Path.Combine(Path.GetDirectoryName(Root), "CloudBackups");
+        if (Directory.Exists(cloud)) Directory.Delete(cloud, true);
         Directory.CreateDirectory(ConfigStore.ShortcutsDirectory);
         Seed("B");
     }
@@ -644,6 +662,215 @@ public static class BackupTests
             "Cover restore lost valid data or left a partial file");
         Assert(File.ReadAllText(Shortcut(0)) == "B0", "Cover restore damaged shortcuts");
     }
+    private static string ExternalBackupRoot()
+    {
+        // Sibling of the isolated AppShelf data root, never a real user directory.
+        return Path.Combine(Path.GetDirectoryName(Root), "CloudBackups");
+    }
+
+    private static void InvalidBackupDirectory()
+    {
+        string backup = ExternalBackupRoot();
+        Assert(BackupAutomation.ValidateRoot(backup) == Path.GetFullPath(backup),
+            "External backup root rejected");
+        Throws(delegate { BackupAutomation.ValidateRoot(Root); });
+        Throws(delegate { BackupAutomation.ValidateRoot(Path.Combine(Root, "Backups")); });
+        Throws(delegate { BackupAutomation.ValidateRoot(Path.GetDirectoryName(Root)); });
+        Throws(delegate { BackupAutomation.ValidateRoot(Path.GetPathRoot(Root)); });
+        Throws(delegate { BackupAutomation.ValidateRoot("relative-path"); });
+    }
+
+    private static void AutomaticBackupRetention()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        config.AutomaticBackupsEnabled = true;
+        config.AutomaticBackupDays = 1;
+        config.AutomaticBackupKeep = 3;
+        ConfigStore.Save(config);
+        string daily = Path.Combine(config.BackupDirectory, "Automatic");
+        Assert(BackupAutomation.CreateAutomatic(config), "First daily archive was not created");
+        Assert(Directory.GetFiles(daily, "*.zip").Length == 1, "Expected one daily archive");
+        string zip = Directory.GetFiles(daily, "*.zip")[0];
+        using (ZipArchive archive = ZipFile.OpenRead(zip))
+            Assert(archive.GetEntry("apps.json") != null &&
+                archive.GetEntry("reminders.json") != null, "Portable ZIP entries missing");
+        Assert(!BackupAutomation.CreateAutomatic(config),
+            "Second same-day run created duplicate");
+        File.SetLastWriteTimeUtc(zip, DateTime.UtcNow.AddDays(-2));
+        File.SetLastWriteTimeUtc(ConfigStore.FilePath, DateTime.UtcNow.AddMinutes(-1));
+        Assert(!BackupAutomation.CreateAutomatic(config),
+            "Identical old data unexpectedly created a second ZIP");
+        for (int i = 0; i < 4; i++)
+        {
+            File.WriteAllText(Shortcut(0), "changed backup version " + i);
+            Assert(BackupAutomation.CreateAutomatic(config),
+                "Changed source was not backed up");
+            zip = Directory.GetFiles(daily, "*.zip")
+                .OrderByDescending(delegate(string name) { return File.GetLastWriteTimeUtc(name); }).First();
+            File.SetLastWriteTimeUtc(zip, DateTime.UtcNow.AddDays(-2));
+        }
+        Assert(Directory.GetFiles(daily, "*.zip").Length == 3, "Daily retention did not limit to three");
+    }
+
+    private static void PreUpdateBackupAndRestoreLocation()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string executable = Path.Combine(Path.GetDirectoryName(Root), "Original-AppShelf.exe");
+        File.WriteAllText(executable, "original executable bytes 2.22.0");
+        string result = BackupAutomation.CreateBeforeUpdate(config,
+            executable, "2.22.0", "2.23.0");
+        Assert(Directory.Exists(result) &&
+            Directory.GetFiles(result, "*.zip").Length == 1 &&
+            Directory.GetFiles(result, "*.exe").Length == 1,
+            "BeforeUpdate did not contain both ZIP and old EXE");
+        Assert(File.ReadAllText(Directory.GetFiles(result, "*.exe")[0]) ==
+            File.ReadAllText(executable), "Old EXE bytes did not match");
+        Assert(!File.Exists(executable + ".previous"), "Update backup left adjacent .previous");
+        string portable = Directory.GetFiles(result, "*.zip")[0];
+        string safety = BackupStore.RestoreAll(portable, config.BackupDirectory);
+        Assert(safety.StartsWith(Path.Combine(config.BackupDirectory, "BeforeRestore"),
+            StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(Path.Combine(safety, "apps.json")),
+            "Pre-restore safety copy was not moved to the selected folder");
+    }
+
+    private static void CloudReaderDoesNotBlockBackupPublication()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string executable = Path.Combine(Path.GetDirectoryName(Root), "Cloud-test.exe");
+        File.WriteAllText(executable, "old EXE locked by cloud reader after copy");
+        lockCopiedExe = true;
+        try
+        {
+            string result = BackupAutomation.CreateBeforeUpdate(config,
+                executable, "2.23.0-beta.1", "2.23.0-beta.2");
+            Assert(copiedExeLock != null, "Cloud reader simulation was not active");
+            Assert(File.Exists(Path.Combine(result, ".complete")) &&
+                File.Exists(Path.Combine(result, "AppShelf-data.zip")) &&
+                File.ReadAllText(Path.Combine(result, "AppShelf-2.23.0-beta.1.exe")) ==
+                    File.ReadAllText(executable),
+                "Locked copied EXE prevented complete backup publication");
+        }
+        finally
+        {
+            lockCopiedExe = false;
+            if (copiedExeLock != null) { copiedExeLock.Dispose(); copiedExeLock = null; }
+        }
+    }
+
+    private static void IncompleteUpdateSetsAreNotRetained()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string executable = Path.Combine(Path.GetDirectoryName(Root), "Cloud-test.exe");
+        File.WriteAllText(executable, "test EXE");
+        string result = BackupAutomation.CreateBeforeUpdate(config,
+            executable, "2.23.0-beta.1", "2.23.0-beta.2");
+        string parent = Path.GetDirectoryName(result);
+        string incomplete = Path.Combine(parent,
+            "20260101-010101-v2.23.0-beta.1-to-2.23.0-beta.2-aaaaaa-set");
+        Directory.CreateDirectory(incomplete);
+        File.WriteAllText(Path.Combine(incomplete, "AppShelf-2.23.0-beta.1.exe"), "partial");
+        Directory.SetCreationTimeUtc(incomplete, DateTime.UtcNow.AddDays(-2));
+        BackupAutomation.CreateBeforeUpdate(config, executable, "2.23.0-beta.2", "2.23.0-beta.3");
+        Assert(!Directory.Exists(incomplete) && Directory.Exists(result),
+            "Stale incomplete set not cleaned or prior completed set lost");
+    }
+
+    private static void RetryChangedData(bool persistent)
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string executable = Path.Combine(Path.GetDirectoryName(Root), "Retry-test.exe");
+        File.WriteAllText(executable, "test executable");
+        changesDuringExport = persistent ? 3 : 1;
+        if (persistent)
+        {
+            Exception error = Throws(delegate {
+                BackupAutomation.CreateBeforeUpdate(config, executable, "2.23.0-beta.6", "2.23.0-beta.7");
+            });
+            Assert(error is IOException && archiveCommits == 3 &&
+                Directory.GetDirectories(Path.Combine(config.BackupDirectory, "BeforeUpdate")).Length == 0,
+                "Persistent changes did not stop after three clean attempts");
+        }
+        else
+        {
+            string result = BackupAutomation.CreateBeforeUpdate(config, executable,
+                "2.23.0-beta.6", "2.23.0-beta.7");
+            Assert(archiveCommits == 2 && File.Exists(Path.Combine(result, ".complete")) &&
+                Directory.GetDirectories(Path.GetDirectoryName(result)).Length == 1,
+                "Transient data change did not recover on second attempt");
+        }
+    }
+
+    private static void FailedPreUpdateKeepsOldCopies()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string executable = Path.Combine(Path.GetDirectoryName(Root), "AppShelf-old.exe");
+        File.WriteAllText(executable, "old executable to keep");
+        string keep = BackupAutomation.CreateBeforeUpdate(config,
+            executable, "2.22.0", "2.23.0");
+        failCommit = true;
+        try
+        {
+            Throws(delegate {
+                BackupAutomation.CreateBeforeUpdate(config,
+                    executable, "2.22.0", "2.23.1");
+            });
+        }
+        finally { failCommit = false; }
+        string parent = Path.Combine(config.BackupDirectory, "BeforeUpdate");
+        Assert(Directory.Exists(keep) && Directory.GetDirectories(parent).Length == 1,
+            "Failed pre-update backup deleted a good copy or left staging data");
+    }
+
+    private static void FailedAutomaticPreservesPrevious()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        config.AutomaticBackupsEnabled = true;
+        ConfigStore.Save(config);
+        string directory = Path.Combine(config.BackupDirectory, "Automatic");
+        Assert(BackupAutomation.CreateAutomatic(config), "Initial archive missing");
+        string original = Directory.GetFiles(directory, "*.zip")[0];
+        long length = new FileInfo(original).Length;
+        File.SetLastWriteTimeUtc(original, DateTime.UtcNow.AddDays(-2));
+        File.WriteAllText(Shortcut(0), "force a different backup");
+        failCommit = true;
+        try { Throws(delegate { BackupAutomation.CreateAutomatic(config); }); }
+        finally { failCommit = false; }
+        Assert(File.Exists(original) && new FileInfo(original).Length == length &&
+            Directory.GetFiles(directory, "*.zip").Length == 1 &&
+            Directory.GetFiles(directory, "*.tmp").Length == 0,
+            "Failed automatic export damaged a prior ZIP or left temporary files");
+    }
+
+    private static void MigrateOldAdjacentExecutable()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string currentExe = Path.Combine(Path.GetDirectoryName(Root), "AppShelf.exe");
+        string previous = currentExe + ".previous";
+        File.WriteAllText(previous, "old 2.21.1 executable");
+        string destination = BackupAutomation.MigrateLegacyPreviousExe(config, currentExe);
+        Assert(destination != null && Directory.Exists(destination) &&
+            !File.Exists(previous) &&
+            File.ReadAllText(Path.Combine(destination, "AppShelf-previous.exe")) ==
+                "old 2.21.1 executable", "Legacy EXE was not preserved or adjacent file remains");
+        Assert(BackupAutomation.MigrateLegacyPreviousExe(config, currentExe) == null,
+            "Second migration duplicated a previous executable");
+    }
+
     private static void Case(string name, Action action)
     {
         try { Reset(); action(); passes++; Console.WriteLine("PASS: " + name); }
@@ -657,6 +884,16 @@ public static class BackupTests
             bool j = json, e = existing, f = fail;
             Case((json ? "JSON" : "ZIP") + " existing=" + existing + " fail=" + fail, delegate { ExportCase(j, e, f); });
         }
+        Case("chosen backup directory isolation", InvalidBackupDirectory);
+        Case("automatic backup schedule, changed data, retention", AutomaticBackupRetention);
+        Case("failed automatic copy preserves existing ZIP", FailedAutomaticPreservesPrevious);
+        Case("paired pre-update ZIP, EXE and external restore safety", PreUpdateBackupAndRestoreLocation);
+        Case("failed pre-update keeps prior archives", FailedPreUpdateKeepsOldCopies);
+        Case("transient data change retries backup", delegate { RetryChangedData(false); });
+        Case("persistent data changes stop after three attempts", delegate { RetryChangedData(true); });
+        Case("cloud reader locks copied EXE without blocking publication", CloudReaderDoesNotBlockBackupPublication);
+        Case("stale incomplete update set cleanup", IncompleteUpdateSetsAreNotRetained);
+        Case("legacy .previous moves to selected backup directory", MigrateOldAdjacentExecutable);
         Case("full rollback and retry", delegate { Rollback(false, false); });
         Case("config rollback failure does not stop others", delegate { Rollback(true, false); });
         Case("shortcut rollback failure does not stop others", delegate { Rollback(false, true); });

@@ -110,6 +110,51 @@ public static class RestoreBackupTests
         Assert(button != null, "Button missing: " + title);
         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
+    private static void ToggleBackupGroup(Window dialog, string key)
+    {
+        Button header = Controls<Button>(dialog).Find(delegate(Button button)
+        {
+            return Convert.ToString(button.Tag) == key;
+        });
+        Assert(header != null, "Backup group missing: " + key);
+        header.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        dialog.UpdateLayout();
+    }
+    private static void AssertBackupGroups(Window dialog)
+    {
+        string[] keys = { "backup-automatic", "backup-full", "backup-reminders" };
+        Dictionary<string, Border> bodies = new Dictionary<string, Border>();
+        foreach (string key in keys)
+        {
+            Border header = Controls<Border>(dialog).Find(delegate(Border item)
+            {
+                return Convert.ToString(item.Tag) == "SettingsAccordionHeader:" + key;
+            });
+            Assert(header != null, "Backup header missing: " + key);
+            StackPanel row = header.Parent as StackPanel;
+            Assert(row != null && row.Children.Count == 2, "Unexpected accordion row");
+            bodies[key] = (Border)row.Children[1];
+            Assert(bodies[key].Visibility == Visibility.Collapsed, "Initially expanded: " + key);
+        }
+        ToggleBackupGroup(dialog, keys[0]);
+        Assert(bodies[keys[0]].Visibility == Visibility.Visible, "Automatic group did not expand");
+        ComboBox cadence = Controls<ComboBox>(bodies[keys[0]])[0];
+        int original = cadence.SelectedIndex;
+        cadence.SelectedIndex = original == 0 ? 1 : 0;
+        ToggleBackupGroup(dialog, keys[1]);
+        Assert(bodies[keys[0]].Visibility == Visibility.Collapsed &&
+            bodies[keys[1]].Visibility == Visibility.Visible, "Full backup did not replace automatic group");
+        ToggleBackupGroup(dialog, keys[2]);
+        Assert(bodies[keys[1]].Visibility == Visibility.Collapsed &&
+            bodies[keys[2]].Visibility == Visibility.Visible, "Reminders group did not replace full group");
+        ToggleBackupGroup(dialog, keys[0]);
+        Assert(cadence.SelectedIndex != original, "Collapsing lost unsaved settings");
+        cadence.SelectedIndex = original;
+        ToggleBackupGroup(dialog, keys[0]);
+        Assert(bodies[keys[0]].Visibility == Visibility.Collapsed &&
+            bodies[keys[1]].Visibility == Visibility.Collapsed &&
+            bodies[keys[2]].Visibility == Visibility.Collapsed, "Clicking open group did not collapse it");
+    }
     private static void Assert(bool value, string message)
     {
         if (!value) throw new Exception(message);
@@ -130,6 +175,8 @@ public static class RestoreBackupTests
     private static AppConfig Config(string name)
     {
         AppConfig config = new AppConfig();
+        // Real profile is redirected; choose a sibling folder for cloud-backup tests.
+        config.BackupDirectory = Path.Combine(Path.GetDirectoryName(ConfigStore.DirectoryPath), "CloudBackups");
         config.MinimizeToTray = false; // Restore tests must exercise a real Close.
         config.GroupingEnabled = true;
         config.Groups.Add("Group-" + name);
@@ -218,6 +265,8 @@ public static class RestoreBackupTests
                 stagedBytes = Convert.ToBase64String(File.ReadAllBytes(image));
                 backupAction = delegate(Window backup)
                 {
+                    AssertBackupGroups(backup);
+                    ToggleBackupGroup(backup, "backup-full");
                     pickedFile = zip;
                     Click(backup, "\u042d\u043a\u0441\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0432\u0441\u0451 \u0432 ZIP\u2026");
                     Assert(File.Exists(zip), "ZIP export from settings was blocked");
@@ -248,6 +297,7 @@ public static class RestoreBackupTests
                 "Cancel no longer removes the unsaved wallpaper");
             backupAction = delegate(Window backup)
             {
+                ToggleBackupGroup(backup, "backup-full");
                 pickedFile = zip;
                 int before = filePickers;
                 Click(backup, "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0438\u0437 ZIP\u2026");

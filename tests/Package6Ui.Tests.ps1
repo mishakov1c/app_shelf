@@ -371,12 +371,74 @@ public static class Package6Tests
     {
         Assert(ConfigStore.DirectoryPath == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         Application app = new Application(); app.ShutdownMode = ShutdownMode.OnExplicitShutdown; FluentUi.Install(app);
+        Case("release notes Markdown and safe links", delegate {
+            StackPanel panel = new StackPanel { VerticalAlignment = VerticalAlignment.Top };
+            string tick = ((char)96).ToString();
+            ReleaseNotesView.Render(panel, "### Heading\n\n- **Bold** and *italic* " +
+                tick + "code" + tick + "\n1. Ordered\n[Site](https://github.com/mishakov1c/app_shelf)\n" +
+                "[Unsafe](file:///C:/Windows/notepad.exe)\n<script>not executable</script>",
+                Brushes.White, Brushes.LightBlue, true);
+            Assert(panel.Children.Count == 6, "Markdown block count mismatch");
+            TextBlock heading = (TextBlock)panel.Children[0];
+            Assert(heading.Text == "Heading", "Heading text mismatch: " + heading.Text);
+            Assert(heading.FontSize > 12, "Heading font size: " + heading.FontSize);
+            Assert(heading.FontWeight == FontWeights.SemiBold,
+                "Heading font weight: " + heading.FontWeight);
+            Grid row = (Grid)panel.Children[1];
+            TextBlock body = (TextBlock)row.Children[1];
+            Assert(((TextBlock)row.Children[0]).Text == "•", "List marker missing");
+            Assert(body.Inlines.FirstInline is System.Windows.Documents.Bold,
+                "Bold formatting missing");
+            bool italic = false, code = false;
+            foreach (System.Windows.Documents.Inline inline in body.Inlines) {
+                if (inline is System.Windows.Documents.Italic) italic = true;
+                System.Windows.Documents.Run run = inline as System.Windows.Documents.Run;
+                if (run != null && run.Text == "code" && run.FontFamily.Source == "Consolas") code = true;
+            }
+            Assert(italic && code, "Inline italic or code formatting missing");
+            Assert(((TextBlock)((Grid)panel.Children[2]).Children[0]).Text == "1.",
+                "Ordered list marker missing");
+            Assert(((TextBlock)panel.Children[3]).Inlines.FirstInline is System.Windows.Documents.Hyperlink,
+                "HTTPS link missing");
+            Assert(!(((TextBlock)panel.Children[4]).Inlines.FirstInline is System.Windows.Documents.Hyperlink) &&
+                ((TextBlock)panel.Children[5]).Text == "<script>not executable</script>",
+                "Unsafe Markdown was not kept as text");
+            Uri uri;
+            Assert(!ReleaseNotesView.SafeLink("javascript:alert(1)", out uri) &&
+                !ReleaseNotesView.SafeLink("https://name:password@example.com", out uri) &&
+                ReleaseNotesView.SafeLink("https://github.com", out uri), "Unsafe link scheme accepted");
+            ScrollViewer viewer = new ScrollViewer { Content = panel, Width = 360, Height = 150,
+                VerticalContentAlignment = VerticalAlignment.Top,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            FluentUi.StyleSettingsScroll(viewer);
+            Window window = new Window { Content = viewer, Width = 400, Height = 260,
+                ShowInTaskbar = false };
+            try {
+                window.Show(); Drain();
+                Point start = heading.TransformToAncestor(viewer).Transform(new Point(0, 0));
+                Assert(start.Y < 8 && start.Y >= 0, "Release notes vertically centered");
+                string longNotes = String.Concat(System.Linq.Enumerable.Repeat("- long release note\n", 50));
+                ReleaseNotesView.Render(panel, longNotes, Brushes.White, Brushes.LightBlue, true);
+                Drain();
+                Assert(viewer.ScrollableHeight > 0, "Long release notes do not scroll");
+                ReleaseNotesView.Render(panel, "Literal **message**", Brushes.White, Brushes.LightBlue, false);
+                Assert(panel.Children.Count == 1 && ((TextBlock)panel.Children[0]).Text == "Literal **message**",
+                    "Plain status message was parsed as Markdown");
+            } finally { window.Close(); }
+        });
         Case("backup window uses the existing dark scrollbar", delegate {
             Seed("normal", 1);
             MainWindow w = Open();
             try {
                 backup = delegate(Window d) {
                     d.Width = d.MinWidth; d.Height = d.MinHeight; d.UpdateLayout(); Drain();
+                    // The compact default no longer overflows; test the scrollbar
+                    // with the automatic settings expanded at minimum window size.
+                    Assert(Body(d, "backup-automatic").Visibility == Visibility.Collapsed,
+                        "Backup settings should initially be collapsed");
+                    Click(Section(d, "backup-automatic")); Drain();
+                    Assert(Body(d, "backup-automatic").Visibility == Visibility.Visible,
+                        "Automatic backup section did not open");
                     List<ScrollViewer> scrollers = Controls<ScrollViewer>(d);
                     Assert(scrollers.Count == 1, "Backup dialog scroll viewer missing");
                     ScrollViewer scroll = scrollers[0];
@@ -964,7 +1026,7 @@ public static class Package6Tests
                         d.Width = d.MinWidth * s; d.Height = d.MinHeight * s;
                         ((FrameworkElement)d.Content).LayoutTransform = new ScaleTransform(s, s); Drain();
                         ScrollViewer scroll = Controls<ScrollViewer>(d)[0];
-                        string[] keys = new string[] { "appearance", "network", "weather", "time", "windows", "data" };
+                        string[] keys = new string[] { "appearance", "network", "weather", "time", "windows", "collections", "data" };
                         Click(ButtonNamed(d, "Свернуть всё"));
                         foreach (string key in keys)
                             Assert(Body(d, key).Visibility == Visibility.Collapsed, "Collapse all missed " + key);
@@ -1180,7 +1242,7 @@ public static class Package6Tests
         Case("settings accordion and saved navigation", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
                 settings = delegate(Window d) {
-                    string[] main = { "appearance", "network", "weather", "time", "windows", "data" };
+                    string[] main = { "appearance", "network", "weather", "time", "windows", "collections", "data" };
                     string[] nested = { "appearance-tiles", "appearance-background", "appearance-panel" };
                     Dictionary<string, Button> headers = new Dictionary<string, Button>();
                     foreach (Button b in Controls<Button>(d))
@@ -1204,9 +1266,9 @@ public static class Package6Tests
                         "Main accordion is not using the reference dark fill");
                     StackPanel rows = frames[0].Child as StackPanel;
                     StackPanel nestedRows = subframes.Count == 1 ? subframes[0].Child as StackPanel : null;
-                    Assert(rows != null && rows.Children.Count == 11 && nestedRows != null &&
-                        nestedRows.Children.Count == 5 && dividers.Count == 7,
-                        "Expected six main sections and three nested Appearance subsections");
+                    Assert(rows != null && rows.Children.Count == 13 && nestedRows != null &&
+                        nestedRows.Children.Count == 5 && dividers.Count == 8,
+                        "Expected seven main sections and three nested Appearance subsections");
                     foreach (string key in main) {
                         StackPanel caption = Section(d, key).Content as StackPanel;
                         System.Windows.Shapes.Path chevron = caption == null ? null :
@@ -1268,8 +1330,41 @@ public static class Package6Tests
                         Controls<CheckBox>(Body(d, "windows")).Contains(Check(d, "Не давать простаивать")) &&
                         Controls<CheckBox>(Body(d, "network")).Contains(Check(d, "Показывать сетевые проверки")) &&
                         Controls<CheckBox>(Body(d, "weather")).Contains(Check(d, "Показывать погоду")) &&
-                        Controls<CheckBox>(Body(d, "time")).Contains(Check(d, "Включить звуки")),
+                        Controls<CheckBox>(Body(d, "time")).Contains(Check(d, "Включить звуки")) &&
+                        Controls<CheckBox>(Body(d, "collections")).Contains(Check(d, "Включить модуль «Подборки»")) &&
+                        !Controls<CheckBox>(Body(d, "data")).Contains(Check(d, "Включить модуль «Подборки»")) &&
+                        Controls<Button>(Body(d, "data")).Contains(ButtonNamed(d, "Экспорт / импорт данных…")),
+
                         "Settings assigned to the wrong main/nested section");
+                };
+                Call(w, "ShowSettings");
+            } finally { w.Close(); }
+        });
+        Case("collections and backup settings preserve navigation", delegate {
+            Seed("normal", 1);
+            AppConfig config = Load();
+            config.SettingsLastSection = "data";
+            ConfigStore.Save(config);
+            MainWindow w = Open(); try {
+                settings = delegate(Window d) {
+                    Assert(Body(d, "data").Visibility == Visibility.Visible &&
+                        Body(d, "collections").Visibility == Visibility.Collapsed,
+                        "Legacy data navigation did not open backups");
+                    Assert(Controls<TextBlock>(Body(d, "data")).Find(t => t.Text.Contains("Ctrl+Alt+Space")) == null,
+                        "Window help remains in backup settings");
+                    Assert(Controls<TextBlock>(Body(d, "windows")).Find(t => t.Text.Contains("Ctrl+Alt+Space") &&
+                        t.Text.Contains("Alt+F4") && t.Text.Contains("«Выход»")) != null,
+                        "Corrected window help is missing");
+                    Click(Section(d, "collections"));
+                    Assert(Body(d, "collections").Visibility == Visibility.Visible &&
+                        Body(d, "data").Visibility == Visibility.Collapsed,
+                        "Collections did not open separately");
+                };
+                Call(w, "ShowSettings");
+                Assert(Load().SettingsLastSection == "collections", "Collections navigation not saved");
+                settings = delegate(Window d) {
+                    Assert(Body(d, "collections").Visibility == Visibility.Visible,
+                        "Reopen ignored Collections navigation");
                 };
                 Call(w, "ShowSettings");
             } finally { w.Close(); }
@@ -1762,6 +1857,8 @@ public static class Package6Tests
                     Assert(info != null && !String.IsNullOrWhiteSpace(info.InformationalVersion), "Version metadata missing");
                     Version numericVersion = assembly.GetName().Version;
                     string displayVersion = numericVersion.Major + "." + numericVersion.Minor + "." + numericVersion.Build;
+                    if (info.InformationalVersion.StartsWith(displayVersion + "-beta.", StringComparison.Ordinal))
+                        displayVersion = AppUpdate.InstalledVersionText();
                     Assert(info.InformationalVersion == displayVersion ||
                         System.Text.RegularExpressions.Regex.IsMatch(info.InformationalVersion,
                             "^" + System.Text.RegularExpressions.Regex.Escape(displayVersion) + @"-rc\.[1-9]\d*$"),
@@ -1779,7 +1876,7 @@ public static class Package6Tests
                         if (t.Text == "•  " + firstNote) bullet = true;
                     }
                     Assert(version && author && news && bullet &&
-                        numericVersion.ToString() == displayVersion + ".0",
+                        numericVersion.ToString() == displayVersion.Split('-')[0] + ".0",
                         "About metadata or current-version release notes incorrect");
                     List<ScrollViewer> scrollers = Controls<ScrollViewer>(d);
                     Assert(scrollers.Count == 1 && scrollers[0].ActualHeight > 20,

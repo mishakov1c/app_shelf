@@ -208,6 +208,27 @@ namespace AppShelf
 
         public bool CloseToTrayEnabled { get { return CloseToTray ?? MinimizeToTray; } }
 
+        // Missing in older apps.json: stable releases only.
+        [DataMember(Name = "checkBetaUpdates", EmitDefaultValue = false)]
+        public bool CheckBetaUpdates;
+
+        // Auto-backup remains idle until the user chooses an external folder.
+        [DataMember(Name = "backupDirectory", EmitDefaultValue = false)]
+        public string BackupDirectory;
+
+        [DataMember(Name = "automaticBackupsEnabled", EmitDefaultValue = false)]
+        public bool? AutomaticBackupsEnabled = true;
+
+        // Only 1 or 7 days, 3/7/14 archives and 512/1024/2048/4096 MiB are supported.
+        [DataMember(Name = "automaticBackupDays", EmitDefaultValue = false)]
+        public int AutomaticBackupDays = 1;
+
+        [DataMember(Name = "automaticBackupKeep", EmitDefaultValue = false)]
+        public int AutomaticBackupKeep = 7;
+
+        [DataMember(Name = "automaticBackupQuotaMb", EmitDefaultValue = false)]
+        public int AutomaticBackupQuotaMb = 1024;
+
         // Nullable fields retain legacy defaults when absent from older apps.json.
         [DataMember(Name = "soundsEnabled", EmitDefaultValue = false)]
         public bool? SoundsEnabled = true;
@@ -1778,6 +1799,7 @@ namespace AppShelf
                     }
                 }
                 if (_networkTimer == null) StartMonitors();
+                StartAutomaticBackupMonitor();
             };
             SourceInitialized += OnWindowSourceInitialized;
             StateChanged += OnWindowStateChanged;
@@ -2544,6 +2566,7 @@ namespace AppShelf
             if (Application.Current != null)
                 Application.Current.SessionEnding -= OnApplicationSessionEnding;
             if (_windowPlacementSaveTimer != null) _windowPlacementSaveTimer.Stop();
+            if (_automaticBackupTimer != null) _automaticBackupTimer.Stop();
             if (_statusMessageTimer != null) _statusMessageTimer.Stop();
             if (_networkTimer != null) _networkTimer.Stop();
             if (_weatherTimer != null) _weatherTimer.Stop();
@@ -5232,9 +5255,7 @@ namespace AppShelf
 
         private void ShowAboutWindow()
         {
-            Version version = typeof(MainWindow).Assembly.GetName().Version;
-            string versionText = version == null ? "неизвестна" :
-                version.Major + "." + version.Minor + "." + version.Build;
+            string versionText = AppUpdate.InstalledVersionText();
             Window dialog = new Window
             {
                 Title = "AppShelf — О программе", Owner = this,
@@ -6604,7 +6625,7 @@ namespace AppShelf
             soundNote.TextWrapping = TextWrapping.Wrap;
             soundNote.Margin = new Thickness(0, 0, 0, 16);
             layout.Children.Add(soundNote);
-            TextBlock note = Text("Ctrl+Alt+Space — открыть/скрыть · Крестик — выйти из программы", 11, MutedBrush);
+            TextBlock note = Text("Ctrl+Alt+Space — показать/скрыть окно. Крестик и Alt+F4 действуют согласно настройке сворачивания в трей. Команда «Выход» в трее всегда завершает AppShelf.", 11, MutedBrush);
             note.TextWrapping = TextWrapping.Wrap;
             layout.Children.Add(note);
             CheckBox groupingSetting = new CheckBox
@@ -7128,7 +7149,7 @@ namespace AppShelf
                 ? "appearance" : savedSection;
             if (lastSection != "network" && lastSection != "weather" &&
                 lastSection != "time" && lastSection != "windows" &&
-                lastSection != "appearance" && lastSection != "data")
+                lastSection != "appearance" && lastSection != "data" && lastSection != "collections")
                 lastSection = "appearance";
             if (requestedSection == "appearance-panel")
             {
@@ -7137,7 +7158,7 @@ namespace AppShelf
             }
             else if (requestedSection == "network" || requestedSection == "weather" ||
                 requestedSection == "time" || requestedSection == "windows" ||
-                requestedSection == "appearance" || requestedSection == "data")
+                requestedSection == "appearance" || requestedSection == "data" || requestedSection == "collections")
                 lastSection = requestedSection;
             Action<string> toggleSection = delegate(string key)
             {
@@ -7285,10 +7306,13 @@ namespace AppShelf
             windowsItems.Add(tray);
             windowsItems.AddRange(SettingsRange(originalSettings, startupTitle, startupNote));
             windowsItems.Add(topmostSetting);
+            windowsItems.Add(note);
             AddSettingsSection(accordionRows, "windows", "Поведение Windows",
                 windowsItems, sections, arrows, headers, toggleSection);
-            AddSettingsSection(accordionRows, "data", "Данные и резервные копии",
-                new List<UIElement> { collectionsSetting, backupSettings, note },
+            AddSettingsSection(accordionRows, "collections", "Подборки",
+                new List<UIElement> { collectionsSetting }, sections, arrows, headers, toggleSection);
+            AddSettingsSection(accordionRows, "data", "Резервные копии",
+                new List<UIElement> { backupSettings },
                 sections, arrows, headers, toggleSection);
             sections[lastSection].Visibility = Visibility.Visible;
             SetSettingsArrow(arrows[lastSection], true);
