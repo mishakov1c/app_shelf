@@ -377,6 +377,13 @@ public static class Package6Tests
             try {
                 backup = delegate(Window d) {
                     d.Width = d.MinWidth; d.Height = d.MinHeight; d.UpdateLayout(); Drain();
+                    // The compact default no longer overflows; test the scrollbar
+                    // with the automatic settings expanded at minimum window size.
+                    Assert(Body(d, "backup-automatic").Visibility == Visibility.Collapsed,
+                        "Backup settings should initially be collapsed");
+                    Click(Section(d, "backup-automatic")); Drain();
+                    Assert(Body(d, "backup-automatic").Visibility == Visibility.Visible,
+                        "Automatic backup section did not open");
                     List<ScrollViewer> scrollers = Controls<ScrollViewer>(d);
                     Assert(scrollers.Count == 1, "Backup dialog scroll viewer missing");
                     ScrollViewer scroll = scrollers[0];
