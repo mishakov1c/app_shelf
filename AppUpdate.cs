@@ -280,6 +280,22 @@ namespace AppShelf
             Process.Start(psi);
         }
 
+        internal static void Discard(PreparedUpdate update)
+        {
+            if (update == null || String.IsNullOrWhiteSpace(update.Directory)) return;
+            try
+            {
+                string folder = Path.GetFullPath(update.Directory);
+                if (!WithinStaging(folder) ||
+                    !String.Equals(Path.GetDirectoryName(folder),
+                        Path.GetFullPath(StagingRoot).TrimEnd('\\', '/'),
+                        StringComparison.OrdinalIgnoreCase))
+                    return;
+                if (Directory.Exists(folder)) Directory.Delete(folder, true);
+            }
+            catch (Exception error) { ConfigStore.Log(error); }
+        }
+
         private static bool WithinStaging(string path)
         {
             string prefix = Path.GetFullPath(StagingRoot).TrimEnd(
