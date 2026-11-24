@@ -4,8 +4,8 @@
 using System.Reflection;
 [assembly: AssemblyVersion("2.23.0.0")]
 [assembly: AssemblyFileVersion("2.23.0.0")]
-[assembly: AssemblyInformationalVersion("2.23.0-beta.1")]
-[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.23.0-beta.1")]
+[assembly: AssemblyInformationalVersion("2.23.0-beta.2")]
+[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.23.0-beta.2")]
 [assembly: AssemblyMetadata("AppShelf.ReleaseNotes",
     "Автоматические резервные копии в выбранную папку с ограничением количества и объёма.\n" +
     "Перед обновлением сохраняются данные и предыдущий EXE.\n" +
