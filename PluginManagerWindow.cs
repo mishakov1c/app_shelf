@@ -7,6 +7,8 @@ using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using Forms = System.Windows.Forms;
@@ -85,6 +87,83 @@ namespace AppShelf
                 Cursor = Cursors.Hand };
         }
 
+        private static string CapabilityLabels(string[] capabilities)
+        {
+            return String.Join(", ", Array.ConvertAll(capabilities, delegate(string capability)
+            {
+                switch (capability)
+                {
+                    case "command": return "команды";
+                    case "window": return "собственные окна";
+                    case "settings": return "настройки";
+                    case "notification": return "уведомления";
+                    case "background": return "фоновая работа";
+                    default: return capability;
+                }
+            }));
+        }
+
+        // Only the plugin enable control uses this switch; backup consent stays a checkbox.
+        private static Style PluginSwitchStyle()
+        {
+            ControlTemplate template = new ControlTemplate(typeof(CheckBox));
+            FrameworkElementFactory line = new FrameworkElementFactory(typeof(StackPanel));
+            line.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
+            line.SetValue(Panel.BackgroundProperty, Brushes.Transparent);
+            line.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            FrameworkElementFactory track = new FrameworkElementFactory(typeof(Border));
+            track.Name = "SwitchTrack";
+            track.SetValue(FrameworkElement.WidthProperty, 42.0);
+            track.SetValue(FrameworkElement.HeightProperty, 24.0);
+            track.SetValue(Border.CornerRadiusProperty, new CornerRadius(12));
+            track.SetValue(Border.BackgroundProperty, FluentUi.SurfaceRaised);
+            track.SetValue(Border.BorderBrushProperty, FluentUi.Secondary);
+            track.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+            FrameworkElementFactory knob = new FrameworkElementFactory(typeof(Border));
+            knob.Name = "SwitchKnob";
+            knob.SetValue(FrameworkElement.WidthProperty, 16.0);
+            knob.SetValue(FrameworkElement.HeightProperty, 16.0);
+            knob.SetValue(FrameworkElement.MarginProperty, new Thickness(3, 0, 3, 0));
+            knob.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Left);
+            knob.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            knob.SetValue(Border.CornerRadiusProperty, new CornerRadius(8));
+            knob.SetValue(Border.BackgroundProperty, FluentUi.Secondary);
+            track.AppendChild(knob);
+            line.AppendChild(track);
+            FrameworkElementFactory caption = new FrameworkElementFactory(typeof(ContentPresenter));
+            caption.SetValue(FrameworkElement.MarginProperty, new Thickness(9, 0, 0, 0));
+            caption.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            caption.SetBinding(ContentPresenter.ContentProperty, new Binding("Content") { RelativeSource = RelativeSource.TemplatedParent });
+            line.AppendChild(caption);
+            template.VisualTree = line;
+            Trigger on = new Trigger { Property = ToggleButton.IsCheckedProperty, Value = true };
+            on.Setters.Add(new Setter(Border.BackgroundProperty, FluentUi.Accent, "SwitchTrack"));
+            on.Setters.Add(new Setter(Border.BorderBrushProperty, FluentUi.Accent, "SwitchTrack"));
+            on.Setters.Add(new Setter(Border.BackgroundProperty, FluentUi.Background, "SwitchKnob"));
+            on.Setters.Add(new Setter(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Right, "SwitchKnob"));
+            template.Triggers.Add(on);
+            Trigger focus = new Trigger { Property = UIElement.IsKeyboardFocusedProperty, Value = true };
+            focus.Setters.Add(new Setter(Border.BorderBrushProperty, FluentUi.Foreground, "SwitchTrack"));
+            focus.Setters.Add(new Setter(Border.BorderThicknessProperty, new Thickness(2), "SwitchTrack"));
+            template.Triggers.Add(focus);
+            Trigger disabled = new Trigger { Property = UIElement.IsEnabledProperty, Value = false };
+            disabled.Setters.Add(new Setter(UIElement.OpacityProperty, 0.5));
+            template.Triggers.Add(disabled);
+            Style style = new Style(typeof(CheckBox));
+            style.Setters.Add(new Setter(Control.TemplateProperty, template));
+            style.Setters.Add(new Setter(Control.ForegroundProperty, FluentUi.Foreground));
+            style.Setters.Add(new Setter(Control.FontSizeProperty, 13.0));
+            style.Setters.Add(new Setter(Control.FontWeightProperty, FontWeights.SemiBold));
+            style.Setters.Add(new Setter(FrameworkElement.CursorProperty, Cursors.Hand));
+            style.Setters.Add(new Setter(ContentControl.ContentProperty, "Плагин выключен"));
+            style.Setters.Add(new Setter(FrameworkElement.ToolTipProperty, "Нажмите, чтобы включить плагин."));
+            Trigger checkedLabel = new Trigger { Property = ToggleButton.IsCheckedProperty, Value = true };
+            checkedLabel.Setters.Add(new Setter(ContentControl.ContentProperty, "Плагин включён"));
+            checkedLabel.Setters.Add(new Setter(FrameworkElement.ToolTipProperty, "Нажмите, чтобы выключить плагин."));
+            style.Triggers.Add(checkedLabel);
+            return style;
+        }
+
         private void Refresh()
         {
             stateUpdates.Clear();
@@ -152,21 +231,23 @@ namespace AppShelf
                 body.Children.Add(Label("Издатель (указан автором): " + manifest.Publisher, 12, FluentUi.Secondary));
             if (manifest != null && !String.IsNullOrWhiteSpace(manifest.Description))
                 body.Children.Add(Label(manifest.Description, 13, FluentUi.Foreground));
-            if (manifest != null) body.Children.Add(Label("Возможности: " + String.Join(", ", manifest.Capabilities), 12, FluentUi.Secondary));
+            if (manifest != null) body.Children.Add(Label("Возможности: " + CapabilityLabels(manifest.Capabilities), 12, FluentUi.Secondary));
             TextBlock liveState = Label("", 12, FluentUi.Secondary);
             liveState.Tag = "PluginState:" + plugin.Id;
-            body.Children.Add(liveState);
-            WrapPanel actions = new WrapPanel { Margin = new Thickness(0, 9, 0, 0) };
-            body.Children.Add(actions);
-            CheckBox enabled = new CheckBox { Content = plugin.Enabled ? "Включён" : "Отключён",
-                IsChecked = plugin.Enabled, IsEnabled = plugin.Error == null, VerticalAlignment = VerticalAlignment.Center,
-                Foreground = FluentUi.Foreground, Margin = new Thickness(0, 0, 12, 4), Tag = "PluginEnabled:" + plugin.Id };
+            CheckBox enabled = new CheckBox { Style = PluginSwitchStyle(),
+                IsChecked = plugin.Enabled, IsEnabled = plugin.Error == null,
+                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 10, 0, 5), Tag = "PluginEnabled:" + plugin.Id };
+            System.Windows.Automation.AutomationProperties.SetName(enabled, "Включить плагин " + name.Text);
             enabled.Click += delegate
             {
                 bool enable = enabled.IsChecked == true;
                 RunAction(delegate { return runtime.SetEnabledAsync(plugin.Id, enable); }, "Состояние сохранено.");
             };
-            actions.Children.Add(enabled);
+            body.Children.Add(enabled);
+            body.Children.Add(liveState);
+            WrapPanel actions = new WrapPanel { Margin = new Thickness(0, 9, 0, 0) };
+            body.Children.Add(actions);
             Button start = ButtonFor("Запустить", false);
             start.Tag = "PluginStart:" + plugin.Id;
             start.Click += delegate
@@ -206,13 +287,12 @@ namespace AppShelf
                 string value;
                 Brush color = FluentUi.Secondary;
                 if (plugin.Error != null) { value = "Ошибка: " + plugin.Error; color = Brushes.Salmon; }
-                else if (!plugin.Enabled) value = "Отключён";
                 else if (state.Status == "running") { value = "Работает"; color = Brushes.LightGreen; }
                 else if (state.Status == "starting") value = "Запускается…";
                 else if (state.Status == "stopping") value = "Останавливается…";
                 else if (state.Status == "error") { value = "Ошибка: " + state.Error; color = Brushes.Salmon; }
-                else value = "Ожидает запуска";
-                liveState.Text = value; liveState.Foreground = color;
+                else value = "Остановлен";
+                liveState.Text = "Состояние процесса: " + value; liveState.Foreground = color;
                 start.Content = state.Status == "idle" ? "Запустить" : "Перезапустить";
                 start.IsEnabled = plugin.Enabled && plugin.Error == null &&
                     state.Status != "starting" && state.Status != "stopping";
@@ -327,7 +407,7 @@ namespace AppShelf
                                 "\nID: " + candidate.Id +
                                 "\nИздатель (не проверен): " + (String.IsNullOrWhiteSpace(candidate.Publisher) ? "не указан" : candidate.Publisher) +
                                 "\nФайл: " + Path.GetFileName(path) +
-                                "\nВозможности: " + String.Join(", ", candidate.Capabilities) +
+                                "\nВозможности: " + CapabilityLabels(candidate.Capabilities) +
                                 "\n\nПлагин — сторонняя программа с правами вашей учётной записи. " +
                                 "Устанавливайте только пакеты из доверенных источников. " +
                                 "После установки или обновления плагин будет отключён.\n\nДоверять этому пакету и установить его?",
@@ -337,7 +417,7 @@ namespace AppShelf
                     }, expectedId, runtime.BeforePackageCommit,
                         String.IsNullOrWhiteSpace(backupRoot) ? null : BackupAutomation.ValidateRoot(backupRoot), true);
                 });
-                status.Text = manifest == null ? "Установка отменена." : "Установлен " + manifest.Name + " " + manifest.Version + ". Плагин отключён.";
+                status.Text = manifest == null ? "Установка отменена." : "Установлен " + manifest.Name + " " + manifest.Version + ". Включите его переключателем в списке.";
             }
             catch (Exception error) { status.Text = "Не удалось установить пакет: " + error.Message; }
             finally { busy = false; install.IsEnabled = true; rows.IsEnabled = true; Refresh(); }
