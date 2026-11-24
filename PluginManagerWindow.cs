@@ -261,13 +261,13 @@ namespace AppShelf
                                 MessageBoxButton.OK, MessageBoxImage.Information);
                             return;
                         }
-                        if (AppDialog.Show(this, "Остановить плагин и заменить перечисленные файлы сохранёнными данными?\n\n" +
+                        if (AppDialog.Show(this, "Остановить и отключить плагин, затем заменить перечисленные файлы сохранёнными данными?\n\n" +
                             String.Join("\n", saved.Files.ConvertAll(delegate(PluginBackupFile file) { return file.Path; }).ToArray()) +
                             "\n\nТекущие файлы будут сохранены в папке резервных копий. Остальные данные не изменятся.",
                             "AppShelf — Восстановление данных плагина", MessageBoxButton.YesNo, MessageBoxImage.Warning)
                             != MessageBoxResult.Yes) return;
                         RunAction(delegate { return runtime.RestoreDataAsync(plugin.Id, saved.Version,
-                            BackupAutomation.ValidateRoot(backupRoot)); }, "Данные восстановлены. При необходимости запустите плагин.");
+                            BackupAutomation.ValidateRoot(backupRoot)); }, "Данные восстановлены. Плагин отключён; включите его при необходимости.");
                     };
                     body.Children.Add(restore);
                 }

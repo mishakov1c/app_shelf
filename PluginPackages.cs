@@ -7,6 +7,7 @@ using System.IO.Compression;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
 namespace AppShelf
@@ -555,9 +556,13 @@ namespace AppShelf
         // No links in host-owned policy/recovery locations or declared data paths.
         private static void PlainIfPresent(string path)
         {
-            if ((File.Exists(path) || Directory.Exists(path)) &&
-                (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                Reject("Ссылки в данных плагина не поддерживаются.");
+            try
+            {
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                    Reject("Ссылки в данных плагина не поддерживаются.");
+            }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
         }
 
         private string PolicyPath(string id)
@@ -571,12 +576,29 @@ namespace AppShelf
             return path;
         }
 
+        private static string BackupConsent(PluginManifest manifest)
+        {
+            string[] names = (string[])(manifest.BackupFiles ?? new string[0]).Clone();
+            Array.Sort(names, StringComparer.Ordinal);
+            using (SHA256 hash = SHA256.Create())
+                return Convert.ToBase64String(hash.ComputeHash(Encoding.UTF8.GetBytes(
+                    manifest.Id + "\n" + manifest.Version + "\n" + String.Join("\n", names))));
+        }
+
+        private bool BackupPolicyExists(string id)
+        {
+            return File.Exists(PolicyPath(id));
+        }
+
         internal bool BackupDataEnabled(string id)
         {
             lock (CommitGate)
             {
                 string path = PolicyPath(id);
-                return File.Exists(path) && new FileInfo(path).Length == 0;
+                if (!File.Exists(path) || new FileInfo(path).Length > 128) return false;
+                PluginManifest manifest = ReadInstalled(id);
+                return manifest.BackupFiles != null && manifest.BackupFiles.Length != 0 &&
+                    File.ReadAllText(path) == BackupConsent(manifest);
             }
         }
 
@@ -590,8 +612,16 @@ namespace AppShelf
                 if (manifest.BackupFiles == null || manifest.BackupFiles.Length == 0)
                     Reject("Плагин не объявляет файлы для резервирования.");
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
-                using (FileStream output = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
-                    output.Flush(true);
+                byte[] bytes = Encoding.UTF8.GetBytes(BackupConsent(manifest));
+                string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    using (FileStream output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    { output.Write(bytes, 0, bytes.Length); output.Flush(true); }
+                    if (File.Exists(path)) File.Replace(temp, path, null);
+                    else File.Move(temp, path);
+                }
+                finally { if (File.Exists(temp)) File.Delete(temp); }
             }
         }
 
@@ -640,7 +670,7 @@ namespace AppShelf
                     if (plugin.Error != null || plugin.Manifest == null)
                     {
                         // Don't silently omit data that the user opted into.
-                        if (plugin.Id != null && IdPattern.IsMatch(plugin.Id) && BackupDataEnabled(plugin.Id))
+                        if (plugin.Id != null && IdPattern.IsMatch(plugin.Id) && BackupPolicyExists(plugin.Id))
                             Reject("Нельзя сохранить данные повреждённого плагина: " + plugin.Id);
                         continue;
                     }
@@ -755,6 +785,7 @@ namespace AppShelf
             {
                 PluginManifest manifest = ReadInstalled(id);
                 if (manifest.Version != version) Reject("Для восстановления нужна та же версия плагина.");
+                if (!Approved(Child(InstalledRoot, id), manifest)) Reject("Плагин не подтверждён.");
                 PluginBackupItem item = ReadRecovered().Find(delegate(PluginBackupItem x) { return x.Id == id; });
                 if (item == null || item.Version != version || !item.DataIncluded || item.Files.Count == 0)
                     Reject("Нет подходящих сохранённых данных плагина.");
@@ -762,6 +793,9 @@ namespace AppShelf
                 foreach (PluginBackupFile file in item.Files)
                     if (!allowed.Contains(file.Path)) Reject("Плагин не разрешает восстановление файла: " + file.Path);
                 if (String.IsNullOrWhiteSpace(backupRoot)) Reject("Сначала выберите папку резервных копий AppShelf.");
+                // Keep the plugin disabled even if rollback fails; never automatically
+                // run code against a partly restored data set after restart.
+                SetEnabled(id, false);
                 string safety = Path.Combine(backupRoot, "BeforeRestore", "plugin-" + id + "-" + Guid.NewGuid().ToString("N"));
                 // Save only affected existing files; never copy or delete other plugin data.
                 List<string> touched = new List<string>();
@@ -898,6 +932,8 @@ namespace AppShelf
                 string path = Child(InstalledRoot, id);
                 CheckPlainTree(path);
                 Directory.Delete(path, true);
+                // Consent is not inherited by a later reinstall.
+                SetBackupDataEnabled(id, false);
             }
         }
     }

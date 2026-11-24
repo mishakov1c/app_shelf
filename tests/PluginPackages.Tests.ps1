@@ -78,6 +78,68 @@ public static class PluginPackageTests {
         }
         Assert(File.ReadAllText(data)=="keep","recovery preserved user data "+scenario);
     }
+    static void BackupChecks(string root) {
+        string profile=Path.Combine(root,"backup-profile"), safety=Path.Combine(root,"backup-safety");
+        Directory.CreateDirectory(profile); Directory.CreateDirectory(safety);
+        PluginPackageStore store=new PluginPackageStore(profile);
+        string id="example.backup";
+        string m=Manifest("1.0.0",id,1).Replace("\"capabilities\"", "\"backupFiles\":[\"settings.json\",\"sub/state.dat\"],\"capabilities\"");
+        string package=Package(root,m,null,true);
+        Install(store,package);
+        string data=store.GetDataDirectory(id);
+        string settings=Path.Combine(data,"settings.json"), privateFile=Path.Combine(data,"history.txt");
+        File.WriteAllText(settings,"settings-old");
+        File.WriteAllText(privateFile,"private-history");
+        Directory.CreateDirectory(Path.Combine(data,"sub"));
+        File.WriteAllText(Path.Combine(data,"sub","state.dat"),"state-old");
+        store.SetEnabled(id,true);
+        byte[] first=store.CaptureBackup();
+        string inventory=Encoding.UTF8.GetString(first);
+        Assert(inventory.Contains(id)&&inventory.Contains("\"dataIncluded\":false"),"inventory without data by default");
+        Assert(!inventory.Contains("settings.json")&&!inventory.Contains("history.txt"),"no private file names by default");
+        store.SetBackupDataEnabled(id,true);
+        Assert(store.BackupDataEnabled(id),"explicit consent");
+        byte[] snapshot=store.CaptureBackup();
+        string json=Encoding.UTF8.GetString(snapshot);
+        Assert(json.Contains("settings.json")&&json.Contains("state.dat")&&!json.Contains("history.txt"),"only allowlisted data");
+        Assert(Convert.ToBase64String(snapshot)==Convert.ToBase64String(store.CaptureBackup()),"stable capture");
+        using(MemoryStream input=new MemoryStream(snapshot))
+            Assert(Convert.ToBase64String(PluginPackageStore.ReadBackupBytes(input))==Convert.ToBase64String(snapshot),"validated backup");
+        File.WriteAllBytes(store.RecoveredPath(),snapshot);
+        var recovered=store.ReadRecovered();
+        Assert(recovered.Count==1&&recovered[0].Files.Count==2&&recovered[0].Enabled,"recovery inventory");
+        File.WriteAllText(settings,"settings-current");
+        File.WriteAllText(privateFile,"private-current");
+        Assert(File.ReadAllText(settings)=="settings-current","import never changes live data");
+        Reject(delegate { store.ApplyRecoveredData(id,"2.0.0",safety); },"wrong restore version");
+        store.ApplyRecoveredData(id,"1.0.0",safety);
+        Assert(File.ReadAllText(settings)=="settings-old","settings restored");
+        Assert(File.ReadAllText(privateFile)=="private-current","undeclared private data untouched");
+        Assert(!store.List()[0].Enabled,"restore leaves plugin disabled");
+        string[] safetyFiles=Directory.GetFiles(safety,"settings.json",SearchOption.AllDirectories);
+        Assert(safetyFiles.Length==1&&File.ReadAllText(safetyFiles[0])=="settings-current","previous data preserved");
+        string invalid=json.Replace("settings.json","../escape");
+        Reject(delegate { using(var stream=new MemoryStream(Encoding.UTF8.GetBytes(invalid))) PluginPackageStore.ReadBackupBytes(stream); },"unsafe backup path");
+        string extra=json.Replace("settings.json","history.txt");
+        File.WriteAllText(store.RecoveredPath(),extra,new UTF8Encoding(false));
+        Reject(delegate { store.ApplyRecoveredData(id,"1.0.0",safety); },"undeclared restoration rejected");
+        Assert(File.ReadAllText(privateFile)=="private-current","undeclared restoration preserved data");
+        string m2=m.Replace("1.0.0","1.1.0");
+        Install(store,Package(root,m2,null,true));
+        Assert(!store.BackupDataEnabled(id),"new version needs consent");
+        Assert(!Encoding.UTF8.GetString(store.CaptureBackup()).Contains("settings.json"),"new version no data by default");
+        store.SetBackupDataEnabled(id,true);
+        File.WriteAllBytes(settings,new byte[4*1024*1024+1]);
+        Reject(delegate { store.CaptureBackup(); },"data size limit");
+        store.SetBackupDataEnabled(id,false);
+        Assert(store.CaptureBackup()!=null,"oversized unselected file not read");
+        store.SetBackupDataEnabled(id,true);
+        store.Remove(id);
+        Install(store,Package(root,m2,null,true));
+        Assert(!store.BackupDataEnabled(id),"reinstall requires consent");
+        string unsafe=Manifest("1.0.0","example.unsafe",1).Replace("\"capabilities\"","\"backupFiles\":[\"../bad\"],\"capabilities\"");
+        Reject(delegate { Install(store,Package(root,unsafe,null,true)); },"unsafe manifest backup path");
+    }
     public static void Run() {
         string root = Path.Combine(Path.GetTempPath(), "AppShelf-PluginTests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -119,6 +181,7 @@ public static class PluginPackageTests {
             Assert(!Directory.Exists(Path.Combine(root, "Plugins", "Installed", "example.hello")), "code removed");
             Assert(Directory.GetDirectories(Path.Combine(root, "Plugins", "Installed")).Length == 0, "no staging leftovers");
             foreach(string scenario in new[]{"before","between","after","cleanup","missing","badjournal"}) Recovery(root,scenario);
+            BackupChecks(root);
             Console.WriteLine("PASS: " + count + " package checks");
         } finally { Directory.Delete(root, true); }
     }
