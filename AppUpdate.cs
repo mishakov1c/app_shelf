@@ -52,6 +52,7 @@ namespace AppShelf
         {
             internal Version Version;
             internal string VersionText;
+            internal bool IsBeta;
             internal string Notes;
             internal string DownloadUrl;
             internal string Sha256;
@@ -86,18 +87,72 @@ namespace AppShelf
             return new Version(value.Major, value.Minor, value.Build);
         }
 
-        internal static Release Check()
+        // Keep the numeric assembly version separate from the semantic release tag.
+        // Stable wins over all beta builds with the same numeric version.
+        internal static string NormalizeReleaseVersion(string text)
         {
-            string address = "https://api.github.com/repos/" + Owner + "/" +
-                Repository + "/releases/latest";
+            string value = (text ?? "").Trim();
+            Match match = Regex.Match(value,
+                @"\A[vV]?((?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4}))(?:-beta\.([1-9][0-9]{0,8}))?\z");
+            if (!match.Success)
+                throw new InvalidDataException("Некорректный номер версии релиза.");
+            Version core = ParseVersion(match.Groups[1].Value);
+            if (core.Major > 65534 || core.Minor > 65534 || core.Build > 65534)
+                throw new InvalidDataException("Некорректный номер версии релиза.");
+            return match.Groups[1].Value + (match.Groups[2].Success
+                ? "-beta." + match.Groups[2].Value : "");
+        }
+
+        private static Version CoreVersion(string normalized)
+        {
+            return ParseVersion(normalized.Split('-')[0]);
+        }
+
+        internal static int CompareReleaseVersions(string first, string second)
+        {
+            string a = NormalizeReleaseVersion(first);
+            string b = NormalizeReleaseVersion(second);
+            int core = CoreVersion(a).CompareTo(CoreVersion(b));
+            if (core != 0) return core;
+            int ai = a.IndexOf("-beta.", StringComparison.Ordinal);
+            int bi = b.IndexOf("-beta.", StringComparison.Ordinal);
+            int an = ai < 0 ? Int32.MaxValue : Int32.Parse(a.Substring(ai + 6),
+                System.Globalization.CultureInfo.InvariantCulture);
+            int bn = bi < 0 ? Int32.MaxValue : Int32.Parse(b.Substring(bi + 6),
+                System.Globalization.CultureInfo.InvariantCulture);
+            return an.CompareTo(bn);
+        }
+
+        internal static string InstalledVersionText()
+        {
+            Assembly assembly = typeof(AppUpdate).Assembly;
+            AssemblyInformationalVersionAttribute info =
+                (AssemblyInformationalVersionAttribute)Attribute.GetCustomAttribute(
+                    assembly, typeof(AssemblyInformationalVersionAttribute));
+            if (info != null)
+            {
+                // Old development/test builds may use a different informational suffix.
+                // Published beta metadata must match the numeric assembly version.
+                string value = info.InformationalVersion;
+                if (value != null && value.IndexOf("-beta.", StringComparison.Ordinal) >= 0)
+                {
+                    string normalized = NormalizeReleaseVersion(value);
+                    if (!CoreVersion(normalized).Equals(InstalledVersion()))
+                        throw new InvalidDataException("Метаданные бета-версии не совпадают.");
+                    return normalized;
+                }
+            }
+            return InstalledVersion().ToString(3);
+        }
+
+        private static T ReadGithub<T>(string address)
+        {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(address);
             request.Method = "GET";
             request.UserAgent = "AppShelf-update-check";
             request.Accept = "application/vnd.github+json";
             request.Timeout = 15000;
             request.ReadWriteTimeout = 15000;
-
-            GithubRelease release;
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             using (Stream input = response.GetResponseStream())
             using (MemoryStream buffer = new MemoryStream())
@@ -106,18 +161,72 @@ namespace AppShelf
                 int count;
                 while ((count = input.Read(block, 0, block.Length)) != 0)
                 {
-                    if (buffer.Length + count > 1024 * 1024)
+                    if (buffer.Length + count > 8 * 1024 * 1024)
                         throw new InvalidDataException("Слишком большой ответ GitHub.");
                     buffer.Write(block, 0, count);
                 }
                 buffer.Position = 0;
-                release = (GithubRelease)new DataContractJsonSerializer(
-                    typeof(GithubRelease)).ReadObject(buffer);
+                return (T)new DataContractJsonSerializer(typeof(T)).ReadObject(buffer);
             }
-            if (release == null || release.Draft || release.Prerelease)
-                throw new InvalidDataException("Нет опубликованного стабильного релиза.");
+        }
 
-            Version version = ParseVersion(release.Tag);
+        internal static Release Check()
+        {
+            return CheckChannel(false);
+        }
+
+        internal static Release CheckChannel(bool includeBeta)
+        {
+            string address = "https://api.github.com/repos/" + Owner + "/" +
+                Repository + "/releases";
+            if (!includeBeta)
+                return SelectRelease(new List<GithubRelease> {
+                    ReadGithub<GithubRelease>(address + "/latest") }, false);
+
+            // GitHub returns releases in publication order, not semantic order.
+            // Read all bounded pages rather than assuming the first item is newest.
+            List<GithubRelease> releases = new List<GithubRelease>();
+            for (int page = 1; page <= 10; page++)
+            {
+                List<GithubRelease> part = ReadGithub<List<GithubRelease>>(
+                    address + "?per_page=100&page=" + page);
+                if (part == null) throw new InvalidDataException("Некорректный ответ GitHub.");
+                releases.AddRange(part);
+                if (part.Count < 100) return SelectRelease(releases, true);
+            }
+            throw new InvalidDataException("Слишком много релизов GitHub.");
+        }
+
+        internal static Release SelectReleaseFromJson(string json, bool includeBeta)
+        {
+            using (MemoryStream buffer = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                return SelectRelease((List<GithubRelease>)new DataContractJsonSerializer(
+                    typeof(List<GithubRelease>)).ReadObject(buffer), includeBeta);
+        }
+
+        private static Release SelectRelease(List<GithubRelease> releases, bool includeBeta)
+        {
+            GithubRelease release = null;
+            string versionText = null;
+            if (releases != null)
+                foreach (GithubRelease candidate in releases)
+                {
+                    if (candidate == null || candidate.Draft ||
+                        (candidate.Prerelease && !includeBeta)) continue;
+                    string tag;
+                    try { tag = NormalizeReleaseVersion(candidate.Tag); }
+                    catch (InvalidDataException) { continue; }
+                    bool beta = tag.IndexOf("-beta.", StringComparison.Ordinal) >= 0;
+                    if (beta != candidate.Prerelease) continue;
+                    if (release == null || CompareReleaseVersions(tag, versionText) > 0)
+                    {
+                        release = candidate;
+                        versionText = tag;
+                    }
+                }
+            if (release == null)
+                throw new InvalidDataException("Нет подходящего опубликованного релиза.");
+            Version version = CoreVersion(versionText);
             GithubAsset asset = null;
             if (release.Assets != null)
                 foreach (GithubAsset item in release.Assets)
@@ -139,15 +248,16 @@ namespace AppShelf
             if (!Uri.TryCreate(asset.DownloadUrl, UriKind.Absolute, out download) ||
                 download.Scheme != Uri.UriSchemeHttps ||
                 !String.Equals(download.Host, "github.com", StringComparison.OrdinalIgnoreCase) ||
-                !download.AbsolutePath.StartsWith("/" + Owner + "/" + Repository +
-                    "/releases/download/", StringComparison.OrdinalIgnoreCase) ||
-                !download.AbsolutePath.EndsWith("/AppShelf.exe", StringComparison.Ordinal))
+                !String.Equals(download.AbsolutePath, "/" + Owner + "/" + Repository +
+                    "/releases/download/" + release.Tag.Trim() + "/AppShelf.exe", StringComparison.Ordinal) ||
+                !String.IsNullOrEmpty(download.Query) || !String.IsNullOrEmpty(download.Fragment))
                 throw new InvalidDataException("GitHub вернул неожиданный адрес EXE.");
 
             return new Release
             {
                 Version = version,
-                VersionText = version.ToString(3),
+                VersionText = versionText,
+                IsBeta = release.Prerelease,
                 Notes = String.IsNullOrWhiteSpace(release.Body)
                     ? "Описание отсутствует." : release.Body,
                 DownloadUrl = asset.DownloadUrl,
@@ -228,7 +338,9 @@ namespace AppShelf
                 if (!String.Equals(identity.Name, "AppShelf",
                     StringComparison.OrdinalIgnoreCase) ||
                     !new Version(identity.Version.Major, identity.Version.Minor,
-                        identity.Version.Build).Equals(release.Version))
+                        identity.Version.Build).Equals(release.Version) ||
+                    !String.Equals(FileVersionInfo.GetVersionInfo(temporary).ProductVersion,
+                        release.VersionText, StringComparison.Ordinal))
                     throw new InvalidDataException(
                         "Файл обновления не соответствует версии AppShelf.");
                 File.Move(temporary, payload);
