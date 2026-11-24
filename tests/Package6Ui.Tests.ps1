@@ -371,6 +371,59 @@ public static class Package6Tests
     {
         Assert(ConfigStore.DirectoryPath == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         Application app = new Application(); app.ShutdownMode = ShutdownMode.OnExplicitShutdown; FluentUi.Install(app);
+        Case("release notes Markdown and safe links", delegate {
+            StackPanel panel = new StackPanel { VerticalAlignment = VerticalAlignment.Top };
+            string tick = ((char)96).ToString();
+            ReleaseNotesView.Render(panel, "### Heading\n\n- **Bold** and *italic* " +
+                tick + "code" + tick + "\n1. Ordered\n[Site](https://github.com/mishakov1c/app_shelf)\n" +
+                "[Unsafe](file:///C:/Windows/notepad.exe)\n<script>not executable</script>",
+                Brushes.White, Brushes.LightBlue, true);
+            Assert(panel.Children.Count == 6, "Markdown block count mismatch");
+            TextBlock heading = (TextBlock)panel.Children[0];
+            Assert(heading.Text == "Heading" && heading.FontSize > 12 &&
+                heading.FontWeight == FontWeights.SemiBold, "Heading was not formatted");
+            Grid row = (Grid)panel.Children[1];
+            TextBlock body = (TextBlock)row.Children[1];
+            Assert(((TextBlock)row.Children[0]).Text == "•", "List marker missing");
+            Assert(body.Inlines.FirstInline is System.Windows.Documents.Bold,
+                "Bold formatting missing");
+            bool italic = false, code = false;
+            foreach (System.Windows.Documents.Inline inline in body.Inlines) {
+                if (inline is System.Windows.Documents.Italic) italic = true;
+                System.Windows.Documents.Run run = inline as System.Windows.Documents.Run;
+                if (run != null && run.Text == "code" && run.FontFamily.Source == "Consolas") code = true;
+            }
+            Assert(italic && code, "Inline italic or code formatting missing");
+            Assert(((TextBlock)((Grid)panel.Children[2]).Children[0]).Text == "1.",
+                "Ordered list marker missing");
+            Assert(((TextBlock)panel.Children[3]).Inlines.FirstInline is System.Windows.Documents.Hyperlink,
+                "HTTPS link missing");
+            Assert(!(((TextBlock)panel.Children[4]).Inlines.FirstInline is System.Windows.Documents.Hyperlink) &&
+                ((TextBlock)panel.Children[5]).Text == "<script>not executable</script>",
+                "Unsafe Markdown was not kept as text");
+            Uri uri;
+            Assert(!ReleaseNotesView.SafeLink("javascript:alert(1)", out uri) &&
+                !ReleaseNotesView.SafeLink("https://name:password@example.com", out uri) &&
+                ReleaseNotesView.SafeLink("https://github.com", out uri), "Unsafe link scheme accepted");
+            ScrollViewer viewer = new ScrollViewer { Content = panel, Width = 360, Height = 150,
+                VerticalContentAlignment = VerticalAlignment.Top,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            FluentUi.StyleSettingsScroll(viewer);
+            Window window = new Window { Content = viewer, Width = 400, Height = 260,
+                ShowInTaskbar = false };
+            try {
+                window.Show(); Drain();
+                Point start = heading.TransformToAncestor(viewer).Transform(new Point(0, 0));
+                Assert(start.Y < 8 && start.Y >= 0, "Release notes vertically centered");
+                string longNotes = String.Concat(System.Linq.Enumerable.Repeat("- long release note\n", 50));
+                ReleaseNotesView.Render(panel, longNotes, Brushes.White, Brushes.LightBlue, true);
+                Drain();
+                Assert(viewer.ScrollableHeight > 0, "Long release notes do not scroll");
+                ReleaseNotesView.Render(panel, "Literal **message**", Brushes.White, Brushes.LightBlue, false);
+                Assert(panel.Children.Count == 1 && ((TextBlock)panel.Children[0]).Text == "Literal **message**",
+                    "Plain status message was parsed as Markdown");
+            } finally { window.Close(); }
+        });
         Case("backup window uses the existing dark scrollbar", delegate {
             Seed("normal", 1);
             MainWindow w = Open();
