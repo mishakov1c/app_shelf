@@ -859,7 +859,8 @@ namespace AppShelf
                     if (File.Exists(errorFile)) File.Delete(errorFile);
                 }
                 catch (Exception error) { ConfigStore.Log(error); }
-                Prune(root, config);
+                try { Prune(root, config); }
+                catch (Exception error) { ConfigStore.Log(error); }
                 return true;
             }
         }
@@ -869,6 +870,54 @@ namespace AppShelf
             using (SHA256 sha = SHA256.Create())
             using (FileStream input = File.OpenRead(file))
                 return BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "");
+        }
+
+        // The first transition from 2.22.0 still runs its old updater, which
+        // creates .previous beside the EXE. Preserve it in the chosen backup
+        // folder and remove the adjacent file only after verified copy.
+        internal static string MigrateLegacyPreviousExe(AppConfig config, string currentExe)
+        {
+            if (config == null || String.IsNullOrWhiteSpace(config.BackupDirectory)) return null;
+            lock (Gate)
+            {
+                string legacy = currentExe + ".previous";
+                if (!File.Exists(legacy)) return null;
+                string root = ValidateRoot(config.BackupDirectory);
+                string parent = Path.Combine(root, "BeforeUpdate");
+                Directory.CreateDirectory(parent);
+                string id = "legacy-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" +
+                    Guid.NewGuid().ToString("N").Substring(0, 6);
+                string staging = Path.Combine(parent, ".tmp-" + id);
+                string destination = Path.Combine(parent, id);
+                Directory.CreateDirectory(staging);
+                try
+                {
+                    string candidate = Path.Combine(staging, "AppShelf-previous.exe");
+                    string originalHash = Sha256File(legacy);
+                    File.Copy(legacy, candidate, false);
+                    if (!String.Equals(originalHash, Sha256File(candidate),
+                        StringComparison.OrdinalIgnoreCase))
+                        throw new IOException("Не удалось проверить прежнюю копию EXE.");
+                    Directory.Move(staging, destination);
+                    // If another process changed the original, preserve it.
+                    try
+                    {
+                        if (File.Exists(legacy) &&
+                            String.Equals(Sha256File(legacy), originalHash,
+                                StringComparison.OrdinalIgnoreCase))
+                            File.Delete(legacy);
+                    }
+                    catch (Exception error) { ConfigStore.Log(error); }
+                    try { Prune(root, config); }
+                    catch (Exception error) { ConfigStore.Log(error); }
+                    return destination;
+                }
+                finally
+                {
+                    try { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
+                    catch (Exception error) { ConfigStore.Log(error); }
+                }
+            }
         }
 
         internal static string CreateBeforeUpdate(AppConfig config,
@@ -907,7 +956,8 @@ namespace AppShelf
                     try { if (Directory.Exists(temp)) Directory.Delete(temp, true); }
                     catch (Exception error) { ConfigStore.Log(error); }
                 }
-                Prune(root, config);
+                try { Prune(root, config); }
+                catch (Exception error) { ConfigStore.Log(error); }
                 return result;
             }
         }
