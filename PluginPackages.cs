@@ -13,15 +13,15 @@ namespace AppShelf
     [DataContract]
     internal sealed class PluginManifest
     {
-        [DataMember(Name = "schemaVersion", IsRequired = true)] public int SchemaVersion;
-        [DataMember(Name = "apiVersion", IsRequired = true)] public int ApiVersion;
-        [DataMember(Name = "id", IsRequired = true)] public string Id;
-        [DataMember(Name = "name", IsRequired = true)] public string Name;
-        [DataMember(Name = "version", IsRequired = true)] public string Version;
-        [DataMember(Name = "entryPoint", IsRequired = true)] public string EntryPoint;
-        [DataMember(Name = "description", EmitDefaultValue = false)] public string Description;
-        [DataMember(Name = "publisher", EmitDefaultValue = false)] public string Publisher;
-        [DataMember(Name = "capabilities", IsRequired = true)] public string[] Capabilities;
+        [DataMember(Name = "schemaVersion", IsRequired = true)] public int SchemaVersion { get; set; }
+        [DataMember(Name = "apiVersion", IsRequired = true)] public int ApiVersion { get; set; }
+        [DataMember(Name = "id", IsRequired = true)] public string Id { get; set; }
+        [DataMember(Name = "name", IsRequired = true)] public string Name { get; set; }
+        [DataMember(Name = "version", IsRequired = true)] public string Version { get; set; }
+        [DataMember(Name = "entryPoint", IsRequired = true)] public string EntryPoint { get; set; }
+        [DataMember(Name = "description", EmitDefaultValue = false)] public string Description { get; set; }
+        [DataMember(Name = "publisher", EmitDefaultValue = false)] public string Publisher { get; set; }
+        [DataMember(Name = "capabilities", IsRequired = true)] public string[] Capabilities { get; set; }
     }
 
     internal sealed class InstalledPlugin
