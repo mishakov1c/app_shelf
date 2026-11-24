@@ -15,6 +15,7 @@ obj/
 [Rr]elease/
 publish/
 artifacts/
+/samples/*/dist/
 TestResults/
 *.exe
 AppShelf.exe.previous
