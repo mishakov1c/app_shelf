@@ -21,7 +21,11 @@ try {
     $package = Join-Path $output 'NotesPlugin-1.0.0.asplugin'
     $temporary = Join-Path $output ([guid]::NewGuid().ToString('N') + '.tmp')
     try {
-        [IO.Compression.ZipFile]::CreateFromDirectory($stage, $temporary)
+        $archive = [IO.Compression.ZipFile]::Open($temporary, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, (Join-Path $stage 'plugin.json'), 'plugin.json')
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $exe, 'bin/NotesPlugin.exe')
+        } finally { $archive.Dispose() }
         if ([IO.File]::Exists($package)) { [IO.File]::Replace($temporary, $package, $null) }
         else { [IO.File]::Move($temporary, $package) }
     } finally {
