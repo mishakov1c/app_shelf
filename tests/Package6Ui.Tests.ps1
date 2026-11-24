@@ -964,7 +964,7 @@ public static class Package6Tests
                         d.Width = d.MinWidth * s; d.Height = d.MinHeight * s;
                         ((FrameworkElement)d.Content).LayoutTransform = new ScaleTransform(s, s); Drain();
                         ScrollViewer scroll = Controls<ScrollViewer>(d)[0];
-                        string[] keys = new string[] { "appearance", "network", "weather", "time", "windows", "data" };
+                        string[] keys = new string[] { "appearance", "network", "weather", "time", "windows", "collections", "data" };
                         Click(ButtonNamed(d, "Свернуть всё"));
                         foreach (string key in keys)
                             Assert(Body(d, key).Visibility == Visibility.Collapsed, "Collapse all missed " + key);
@@ -1180,7 +1180,7 @@ public static class Package6Tests
         Case("settings accordion and saved navigation", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
                 settings = delegate(Window d) {
-                    string[] main = { "appearance", "network", "weather", "time", "windows", "data" };
+                    string[] main = { "appearance", "network", "weather", "time", "windows", "collections", "data" };
                     string[] nested = { "appearance-tiles", "appearance-background", "appearance-panel" };
                     Dictionary<string, Button> headers = new Dictionary<string, Button>();
                     foreach (Button b in Controls<Button>(d))
@@ -1204,9 +1204,9 @@ public static class Package6Tests
                         "Main accordion is not using the reference dark fill");
                     StackPanel rows = frames[0].Child as StackPanel;
                     StackPanel nestedRows = subframes.Count == 1 ? subframes[0].Child as StackPanel : null;
-                    Assert(rows != null && rows.Children.Count == 11 && nestedRows != null &&
-                        nestedRows.Children.Count == 5 && dividers.Count == 7,
-                        "Expected six main sections and three nested Appearance subsections");
+                    Assert(rows != null && rows.Children.Count == 13 && nestedRows != null &&
+                        nestedRows.Children.Count == 5 && dividers.Count == 8,
+                        "Expected seven main sections and three nested Appearance subsections");
                     foreach (string key in main) {
                         StackPanel caption = Section(d, key).Content as StackPanel;
                         System.Windows.Shapes.Path chevron = caption == null ? null :
@@ -1268,8 +1268,41 @@ public static class Package6Tests
                         Controls<CheckBox>(Body(d, "windows")).Contains(Check(d, "Не давать простаивать")) &&
                         Controls<CheckBox>(Body(d, "network")).Contains(Check(d, "Показывать сетевые проверки")) &&
                         Controls<CheckBox>(Body(d, "weather")).Contains(Check(d, "Показывать погоду")) &&
-                        Controls<CheckBox>(Body(d, "time")).Contains(Check(d, "Включить звуки")),
+                        Controls<CheckBox>(Body(d, "time")).Contains(Check(d, "Включить звуки")) &&
+                        Controls<CheckBox>(Body(d, "collections")).Contains(Check(d, "Включить модуль «Подборки»")) &&
+                        !Controls<CheckBox>(Body(d, "data")).Contains(Check(d, "Включить модуль «Подборки»")) &&
+                        Controls<Button>(Body(d, "data")).Contains(ButtonNamed(d, "Экспорт / импорт данных…")),
+
                         "Settings assigned to the wrong main/nested section");
+                };
+                Call(w, "ShowSettings");
+            } finally { w.Close(); }
+        });
+        Case("collections and backup settings preserve navigation", delegate {
+            Seed("normal", 1);
+            AppConfig config = Load();
+            config.SettingsLastSection = "data";
+            ConfigStore.Save(config);
+            MainWindow w = Open(); try {
+                settings = delegate(Window d) {
+                    Assert(Body(d, "data").Visibility == Visibility.Visible &&
+                        Body(d, "collections").Visibility == Visibility.Collapsed,
+                        "Legacy data navigation did not open backups");
+                    Assert(Controls<TextBlock>(Body(d, "data")).Find(t => t.Text.Contains("Ctrl+Alt+Space")) == null,
+                        "Window help remains in backup settings");
+                    Assert(Controls<TextBlock>(Body(d, "windows")).Find(t => t.Text.Contains("Ctrl+Alt+Space") &&
+                        t.Text.Contains("Alt+F4") && t.Text.Contains("«Выход»")) != null,
+                        "Corrected window help is missing");
+                    Click(Section(d, "collections"));
+                    Assert(Body(d, "collections").Visibility == Visibility.Visible &&
+                        Body(d, "data").Visibility == Visibility.Collapsed,
+                        "Collections did not open separately");
+                };
+                Call(w, "ShowSettings");
+                Assert(Load().SettingsLastSection == "collections", "Collections navigation not saved");
+                settings = delegate(Window d) {
+                    Assert(Body(d, "collections").Visibility == Visibility.Visible,
+                        "Reopen ignored Collections navigation");
                 };
                 Call(w, "ShowSettings");
             } finally { w.Close(); }
