@@ -683,6 +683,7 @@ public static class BackupTests
         Assert(!BackupAutomation.CreateAutomatic(config),
             "Second same-day run created duplicate");
         File.SetLastWriteTimeUtc(zip, DateTime.UtcNow.AddDays(-2));
+        File.SetLastWriteTimeUtc(ConfigStore.FilePath, DateTime.UtcNow.AddMinutes(-1));
         Assert(!BackupAutomation.CreateAutomatic(config),
             "Identical old data unexpectedly created a second ZIP");
         for (int i = 0; i < 4; i++)
@@ -744,6 +745,27 @@ public static class BackupTests
             "Failed pre-update backup deleted a good copy or left staging data");
     }
 
+    private static void FailedAutomaticPreservesPrevious()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        config.AutomaticBackupsEnabled = true;
+        ConfigStore.Save(config);
+        string directory = Path.Combine(config.BackupDirectory, "Automatic");
+        Assert(BackupAutomation.CreateAutomatic(config), "Initial archive missing");
+        string original = Directory.GetFiles(directory, "*.zip")[0];
+        long length = new FileInfo(original).Length;
+        File.SetLastWriteTimeUtc(original, DateTime.UtcNow.AddDays(-2));
+        File.WriteAllText(Shortcut(0), "force a different backup");
+        failCommit = true;
+        try { Throws(delegate { BackupAutomation.CreateAutomatic(config); }); }
+        finally { failCommit = false; }
+        Assert(File.Exists(original) && new FileInfo(original).Length == length &&
+            Directory.GetFiles(directory, "*.zip").Length == 1 &&
+            Directory.GetFiles(directory, "*.tmp").Length == 0,
+            "Failed automatic export damaged a prior ZIP or left temporary files");
+    }
+
     private static void MigrateOldAdjacentExecutable()
     {
         AppConfig config = Loaded();
@@ -776,6 +798,7 @@ public static class BackupTests
         }
         Case("chosen backup directory isolation", InvalidBackupDirectory);
         Case("automatic backup schedule, changed data, retention", AutomaticBackupRetention);
+        Case("failed automatic copy preserves existing ZIP", FailedAutomaticPreservesPrevious);
         Case("paired pre-update ZIP, EXE and external restore safety", PreUpdateBackupAndRestoreLocation);
         Case("failed pre-update keeps prior archives", FailedPreUpdateKeepsOldCopies);
         Case("legacy .previous moves to selected backup directory", MigrateOldAdjacentExecutable);
