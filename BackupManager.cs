@@ -50,6 +50,90 @@ namespace AppShelf
         private const long MaxCoverTotalBytes = 256L * 1024 * 1024;
         private const long MaxBackgroundTotalBytes = 256L * 1024 * 1024;
 
+        private const string ExecutableEntry = "Program/AppShelf.exe";
+        private const long MaxExecutableBytes = 256L * 1024 * 1024;
+
+        internal static string CurrentExecutable()
+        {
+            // Do not archive the PowerShell process hosting isolated test assemblies.
+            if (System.Reflection.Assembly.GetEntryAssembly() != typeof(MainWindow).Assembly) return null;
+            using (Process process = Process.GetCurrentProcess()) return process.MainModule.FileName;
+        }
+
+        private static string HashFile(string path)
+        {
+            using (FileStream input = File.OpenRead(path))
+            using (SHA256 sha = SHA256.Create()) return Convert.ToBase64String(sha.ComputeHash(input));
+        }
+
+        private static void CopyBounded(Stream input, Stream target, long expected, long limit)
+        {
+            if (expected <= 0 || expected > limit) throw new InvalidDataException("Недопустимый размер файла программы.");
+            byte[] buffer = new byte[81920];
+            long total = 0;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) != 0)
+            {
+                if (read > expected - total) throw new InvalidDataException("Файл превышает заявленный размер.");
+                target.Write(buffer, 0, read); total += read;
+            }
+            if (total != expected) throw new InvalidDataException("Неполный файл программы.");
+        }
+
+        private static void AddBinary(ZipArchive archive, string name, string path, long limit)
+        {
+            using (FileStream input = File.OpenRead(path))
+            using (Stream target = archive.CreateEntry(name, CompressionLevel.Optimal).Open())
+                CopyBounded(input, target, input.Length, limit);
+        }
+
+        private static void ReadBinary(ZipArchiveEntry entry, string name, string extraction, bool executable, bool packages)
+        {
+            bool core = name == ExecutableEntry;
+            string scratch = Path.Combine(Path.GetTempPath(), "AppShelfBinary-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(scratch);
+            try
+            {
+                string file = Path.Combine(scratch, Path.GetFileName(name));
+                using (Stream input = entry.Open())
+                using (FileStream output = new FileStream(file, FileMode.CreateNew))
+                    CopyBounded(input, output, entry.Length, core ? MaxExecutableBytes : PluginPackageStore.MaxArchiveBytes);
+                if (core)
+                {
+                    using (FileStream input = File.OpenRead(file))
+                        if (input.ReadByte() != 77 || input.ReadByte() != 90)
+                            throw new InvalidDataException("В архиве нет заголовка EXE.");
+                }
+                else PluginPackageStore.ValidateArchivedPackage(file, Path.GetFileNameWithoutExtension(name));
+                if (extraction != null && (core ? executable : packages))
+                {
+                    string folder = Path.Combine(extraction, core ? "Program" : "Plugins");
+                    Directory.CreateDirectory(folder);
+                    File.Copy(file, Path.Combine(folder, Path.GetFileName(name)), false);
+                }
+            }
+            finally { Directory.Delete(scratch, true); }
+        }
+
+        public static string ExtractPrograms(string filename, string destination, bool executable, bool packages)
+        {
+            if (!executable && !packages) throw new InvalidOperationException("Выберите компоненты.");
+            if (!Directory.Exists(destination)) throw new DirectoryNotFoundException(destination);
+            string result = Path.Combine(destination, "AppShelf-programs-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(result);
+            try
+            {
+                ReminderDocument reminders;
+                Dictionary<string, string> shortcuts, images;
+                CollectionDocument collections;
+                ReadBackup(filename, null, out reminders, out shortcuts, out collections, out images, result, executable, packages);
+                if (Directory.GetFiles(result, "*", SearchOption.AllDirectories).Length == 0)
+                    throw new InvalidDataException("Выбранных компонентов нет в архиве.");
+                return result;
+            }
+            catch { Directory.Delete(result, true); throw; }
+        }
+
         private static void CommitExport(string temp, string filename)
         {
             if (File.Exists(filename)) File.Replace(temp, filename, null);
@@ -95,6 +179,11 @@ namespace AppShelf
 
         public static void ExportAll(string filename, AppConfig config, ReminderDocument reminders)
         {
+            ExportAll(filename, config, reminders, CurrentExecutable());
+        }
+
+        internal static void ExportAll(string filename, AppConfig config, ReminderDocument reminders, string executablePath)
+        {
             if (config == null || reminders == null) throw new InvalidOperationException("Данные приложения не загружены.");
             string collectionWarning;
             bool collectionsCanSave;
@@ -138,12 +227,24 @@ namespace AppShelf
             }
             PluginPackageStore pluginStore = new PluginPackageStore(ConfigStore.DirectoryPath);
             byte[] pluginBackup = pluginStore.CaptureBackup();
-            if (owned.Count + images.Count + backgrounds.Count + 4 + (pluginBackup == null ? 0 : 1) > MaxEntries)
-                throw new InvalidDataException("Слишком много файлов для резервной копии.");
+            string binaryStage = Path.Combine(Path.GetTempPath(), "AppShelfPrograms-" + Guid.NewGuid().ToString("N"));
+            bool includeCore = config.BackupExecutable != false && !String.IsNullOrEmpty(executablePath);
+            bool includePackages = config.BackupPluginPackages != false;
             // Write to a temporary file; a failed export does not destroy the old backup.
             string temp = filename + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
+                string beforeCore = includeCore ? HashFile(executablePath) : "";
+                string beforePackages = includePackages ? pluginStore.PackageSignature() : "";
+                List<string> packages = new List<string>();
+                if (includePackages)
+                {
+                    Directory.CreateDirectory(binaryStage);
+                    packages = pluginStore.CapturePackages(binaryStage);
+                }
+                if (owned.Count + images.Count + backgrounds.Count + 4 + (pluginBackup == null ? 0 : 1) +
+                    (includeCore ? 1 : 0) + packages.Count > MaxEntries)
+                    throw new InvalidDataException("Слишком много файлов для резервной копии.");
                 using (FileStream output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
                     using (ZipArchive archive = new ZipArchive(output, ZipArchiveMode.Create, true))
@@ -156,6 +257,9 @@ namespace AppShelf
                             ZipArchiveEntry plugins = archive.CreateEntry(PluginPackageStore.BackupArchiveEntry, CompressionLevel.Optimal);
                             using (Stream target = plugins.Open()) target.Write(pluginBackup, 0, pluginBackup.Length);
                         }
+                        if (includeCore) AddBinary(archive, ExecutableEntry, executablePath, MaxExecutableBytes);
+                        foreach (string package in packages)
+                            AddBinary(archive, PluginPackageStore.PackageArchivePrefix + Path.GetFileName(package), package, PluginPackageStore.MaxArchiveBytes);
                         foreach (string image in images)
                         {
                             string source = CollectionStore.CoverPath(image);
@@ -214,9 +318,16 @@ namespace AppShelf
                 if ((pluginBackup == null) != (afterPlugins == null) ||
                     (pluginBackup != null && !System.Linq.Enumerable.SequenceEqual(pluginBackup, afterPlugins)))
                     throw new IOException("Данные плагинов изменились во время резервного копирования.");
+                if ((includeCore && beforeCore != HashFile(executablePath)) ||
+                    (includePackages && beforePackages != pluginStore.PackageSignature()))
+                    throw new IOException("Программы изменились во время резервного копирования.");
                 CommitExport(temp, filename);
             }
-            finally { DeleteExportTemp(temp); }
+            finally
+            {
+                DeleteExportTemp(temp);
+                if (Directory.Exists(binaryStage)) Directory.Delete(binaryStage, true);
+            }
         }
 
         public static void ExportReminders(string filename, ReminderDocument reminders)
@@ -250,7 +361,7 @@ namespace AppShelf
 
         private static AppConfig ReadBackup(string filename, string stage, out ReminderDocument reminders,
             out Dictionary<string, string> shortcuts, out CollectionDocument collections,
-            out Dictionary<string, string> images)
+            out Dictionary<string, string> images, string programExtraction = null, bool extractExecutable = false, bool extractPackages = false)
         {
             AppConfig restored = null;
             reminders = null;
@@ -265,6 +376,7 @@ namespace AppShelf
                 long total = 0;
                 long coverTotal = 0;
                 long wallpaperTotal = 0;
+                long packageTotal = 0;
                 foreach (ZipArchiveEntry entry in archive.Entries)
                 {
                     string name = entry.FullName.Replace('\\', '/');
@@ -279,7 +391,9 @@ namespace AppShelf
                         && name.LastIndexOf('/') == "Backgrounds/".Length - 1
                         && CustomBackgroundStore.IsValidFileName(Path.GetFileName(name));
                     bool isPluginBackup = name == PluginPackageStore.BackupArchiveEntry;
-                    bool allowed = isPluginBackup || name == "apps.json" || name == "reminders.json" ||
+                    bool isCore = name == ExecutableEntry;
+                    bool isPackage = PluginPackageStore.IsPackageBackupEntry(name);
+                    bool allowed = isCore || isPackage || isPluginBackup || name == "apps.json" || name == "reminders.json" ||
                         name == "backup-info.txt" || name == "Collections/collections.json" ||
                         isCover || isWallpaper ||
                         (name.StartsWith("Shortcuts/", StringComparison.OrdinalIgnoreCase) &&
@@ -287,18 +401,26 @@ namespace AppShelf
                             (name.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) ||
                              name.EndsWith(".url", StringComparison.OrdinalIgnoreCase)));
                     // Collections use a larger documented JSON limit than other entries.
-                    long entryLimit = isPluginBackup ? PluginPackageStore.MaxBackupDocument : name == "Collections/collections.json"
+                    long entryLimit = isCore ? MaxExecutableBytes : isPackage ? PluginPackageStore.MaxArchiveBytes : isPluginBackup ? PluginPackageStore.MaxBackupDocument : name == "Collections/collections.json"
                         ? CollectionStore.MaxDocumentBytes :
                         isWallpaper ? CustomBackgroundStore.MaxFileBytes : MaxEntryBytes;
                     if (!allowed || !entries.Add(name) || entry.Length > entryLimit)
                         throw new InvalidDataException("Небезопасный или неподдерживаемый файл в ZIP: " + name);
                     if (isCover) coverTotal += entry.Length;
                     else if (isWallpaper) wallpaperTotal += entry.Length;
-                    else if (!isPluginBackup) total += entry.Length;
+                    else if (isPackage) packageTotal += entry.Length;
+                    else if (!isPluginBackup && !isCore) total += entry.Length;
                     if (total > MaxTotalBytes || coverTotal > MaxCoverTotalBytes ||
-                        wallpaperTotal > MaxBackgroundTotalBytes)
+                        wallpaperTotal > MaxBackgroundTotalBytes || packageTotal > PluginPackageStore.MaxPackageBackupTotal)
                         throw new InvalidDataException("Резервная копия слишком большая.");
-                    if (isPluginBackup)
+                    if (isCore || isPackage)
+                    {
+                        if (entry.FullName != name || ((entry.ExternalAttributes >> 16) & 0xF000) == 0xA000 ||
+                            (entry.ExternalAttributes & (int)FileAttributes.ReparsePoint) != 0)
+                            throw new InvalidDataException("Недопустимая запись программы в архиве.");
+                        ReadBinary(entry, name, programExtraction, extractExecutable, extractPackages);
+                    }
+                    else if (isPluginBackup)
                     {
                         byte[] bytes;
                         using (Stream content = entry.Open()) bytes = PluginPackageStore.ReadBackupBytes(content);
@@ -721,7 +843,15 @@ namespace AppShelf
                 else info.Append("missing");
                 info.Append('\n');
             }
-            byte[] pluginBackup = new PluginPackageStore(root).CaptureBackup();
+            PluginPackageStore pluginStore = new PluginPackageStore(root);
+            byte[] pluginBackup = pluginStore.CaptureBackup();
+            string warning; bool canSave;
+            AppConfig policy = ConfigStore.Load(out warning, out canSave);
+            if (!canSave) throw new InvalidDataException("Не удалось прочитать настройки копирования.");
+            if (policy.BackupPluginPackages != false) info.Append(pluginStore.PackageSignature());
+            string executable = BackupStore.CurrentExecutable();
+            if (policy.BackupExecutable != false && executable != null)
+                info.Append("program|").Append(Sha256File(executable)).Append('\n');
             if (pluginBackup != null)
                 using (SHA256 hash = SHA256.Create())
                     info.Append("plugins|").Append(Convert.ToBase64String(hash.ComputeHash(pluginBackup))).Append('\n');
@@ -1291,7 +1421,7 @@ namespace AppShelf
             TextBlock title = Text("Резервные копии", 23, WhiteBrush);
             title.FontWeight = FontWeights.Bold;
             layout.Children.Add(title);
-            TextBlock note = Text("Полная копия содержит приложения, настройки, напоминания, подборки, ярлыки, список плагинов и разрешённые данные плагинов. Код плагинов и журнал ошибок не экспортируются.", 12, MutedBrush);
+            TextBlock note = Text("Полная копия содержит приложения, настройки, напоминания, подборки, ярлыки, список плагинов и разрешённые данные плагинов. Исполняемые файлы и пакеты плагинов включаются согласно настройкам. Журнал ошибок не экспортируется.", 12, MutedBrush);
             note.TextWrapping = TextWrapping.Wrap;
             note.Margin = new Thickness(0, 7, 0, 13);
             // Keep the compact status visible even when every group is collapsed.
@@ -1375,12 +1505,20 @@ namespace AppShelf
             quota.SelectedIndex = currentQuota == 512 ? 0 : currentQuota == 2048 ? 2 :
                 currentQuota == 4096 ? 3 : 1;
 
+            CheckBox includeExecutable = new CheckBox { Content = "Включать AppShelf.exe в ZIP",
+                IsChecked = _config.BackupExecutable != false, Foreground = WhiteBrush, Margin = new Thickness(0, 4, 0, 6) };
+            CheckBox includePluginPackages = new CheckBox { Content = "Включать установленные пакеты плагинов",
+                IsChecked = _config.BackupPluginPackages != false, Foreground = WhiteBrush, Margin = new Thickness(0, 4, 0, 8) };
+            TextBlock privateWarning = Text("В архив попадут и приватные плагины. ZIP не шифруется.", 12, MutedBrush);
+            privateWarning.TextWrapping = TextWrapping.Wrap;
             Button savePolicy = ActionButton("Сохранить настройки бэкапа", false);
             savePolicy.Click += delegate
             {
                 if (automatic.IsChecked == true && !EnsureBackupDirectory(dialog)) return;
                 AppConfig pending = _config.Copy();
                 pending.AutomaticBackupsEnabled = automatic.IsChecked == true;
+                pending.BackupExecutable = includeExecutable.IsChecked == true;
+                pending.BackupPluginPackages = includePluginPackages.IsChecked == true;
                 pending.AutomaticBackupDays = cadence.SelectedIndex == 1 ? 7 : 1;
                 pending.AutomaticBackupKeep = count.SelectedIndex == 0 ? 3 :
                     count.SelectedIndex == 2 ? 14 : 7;
@@ -1471,6 +1609,45 @@ namespace AppShelf
                 }
             };
 
+            Button extractPrograms = ActionButton("Извлечь программу и плагины из ZIP…", false);
+            extractPrograms.Click += async delegate
+            {
+                OpenFileDialog picker = new OpenFileDialog { Title = "Выберите резервную копию",
+                    Filter = "Архив AppShelf (*.zip)|*.zip" };
+                if (picker.ShowDialog(dialog) != true) return;
+                Window choice = new Window { Owner = dialog, Title = "AppShelf — Извлечение программ",
+                    Width = 460, Height = 280, MinWidth = 400, MinHeight = 250, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+                FluentUi.PrepareWindow(choice);
+                StackPanel options = new StackPanel { Margin = new Thickness(18) };
+                choice.Content = options;
+                CheckBox core = new CheckBox { Content = "AppShelf.exe", IsChecked = true, Foreground = WhiteBrush };
+                CheckBox plugins = new CheckBox { Content = "Пакеты плагинов (.asplugin)", IsChecked = true,
+                    Foreground = WhiteBrush, Margin = new Thickness(0, 12, 0, 12) };
+                options.Children.Add(core); options.Children.Add(plugins);
+                TextBlock info = Text("Файлы будут извлечены в новую папку. Текущая программа и плагины не заменяются и не запускаются. Устанавливайте только доверенные пакеты.", 12, MutedBrush);
+                info.TextWrapping = TextWrapping.Wrap; options.Children.Add(info);
+                Button proceed = ActionButton("Выбрать папку и извлечь…", true);
+                proceed.Click += delegate { if (core.IsChecked == true || plugins.IsChecked == true) choice.DialogResult = true; };
+                options.Children.Add(proceed);
+                if (choice.ShowDialog() != true) return;
+                using (Forms.FolderBrowserDialog folder = new Forms.FolderBrowserDialog())
+                {
+                    folder.Description = "Выберите папку для извлечения программы и пакетов";
+                    if (folder.ShowDialog() != Forms.DialogResult.OK) return;
+                    string destination = folder.SelectedPath, archive = picker.FileName;
+                    bool copyCore = core.IsChecked == true, copyPlugins = plugins.IsChecked == true;
+                    extractPrograms.IsEnabled = false;
+                    try
+                    {
+                        string result = await Task.Run(delegate { return BackupStore.ExtractPrograms(archive, destination, copyCore, copyPlugins); });
+                        MessageBox.Show(dialog, "Файлы извлечены:\n" + result + "\n\nДля установки плагинов используйте менеджер плагинов.",
+                            "AppShelf", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
+                    catch (Exception error) { ShowError("Не удалось извлечь программы.", error); }
+                    finally { extractPrograms.IsEnabled = true; }
+                }
+            };
+
             Button exportRem = ActionButton("Экспортировать напоминания в JSON…", false);
             exportRem.Click += delegate
             {
@@ -1548,10 +1725,10 @@ namespace AppShelf
             };
             AddSettingsSection(backupRows, "backup-automatic", "Автоматические копии",
                 new List<UIElement> { chooseFolder, automatic, cadenceLabel, cadence,
-                    countLabel, count, quotaLabel, quota, savePolicy, openBackupFolder, backupHelp },
+                    countLabel, count, quotaLabel, quota, includeExecutable, includePluginPackages, privateWarning, savePolicy, openBackupFolder, backupHelp },
                 bodies, arrows, headers, toggleBackupSection);
             AddSettingsSection(backupRows, "backup-full", "Экспорт и восстановление",
-                new List<UIElement> { note, exportAll, importAll },
+                new List<UIElement> { note, exportAll, importAll, extractPrograms },
                 bodies, arrows, headers, toggleBackupSection);
             AddSettingsSection(backupRows, "backup-reminders", "Только напоминания",
                 new List<UIElement> { exportRem, importRem },
