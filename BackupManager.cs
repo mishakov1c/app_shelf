@@ -818,10 +818,14 @@ namespace AppShelf
             if (!directory.Name.EndsWith("-set", StringComparison.OrdinalIgnoreCase))
                 return true; // Atomic publication by older AppShelf versions.
             string marker = Path.Combine(directory.FullName, UpdateSetMarker);
-            if (!File.Exists(marker)) return false;
-            // Fail closed on an unreadable marker; cleanup must not delete it.
-            return String.Equals(File.ReadAllText(marker), UpdateSetMarkerText,
-                StringComparison.Ordinal);
+            // File.Exists also returns false on access errors. Only a genuinely
+            // missing marker is incomplete; an unreadable marker is preserved.
+            try
+            {
+                return String.Equals(File.ReadAllText(marker), UpdateSetMarkerText,
+                    StringComparison.Ordinal);
+            }
+            catch (FileNotFoundException) { return false; }
         }
 
         private static void CompleteUpdateSet(string folder)
