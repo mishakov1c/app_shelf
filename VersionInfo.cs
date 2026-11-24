@@ -2,14 +2,14 @@
 // At release preparation, update the version AND the matching release notes below.
 // The About dialog reads only metadata embedded in the compiled executable.
 using System.Reflection;
-[assembly: AssemblyVersion("2.23.0.0")]
-[assembly: AssemblyFileVersion("2.23.0.0")]
-[assembly: AssemblyInformationalVersion("2.23.0")]
-[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.23.0")]
+[assembly: AssemblyVersion("2.24.0.0")]
+[assembly: AssemblyFileVersion("2.24.0.0")]
+[assembly: AssemblyInformationalVersion("2.24.0-beta.1")]
+[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.24.0-beta.1")]
 [assembly: AssemblyMetadata("AppShelf.ReleaseNotes",
-    "Автоматические резервные копии данных в выбранной папке, с настройками периодичности, количества и объёма.\n" +
-    "Перед обновлением сохраняются данные и предыдущий EXE; при изменении данных копирование повторяется.\n" +
-    "Перед восстановлением создаётся страховочная копия; после импорта приложение полностью завершается.\n" +
-    "Необязательный канал бета-версий и обновление переименованного EXE.\n" +
-    "Кэш проверки обновлений, обработка ограничений GitHub API и время последней успешной проверки.\n" +
-    "Форматирование Markdown в окне обновлений, сворачиваемые группы резервного копирования и отдельный раздел настроек «Подборки».")]
+    "Новая архитектура плагинов: локальные пакеты .asplugin и отдельные процессы.\n" +
+    "Менеджер плагинов: установка с подтверждением доверия, включение, обновление и удаление.\n" +
+    "Команды, собственные окна, настройки и уведомления плагинов.\n" +
+    "Полные ZIP-бэкапы с EXE и пакетами плагинов; резервирование данных каждого плагина по отдельному согласию.\n" +
+    "Безопасное извлечение программы и пакетов из ZIP без автоматического запуска; явное восстановление данных.\n" +
+    "Демонстрационный плагин «Заметки» поставляется отдельным пакетом. Это предварительная версия API плагинов.")]
