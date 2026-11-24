@@ -30,8 +30,14 @@ namespace AppShelf
 
         private static void AddInlines(TextBlock block, string value, Brush accent)
         {
+            MatchCollection matches = InlinePattern.Matches(value);
+            if (matches.Count == 0)
+            {
+                block.Text = value;
+                return;
+            }
             int previous = 0;
-            foreach (Match match in InlinePattern.Matches(value))
+            foreach (Match match in matches)
             {
                 if (match.Index > previous)
                     block.Inlines.Add(new Run(value.Substring(previous, match.Index - previous)));
