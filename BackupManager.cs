@@ -1026,7 +1026,28 @@ namespace AppShelf
             }
         }
 
+        private sealed class BackupDataChangedException : IOException
+        {
+            internal BackupDataChangedException()
+                : base("Данные изменились во время резервного копирования.") { }
+        }
+
         internal static string CreateBeforeUpdate(AppConfig config,
+            string oldExecutable, string installedVersion, string newVersion)
+        {
+            // Retry only concurrent data changes, not disk-full, access or hash errors.
+            for (int attempt = 1; ; attempt++)
+            {
+                try { return CreateBeforeUpdateOnce(config, oldExecutable, installedVersion, newVersion); }
+                catch (BackupDataChangedException)
+                {
+                    if (attempt >= 3) throw;
+                    Thread.Sleep(attempt * 1000);
+                }
+            }
+        }
+
+        private static string CreateBeforeUpdateOnce(AppConfig config,
             string oldExecutable, string installedVersion, string newVersion)
         {
             lock (Gate)
@@ -1050,7 +1071,7 @@ namespace AppShelf
                     ReadSavedDocuments(out savedConfig, out savedReminders);
                     BackupStore.ExportAll(archive, savedConfig, savedReminders);
                     if (!String.Equals(before, DataSignature(), StringComparison.Ordinal))
-                        throw new IOException("Данные изменились во время резервного копирования.");
+                        throw new BackupDataChangedException();
                     string executable = Path.Combine(result, "AppShelf-" + installedVersion + ".exe");
                     File.Copy(oldExecutable, executable, false);
                     if (!String.Equals(Sha256File(executable), Sha256File(oldExecutable),
