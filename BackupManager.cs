@@ -1165,8 +1165,7 @@ namespace AppShelf
                     {
                         DriveInfo drive = new DriveInfo(Path.GetPathRoot(_config.BackupDirectory));
                         if (drive.IsReady)
-                            backupStatus.Text += "
-Свободно на диске: " +
+                            backupStatus.Text += "\nСвободно на диске: " +
                                 (drive.AvailableFreeSpace / (1024L * 1024L)) + " МБ.";
                     }
                     catch (Exception) { /* Network/cloud folder may not expose drive metrics. */ }
