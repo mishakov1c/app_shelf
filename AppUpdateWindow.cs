@@ -29,15 +29,28 @@ namespace AppShelf
             heading.FontWeight = FontWeights.Bold;
             top.Children.Add(heading);
             TextBlock installed = Text("Установлена версия " +
-                AppUpdate.InstalledVersion().ToString(3), 12, MutedBrush);
+                AppUpdate.InstalledVersionText(), 12, MutedBrush);
             installed.Margin = new Thickness(0, 4, 0, 14);
             top.Children.Add(installed);
 
             TextBlock help = Text("Источник: github.com/" + AppUpdate.Owner + "/" +
-                AppUpdate.Repository + ". Проверяются опубликованные стабильные релизы.",
+                AppUpdate.Repository + ". Проверяются опубликованные релизы.",
                 12, MutedBrush);
             help.TextWrapping = TextWrapping.Wrap;
             top.Children.Add(help);
+
+            CheckBox beta = new CheckBox
+            {
+                Content = "Проверять бета-версии", Foreground = WhiteBrush,
+                IsChecked = _config.CheckBetaUpdates, IsEnabled = _canSave,
+                Margin = new Thickness(0, 8, 0, 2)
+            };
+            top.Children.Add(beta);
+            TextBlock betaHelp = Text("Бета-версии могут работать нестабильно. Стабильные обновления остаются доступными.",
+                12, MutedBrush);
+            betaHelp.TextWrapping = TextWrapping.Wrap;
+            betaHelp.Margin = new Thickness(0, 0, 0, 8);
+            top.Children.Add(betaHelp);
 
             TextBlock state = Text("Нажми «Проверить», чтобы узнать о новой версии.",
                 12, MutedBrush);
@@ -87,30 +100,54 @@ namespace AppShelf
                 check.IsEnabled = !busy;
                 install.IsEnabled = !busy && selected != null;
                 close.IsEnabled = !busy;
+                beta.IsEnabled = !busy && _canSave;
             };
+
+            bool syncingBeta = false;
+            RoutedEventHandler changeChannel = delegate
+            {
+                if (syncingBeta || busy) return;
+                AppConfig pending = _config.Copy();
+                pending.CheckBetaUpdates = beta.IsChecked == true;
+                if (!SaveConfigChanges(pending))
+                {
+                    syncingBeta = true;
+                    try { beta.IsChecked = _config.CheckBetaUpdates; }
+                    finally { syncingBeta = false; }
+                    return;
+                }
+                selected = null;
+                setBusy(false);
+                state.Text = "Канал обновлений изменён. Нажми «Проверить».";
+                notes.Text = "";
+            };
+            beta.Checked += changeChannel;
+            beta.Unchecked += changeChannel;
 
             check.Click += async delegate
             {
                 if (busy) return;
                 selected = null;
                 setBusy(true);
-                state.Text = "Получаю информацию о стабильном релизе GitHub…";
+                bool includeBeta = _config.CheckBetaUpdates;
+                state.Text = includeBeta ? "Проверяю стабильные и бета-релизы GitHub…" :
+                    "Проверяю стабильный релиз GitHub…";
                 notes.Text = "";
                 try
                 {
                     AppUpdate.Release latest = await Task.Run<AppUpdate.Release>(
-                        delegate { return AppUpdate.Check(); });
+                        delegate { return AppUpdate.CheckChannel(includeBeta); });
                     if (!dialog.IsVisible) return;
-                    if (latest.Version.CompareTo(AppUpdate.InstalledVersion()) <= 0)
+                    if (AppUpdate.CompareReleaseVersions(latest.VersionText, AppUpdate.InstalledVersionText()) <= 0)
                     {
-                        state.Text = "Установлена актуальная версия. Последний релиз: " +
+                        state.Text = "Нет более новой версии в выбранном канале. Последний релиз: " +
                             latest.VersionText + ".";
                         notes.Text = latest.Notes;
                     }
                     else
                     {
                         selected = latest;
-                        state.Text = "Доступно обновление до " + latest.VersionText +
+                        state.Text = (latest.IsBeta ? "Доступна бета-версия " : "Доступно обновление до ") + latest.VersionText +
                             " (" + (latest.Size / 1024) + " КБ).";
                         notes.Text = "Изменения версии " + latest.VersionText + ":\n\n" +
                             latest.Notes;
@@ -123,7 +160,7 @@ namespace AppShelf
                     {
                         state.Text = "Не удалось проверить обновления: " + error.Message;
                         notes.Text = "Проверьте доступ к GitHub и наличие опубликованного " +
-                            "стабильного Release с AppShelf.exe. Установленная версия не изменена.";
+                            "Release с AppShelf.exe. Установленная версия не изменена.";
                     }
                 }
                 finally { if (dialog.IsVisible) setBusy(false); }
@@ -136,6 +173,7 @@ namespace AppShelf
                 if (MessageBox.Show(dialog,
                     "Скачать AppShelf " + release.VersionText + " и установить после " +
                     "закрытия текущей версии?\n\n" +
+                    (release.IsBeta ? "Это бета-версия: возможны ошибки и нестабильная работа.\n\n" : "") +
                     "Приложение перезапустится. Пользовательские данные не меняются.",
                     "AppShelf — установка обновления", MessageBoxButton.YesNo,
                     MessageBoxImage.Question) != MessageBoxResult.Yes)
@@ -176,7 +214,7 @@ namespace AppShelf
                         }
                         state.Text = "Создаю и проверяю резервную копию перед обновлением…";
                         AppConfig backupConfig = _config.Copy();
-                        string oldVersion = AppUpdate.InstalledVersion().ToString(3);
+                        string oldVersion = AppUpdate.InstalledVersionText();
                         string oldExecutable = Process.GetCurrentProcess().MainModule.FileName;
                         try
                         {
