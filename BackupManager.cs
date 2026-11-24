@@ -671,7 +671,20 @@ namespace AppShelf
             {
                 info.Append(file.Substring(root.Length)).Append('|');
                 FileInfo item = new FileInfo(file);
-                if (item.Exists) info.Append(item.Length).Append('|').Append(item.LastWriteTimeUtc.Ticks);
+                if (item.Exists)
+                {
+                    // apps.json can be rewritten with identical content when the
+                    // window closes. Hash documents (and small files) so that
+                    // timestamp-only writes do not create duplicate backups.
+                    if (file.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
+                        item.Length <= 2L * 1024L * 1024L)
+                    {
+                        using (SHA256 fileHash = SHA256.Create())
+                        using (FileStream input = File.OpenRead(file))
+                            info.Append(Convert.ToBase64String(fileHash.ComputeHash(input)));
+                    }
+                    else info.Append(item.Length).Append('|').Append(item.LastWriteTimeUtc.Ticks);
+                }
                 else info.Append("missing");
                 info.Append('\n');
             }
