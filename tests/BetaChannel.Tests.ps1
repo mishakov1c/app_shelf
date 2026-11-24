@@ -6,6 +6,8 @@ $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $source = [IO.File]::ReadAllText((Join-Path $root 'AppUpdate.cs'))
     $source = $source.Replace('using System.Windows;', '')
+    $previousTestExe = $env:APPSHELF_UPDATE_TEST_EXE
+    $env:APPSHELF_UPDATE_TEST_EXE = Join-Path $root 'AppShelf.exe'
     $harness = @'
 using System;
 using System.IO;
@@ -95,9 +97,39 @@ namespace AppShelf
                 "429 fallback cooldown");
         }
 
+        private static void RenamedExecutableChecks()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "AppShelf-Renamed-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                string source = Environment.GetEnvironmentVariable("APPSHELF_UPDATE_TEST_EXE");
+                string target = Path.Combine(root, "AppShelf (1).exe");
+                File.Copy(source, target);
+                string hash;
+                using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create())
+                using (FileStream input = File.OpenRead(source))
+                    hash = BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "");
+                AppUpdate.ValidateInstalledTarget(target, hash);
+                Assert(true, "renamed genuine AppShelf accepted");
+                bool rejected = false;
+                try { AppUpdate.ValidateInstalledTarget(target, new string('0', 64)); }
+                catch (InvalidOperationException) { rejected = true; }
+                Assert(rejected, "different executable hash rejected");
+                string wrong = Path.Combine(root, "AppShelf.txt");
+                File.Copy(source, wrong);
+                rejected = false;
+                try { AppUpdate.ValidateInstalledTarget(wrong, hash); }
+                catch (InvalidOperationException) { rejected = true; }
+                Assert(rejected, "non-exe target rejected");
+            }
+            finally { Directory.Delete(root, true); }
+        }
+
         public static int Run()
         {
             CacheChecks();
+            RenamedExecutableChecks();
             Assert(AppUpdate.CompareReleaseVersions("2.24.0-beta.10", "2.24.0-beta.2") > 0, "numeric beta order");
             Assert(AppUpdate.CompareReleaseVersions("2.24.0", "2.24.0-beta.999") > 0, "final beats beta");
             Assert(AppUpdate.CompareReleaseVersions("2.25.0-beta.1", "2.24.0") > 0, "next beta beats previous stable");
@@ -146,4 +178,4 @@ namespace AppShelf
     $count = $result.CompiledAssembly.GetType('AppShelf.BetaChannelTests').GetMethod('Run').Invoke($null, $null)
     Write-Host "Beta channel: $count passed."
 }
-finally { $provider.Dispose() }
+finally { $provider.Dispose(); $env:APPSHELF_UPDATE_TEST_EXE = $previousTestExe }
