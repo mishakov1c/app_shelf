@@ -42,6 +42,13 @@ jobs:
           & $exe -NoProfile -STA -ExecutionPolicy Bypass -File tests\PluginProtocol.Tests.ps1
           if ($LASTEXITCODE -ne 0) { throw "Plugin protocol regression failed" }
 
+      - name: Test real plugin process lifecycle (Windows PowerShell 5.1 STA)
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File tests\PluginRuntime.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Plugin runtime regression failed" }
+
       - name: Run full isolated Windows PowerShell 5.1 STA regression tests
         if: >-
           ${{ github.event_name == 'pull_request' || startsWith(github.event.head_commit.message, 'test: run full regression') }}
