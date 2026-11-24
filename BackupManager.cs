@@ -1403,9 +1403,29 @@ namespace AppShelf
             }
         }
 
-        private void ShowBackupMenuWindow() { ShowBackupMenuWindow(this); }
+        private bool CompleteZipRestore(string filename, Window dialog)
+        {
+            try
+            {
+                string safetyCopy = RestoreBackup(filename);
+                MessageBox.Show(dialog, "Восстановление завершено. Запусти AppShelf заново.\n" +
+                    "Предыдущие файлы сохранены в:\n" + safetyCopy, "AppShelf",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                if (!Object.ReferenceEquals(dialog, this)) dialog.Close();
+                _explicitExitRequested = true;
+                Close();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ShowError("Не удалось восстановить данные. Текущие файлы проверь в папке резервных копий.", ex);
+                return false;
+            }
+        }
 
-        private void ShowBackupMenuWindow(Window owner)
+        private void ShowBackupMenuWindow() { ShowBackupMenuWindow(this, null); }
+
+        private void ShowBackupMenuWindow(Window owner, Action<string> deferRestore)
         {
             Window dialog = new Window
             {
@@ -1578,13 +1598,6 @@ namespace AppShelf
             Button importAll = ActionButton("Восстановить из ZIP…", false);
             importAll.Click += delegate
             {
-                if (owner != this)
-                {
-                    MessageBox.Show(dialog, "Чтобы восстановить полный ZIP, сначала закрой настройки " +
-                        "и открой резервные копии из главного меню AppShelf.",
-                        "AppShelf", MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
-                }
                 if (!EnsureBackupDirectory(dialog)) return;
                 OpenFileDialog picker = new OpenFileDialog { Title = "Восстановление AppShelf",
                     InitialDirectory = _config.BackupDirectory,
@@ -1593,22 +1606,19 @@ namespace AppShelf
                 if (MessageBox.Show(dialog, "Заменить текущие приложения, группы, настройки, напоминания и подборки (если они есть в архиве)?\n" +
                     "Перед заменой будет создана резервная копия текущих файлов.\n" +
                     "Данные плагинов будут доступны для отдельного восстановления в менеджере.\n" +
+                    (deferRestore != null ? "Несохранённые изменения в настройках будут отменены; окно настроек закроется перед импортом.\n" : "") +
                     "AppShelf закроется после импорта.", "AppShelf", MessageBoxButton.YesNo,
                     MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-                try
+                if (deferRestore != null)
                 {
-                    string safetyCopy = RestoreBackup(picker.FileName);
-                    MessageBox.Show(dialog, "Восстановление завершено. Запусти AppShelf заново.\n" +
-                        "Предыдущие файлы сохранены в:\n" + safetyCopy, "AppShelf",
-                        MessageBoxButton.OK, MessageBoxImage.Information);
+                    // The settings workflow must finish cancelling previews and staged
+                    // wallpapers before imported files are written to disk.
+                    string filename = picker.FileName;
                     dialog.Close();
-                    _explicitExitRequested = true;
-                    Close();
+                    deferRestore(filename);
+                    return;
                 }
-                catch (Exception ex)
-                {
-                    ShowError("Не удалось восстановить данные. Текущие файлы проверь в папке Backups.", ex);
-                }
+                CompleteZipRestore(picker.FileName, dialog);
             };
 
             Button extractPrograms = ActionButton("Извлечь программу и плагины из ZIP…", false);
