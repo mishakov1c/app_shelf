@@ -390,7 +390,7 @@ namespace AppShelf
         // Stage and validate before replacing the installed code. Runtime reservation
         // is obtained after confirmation, before the atomic directory swap.
         internal PluginManifest Install(string package, Func<PluginManifest, bool> confirm, string expectedId = null,
-            Func<string, IDisposable> beforeCommit = null)
+            Func<string, IDisposable> beforeCommit = null, string previousBackupRoot = null, bool requirePreviousBackup = false)
         {
             if (confirm == null) throw new ArgumentNullException("confirm");
             EnsureInstalledRoot();
@@ -424,6 +424,7 @@ namespace AppShelf
                             return manifest;
                         }
                         PluginManifest previous = ReadManifest(target);
+                        if (requirePreviousBackup) BackupPreviousPackage(manifest.Id, previous.Version, previousBackupRoot);
                         UpdateJournal journal = new UpdateJournal { Id = manifest.Id, Token = token,
                             OldVersion = previous.Version, NewVersion = manifest.Version };
                         WriteJournal(journal);
@@ -528,6 +529,138 @@ namespace AppShelf
             return directory;
         }
 
+        internal const long MaxPackageBackupTotal = 512L * 1024 * 1024;
+        internal const string PackageArchivePrefix = "Plugins/Packages/";
+
+        internal static bool IsPackageBackupEntry(string name)
+        {
+            if (!name.StartsWith(PackageArchivePrefix, StringComparison.Ordinal) ||
+                !name.EndsWith(".asplugin", StringComparison.Ordinal)) return false;
+            string id = name.Substring(PackageArchivePrefix.Length,
+                name.Length - PackageArchivePrefix.Length - ".asplugin".Length);
+            try { ValidateId(id); return true; }
+            catch (InvalidDataException) { return false; }
+        }
+
+        private static List<string> PackageFiles(string folder)
+        {
+            CheckPlainTree(folder);
+            List<string> files = new List<string> { "plugin.json" };
+            string bin = Path.Combine(folder, "bin");
+            foreach (string file in Directory.GetFiles(bin, "*", SearchOption.AllDirectories))
+            {
+                string relative = file.Substring(folder.Length + 1).Replace('\\', '/');
+                SafeRelative(relative, false);
+                files.Add(relative);
+            }
+            files.Sort(StringComparer.Ordinal);
+            if (files.Count > MaxEntries) Reject("Слишком много файлов плагина.");
+            return files;
+        }
+
+        // Only manifest + bin are package code. Runtime approval and enabled flags,
+        // private data and diagnostic files outside bin never become installation trust.
+        private void WriteInstalledPackage(string id, string destination)
+        {
+            string folder = Child(InstalledRoot, id);
+            PluginManifest manifest = ReadInstalled(id);
+            if (!Approved(folder, manifest)) Reject("Плагин не подтверждён: " + id);
+            List<string> files = PackageFiles(folder);
+            long total = 0;
+            using (FileStream output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                using (ZipArchive zip = new ZipArchive(output, ZipArchiveMode.Create, true))
+                {
+                    foreach (string name in files)
+                    {
+                        using (FileStream input = File.OpenRead(Child(folder, name)))
+                        {
+                            long length = input.Length;
+                            if (length > MaxArchiveBytes - total) Reject("Слишком большой пакет плагина.");
+                            total += length;
+                            ZipArchiveEntry entry = zip.CreateEntry(name, CompressionLevel.Optimal);
+                            entry.LastWriteTime = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
+                            using (Stream target = entry.Open()) input.CopyTo(target);
+                        }
+                    }
+                }
+                output.Flush(true);
+            }
+            if (new FileInfo(destination).Length > MaxArchiveBytes) Reject("Слишком большой архив плагина.");
+        }
+
+        internal List<string> CapturePackages(string directory)
+        {
+            lock (CommitGate)
+            {
+                List<string> result = new List<string>();
+                if (!HasInstalledDirectory) return result;
+                long total = 0;
+                foreach (InstalledPlugin item in List())
+                {
+                    if (item.Error != null || item.Manifest == null) Reject("Нельзя создать полную копию плагина: " + item.Id);
+                    string filename = Path.Combine(directory, item.Id + ".asplugin");
+                    WriteInstalledPackage(item.Id, filename);
+                    total += new FileInfo(filename).Length;
+                    if (total > MaxPackageBackupTotal) Reject("Превышен общий лимит пакетов плагинов.");
+                    result.Add(filename);
+                }
+                return result;
+            }
+        }
+
+        internal string PackageSignature()
+        {
+            lock (CommitGate)
+            {
+                if (!HasInstalledDirectory) return "";
+                StringBuilder info = new StringBuilder();
+                List<InstalledPlugin> installed = List();
+                installed.Sort(delegate(InstalledPlugin a, InstalledPlugin b) { return StringComparer.Ordinal.Compare(a.Id,b.Id); });
+                foreach (InstalledPlugin item in installed)
+                {
+                    if (item.Error != null || item.Manifest == null) Reject("Нельзя создать полную копию плагина: " + item.Id);
+                    string folder = Child(InstalledRoot, item.Id);
+                    foreach (string name in PackageFiles(folder))
+                        using (FileStream input = File.OpenRead(Child(folder, name)))
+                        using (SHA256 sha = SHA256.Create())
+                            info.Append(item.Id).Append('/').Append(name).Append('|')
+                                .Append(Convert.ToBase64String(sha.ComputeHash(input))).Append('\n');
+                }
+                return info.ToString();
+            }
+        }
+
+        internal static void ValidateArchivedPackage(string filename, string expectedId)
+        {
+            ValidateId(expectedId);
+            string stage = Path.Combine(Path.GetTempPath(), "AppShelfPkg-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stage);
+            try
+            {
+                ExtractPackage(filename, stage);
+                PluginManifest manifest = ReadManifest(stage);
+                if (manifest.Id != expectedId) Reject("Идентификатор пакета не совпадает с архивом.");
+            }
+            finally { TryRemoveStage(stage); }
+        }
+
+        private void BackupPreviousPackage(string id, string version, string backupRoot)
+        {
+            if (String.IsNullOrWhiteSpace(backupRoot)) Reject("Перед обновлением плагина выберите папку резервных копий AppShelf.");
+            string directory = Path.Combine(backupRoot, "BeforePluginUpdate");
+            Directory.CreateDirectory(directory);
+            string target = Path.Combine(directory, id + "-" + version + "-" + Guid.NewGuid().ToString("N") + ".asplugin");
+            string temporary = Path.Combine(directory, ".stage-" + Guid.NewGuid().ToString("N") + ".asplugin");
+            try
+            {
+                WriteInstalledPackage(id, temporary);
+                ValidateArchivedPackage(temporary, id);
+                File.Move(temporary, target);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+
         internal const int MaxBackupDocument = 16 * 1024 * 1024;
         private const int MaxBackupFile = 4 * 1024 * 1024;
         private const int MaxBackupTotal = 8 * 1024 * 1024;
@@ -607,7 +740,7 @@ namespace AppShelf
             lock (CommitGate)
             {
                 string path = PolicyPath(id);
-                if (!enabled) { File.Delete(path); return; }
+                if (!enabled) { if (File.Exists(path)) File.Delete(path); return; }
                 PluginManifest manifest = ReadInstalled(id);
                 if (manifest.BackupFiles == null || manifest.BackupFiles.Length == 0)
                     Reject("Плагин не объявляет файлы для резервирования.");

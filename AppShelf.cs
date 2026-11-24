@@ -229,6 +229,12 @@ namespace AppShelf
         [DataMember(Name = "automaticBackupQuotaMb", EmitDefaultValue = false)]
         public int AutomaticBackupQuotaMb = 1024;
 
+        [DataMember(Name = "backupExecutable", EmitDefaultValue = false)]
+        public bool? BackupExecutable = true;
+
+        [DataMember(Name = "backupPluginPackages", EmitDefaultValue = false)]
+        public bool? BackupPluginPackages = true;
+
         // Nullable fields retain legacy defaults when absent from older apps.json.
         [DataMember(Name = "soundsEnabled", EmitDefaultValue = false)]
         public bool? SoundsEnabled = true;

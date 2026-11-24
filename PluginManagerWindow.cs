@@ -334,7 +334,8 @@ namespace AppShelf
                                 "AppShelf — Доверие к плагину", MessageBoxButton.YesNo,
                                 MessageBoxImage.Warning) == MessageBoxResult.Yes;
                         }));
-                    }, expectedId, runtime.BeforePackageCommit);
+                    }, expectedId, runtime.BeforePackageCommit,
+                        String.IsNullOrWhiteSpace(backupRoot) ? null : BackupAutomation.ValidateRoot(backupRoot), true);
                 });
                 status.Text = manifest == null ? "Установка отменена." : "Установлен " + manifest.Name + " " + manifest.Version + ". Плагин отключён.";
             }
