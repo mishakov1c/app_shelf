@@ -793,6 +793,33 @@ namespace AppShelf
             return entries;
         }
 
+        // An interrupted shutdown may leave only temporary ZIPs or an unpublished
+        // pre-update folder. Clean our own stale staging entries, not user archives.
+        private static void CleanupStaleTemps(string root)
+        {
+            DateTime cutoff = DateTime.UtcNow.AddDays(-1);
+            string daily = Path.Combine(root, "Automatic");
+            if (Directory.Exists(daily))
+                foreach (string file in Directory.GetFiles(daily, "*.tmp", SearchOption.TopDirectoryOnly))
+                    try
+                    {
+                        if (File.GetLastWriteTimeUtc(file) < cutoff) File.Delete(file);
+                    }
+                    catch (Exception error) { ConfigStore.Log(error); }
+            string beforeUpdate = Path.Combine(root, "BeforeUpdate");
+            if (Directory.Exists(beforeUpdate))
+                foreach (string folder in Directory.GetDirectories(beforeUpdate, ".tmp-*",
+                    SearchOption.TopDirectoryOnly))
+                    try
+                    {
+                        DirectoryInfo info = new DirectoryInfo(folder);
+                        if ((info.Attributes & FileAttributes.ReparsePoint) == 0 &&
+                            info.CreationTimeUtc < cutoff)
+                            Directory.Delete(folder, true);
+                    }
+                    catch (Exception error) { ConfigStore.Log(error); }
+        }
+
         // Keep one known-good copy in each class. Never touch Manual or BeforeRestore.
         private static void Prune(string root, AppConfig config)
         {
@@ -837,6 +864,7 @@ namespace AppShelf
             lock (Gate)
             {
                 string root = ValidateRoot(config.BackupDirectory);
+                CleanupStaleTemps(root);
                 string daily = Path.Combine(root, "Automatic");
                 Directory.CreateDirectory(daily);
                 FileInfo[] files = ValidDailyCopies(daily);
@@ -896,6 +924,7 @@ namespace AppShelf
                 string legacy = currentExe + ".previous";
                 if (!File.Exists(legacy)) return null;
                 string root = ValidateRoot(config.BackupDirectory);
+                CleanupStaleTemps(root);
                 string parent = Path.Combine(root, "BeforeUpdate");
                 Directory.CreateDirectory(parent);
                 string id = "legacy-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" +
@@ -939,6 +968,7 @@ namespace AppShelf
             lock (Gate)
             {
                 string root = ValidateRoot(config.BackupDirectory);
+                CleanupStaleTemps(root);
                 string baseFolder = Path.Combine(root, "BeforeUpdate");
                 Directory.CreateDirectory(baseFolder);
                 string name = DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-v" +
