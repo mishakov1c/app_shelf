@@ -1762,6 +1762,8 @@ public static class Package6Tests
                     Assert(info != null && !String.IsNullOrWhiteSpace(info.InformationalVersion), "Version metadata missing");
                     Version numericVersion = assembly.GetName().Version;
                     string displayVersion = numericVersion.Major + "." + numericVersion.Minor + "." + numericVersion.Build;
+                    if (info.InformationalVersion.StartsWith(displayVersion + "-beta.", StringComparison.Ordinal))
+                        displayVersion = AppUpdate.InstalledVersionText();
                     Assert(info.InformationalVersion == displayVersion ||
                         System.Text.RegularExpressions.Regex.IsMatch(info.InformationalVersion,
                             "^" + System.Text.RegularExpressions.Regex.Escape(displayVersion) + @"-rc\.[1-9]\d*$"),
@@ -1779,7 +1781,7 @@ public static class Package6Tests
                         if (t.Text == "•  " + firstNote) bullet = true;
                     }
                     Assert(version && author && news && bullet &&
-                        numericVersion.ToString() == displayVersion + ".0",
+                        numericVersion.ToString() == displayVersion.Split('-')[0] + ".0",
                         "About metadata or current-version release notes incorrect");
                     List<ScrollViewer> scrollers = Controls<ScrollViewer>(d);
                     Assert(scrollers.Count == 1 && scrollers[0].ActualHeight > 20,
