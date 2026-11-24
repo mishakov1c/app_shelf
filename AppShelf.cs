@@ -208,6 +208,23 @@ namespace AppShelf
 
         public bool CloseToTrayEnabled { get { return CloseToTray ?? MinimizeToTray; } }
 
+        // Auto-backup remains idle until the user chooses an external folder.
+        [DataMember(Name = "backupDirectory", EmitDefaultValue = false)]
+        public string BackupDirectory;
+
+        [DataMember(Name = "automaticBackupsEnabled", EmitDefaultValue = false)]
+        public bool? AutomaticBackupsEnabled = true;
+
+        // Only 1 or 7 days, 3/7/14 archives and 512/1024/2048/4096 MiB are supported.
+        [DataMember(Name = "automaticBackupDays", EmitDefaultValue = false)]
+        public int AutomaticBackupDays = 1;
+
+        [DataMember(Name = "automaticBackupKeep", EmitDefaultValue = false)]
+        public int AutomaticBackupKeep = 7;
+
+        [DataMember(Name = "automaticBackupQuotaMb", EmitDefaultValue = false)]
+        public int AutomaticBackupQuotaMb = 1024;
+
         // Nullable fields retain legacy defaults when absent from older apps.json.
         [DataMember(Name = "soundsEnabled", EmitDefaultValue = false)]
         public bool? SoundsEnabled = true;
@@ -1778,6 +1795,7 @@ namespace AppShelf
                     }
                 }
                 if (_networkTimer == null) StartMonitors();
+                StartAutomaticBackupMonitor();
             };
             SourceInitialized += OnWindowSourceInitialized;
             StateChanged += OnWindowStateChanged;
@@ -2544,6 +2562,7 @@ namespace AppShelf
             if (Application.Current != null)
                 Application.Current.SessionEnding -= OnApplicationSessionEnding;
             if (_windowPlacementSaveTimer != null) _windowPlacementSaveTimer.Stop();
+            if (_automaticBackupTimer != null) _automaticBackupTimer.Stop();
             if (_statusMessageTimer != null) _statusMessageTimer.Stop();
             if (_networkTimer != null) _networkTimer.Stop();
             if (_weatherTimer != null) _weatherTimer.Stop();
