@@ -336,6 +336,7 @@ namespace AppShelf
                 if (saved.Files.Count != 0)
                 {
                     Button restore = ButtonFor("Восстановить данные…", false);
+                    restore.Margin = new Thickness(0, 10, 6, 4);
                     restore.Tag = "PluginRestore:" + plugin.Id;
                     restore.IsEnabled = manifest != null && plugin.Error == null && manifest.Version == saved.Version;
                     restore.Click += delegate
