@@ -4,12 +4,13 @@
 using System.Reflection;
 [assembly: AssemblyVersion("2.23.0.0")]
 [assembly: AssemblyFileVersion("2.23.0.0")]
-[assembly: AssemblyInformationalVersion("2.23.0-beta.4")]
-[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.23.0-beta.4")]
+[assembly: AssemblyInformationalVersion("2.23.0-beta.5")]
+[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.23.0-beta.5")]
 [assembly: AssemblyMetadata("AppShelf.ReleaseNotes",
     "Автоматические резервные копии в выбранную папку с ограничением количества и объёма.\n" +
     "Перед обновлением сохраняются данные и предыдущий EXE.\n" +
     "В окне обновлений можно включить проверку бета-версий; стабильные обновления остаются доступны.\n" +
     "Окно резервных копий разделено на три сворачиваемые группы; статус копирования всегда виден.\n" +
     "Подборки вынесены в отдельный раздел настроек, резервные копии выделены отдельно; подсказка о закрытии окна перенесена в Поведение Windows.\n" +
+    "Исправлена публикация резервных копий перед обновлением в папках облачной синхронизации.\n" +
     "Предварительный выпуск для ручной проверки.")]
