@@ -36,7 +36,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Plugin package regression failed" }
 
       - name: Run full isolated Windows PowerShell 5.1 STA regression tests
-        if: github.event_name == 'pull_request' || startsWith(github.event.head_commit.message, 'test: run full regression')
+        if: >-
+          ${{ github.event_name == 'pull_request' || startsWith(github.event.head_commit.message, 'test: run full regression') }}
         shell: pwsh
         run: |
           $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
