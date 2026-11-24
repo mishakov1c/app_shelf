@@ -87,3 +87,17 @@ Consent is bound to the installed version and exact sorted backupFiles list; a n
 ## Full program backup (revised scope)
 
 Full manual, daily and pre-core-update ZIP backups default to including Program/AppShelf.exe and Plugins/Packages/<id>.asplugin. Both can be disabled independently in backup settings. A package is reconstructed from its manifest and bin tree, including dependencies; trust/enabled markers are not included. Opt-in data policy remains independent. Packages are bounded to 128 MiB each and 512 MiB total compressed package bytes, core to 256 MiB. Binary entries are validated structurally, not authenticated; never execute unknown backups. Automatic fingerprints include selected program bytes. Normal restore restores settings and stages plugin data; separate extraction selects core and/or packages into a new folder, never replaces the running EXE. Install packages with renewed trust; an older package requires removal of the newer package first (data retained). Before plugin update, save the previous .asplugin in configured backup root/BeforePluginUpdate; absent/failed backup blocks replacement. These previous packages are independent of automatic retention; separate pruning is future work. The existing pre-core-update EXE remains independently available even if ZIP executable inclusion is disabled. ZIP contents are unencrypted.
+
+## Stage 7: standalone notes example
+
+The separately built example lives in `samples/NotesPlugin`. It uses Windows Forms in its own executable, with the binary API 1 frame codec compiled from source. The manifest declares window, settings, background and notification capabilities. Nothing installs automatically. From the repository root, use Windows PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File samples\NotesPlugin\Build.ps1
+```
+
+Install `samples/NotesPlugin/dist/NotesPlugin-1.0.0.asplugin` through the plugin manager. CI also publishes the package as a separate artifact. Enable it explicitly, open Notes from plugin tools, type a note and click Save. The settings window can enable a host notification after each save; notifications are polled and may be coalesced or suppressed by Windows. Closing the notes window hides it; unsaved text remains only in memory until the process exits. The two declared data files are notes.txt and settings.txt, with opt-in backup disabled by default.
+
+Acceptance on an isolated Windows profile: verify disabled installation, enable, open/reopen both windows, save Russian and multiline text, restart and confirm persistence; enable save notification, save again and check the host notification. Enable plugin data backup, create a ZIP with packages, remove the plugin, modify or remove the note data, restore the ZIP (no live installation), extract the package, reinstall with renewed trust, explicitly restore same-version data, then enable and verify the original note. Check the plugin remains disabled immediately after restore and that closing AppShelf stops its child process. Never test destructive restore against the only copy of real user data.
+
+The backup reliability regression builds and installs this actual sample, invokes commands/settings and health checks, roundtrips package and declared data through ZIP recovery, and verifies disabled restore and restart. It seeds the documented text files directly; interactive editing, native window presentation and tray notification display require manual acceptance. Stage 7 is not considered accepted until Windows CI and manual checks pass.
