@@ -378,6 +378,7 @@ namespace AppShelf
         internal string Status { get; set; }
         internal string Error { get; set; }
         internal string Version { get; set; }
+        internal int ProcessId { get; set; }
         internal PluginCommand[] Commands { get; set; }
     }
 
@@ -386,6 +387,7 @@ namespace AppShelf
         internal string Id { get; set; }
         internal string Version { get; set; }
         internal string Name { get; set; }
+        internal int ProcessId { get; set; }
         internal PluginNotice Notice { get; set; }
     }
 
@@ -444,6 +446,7 @@ namespace AppShelf
                     return new PluginRuntimeState { Status = "error", Error = "Процесс плагина завершился." };
                 return new PluginRuntimeState { Status = slot.Status, Error = slot.Error,
                     Version = slot.Child == null ? null : slot.Child.Manifest.Version,
+                    ProcessId = slot.Child == null ? 0 : slot.Child.ProcessId,
                     Commands = slot.Status == "running" && slot.Child != null ?
                         CopyCommands(slot.Child.Commands) : new PluginCommand[0] };
             }
@@ -674,7 +677,7 @@ namespace AppShelf
                                 {
                                     slot.LastNoticeUtc = now;
                                     deliveries.Add(new PluginDelivery { Id = child.Manifest.Id,
-                                        Version = child.Manifest.Version, Name = child.Manifest.Name, Notice = notices[0] });
+                                        Version = child.Manifest.Version, Name = child.Manifest.Name, ProcessId = child.ProcessId, Notice = notices[0] });
                                 }
                             }
                         }

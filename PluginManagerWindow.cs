@@ -381,7 +381,7 @@ namespace AppShelf
             {
                 PluginDelivery item = _pluginNotices.Dequeue();
                 PluginRuntimeState state = GetPluginRuntime().State(item.Id);
-                if (state.Status != "running" || state.Version != item.Version) continue;
+                if (state.Status != "running" || state.Version != item.Version || state.ProcessId != item.ProcessId) continue;
                 string title = "AppShelf · " + item.Name + " · " + item.Notice.Title;
                 if (title.Length > 63) title = title.Substring(0, 63);
                 string message = item.Notice.Message;
@@ -406,9 +406,10 @@ namespace AppShelf
             MenuItem menu = new MenuItem { Header = "Инструменты плагинов", Icon = FluentUi.MenuGlyph("settings") };
             menu.Items.Add(new MenuItem { Header = "Открыть меню…", IsEnabled = false });
             int revision = 0;
-            menu.SubmenuClosed += delegate { revision++; };
-            menu.SubmenuOpened += async delegate
+            menu.SubmenuClosed += delegate(object sender, RoutedEventArgs e) { if (Object.ReferenceEquals(e.Source, menu)) revision++; };
+            menu.SubmenuOpened += async delegate(object sender, RoutedEventArgs e)
             {
+                if (!Object.ReferenceEquals(e.Source, menu)) return;
                 int current = ++revision;
                 menu.Items.Clear();
                 menu.Items.Add(new MenuItem { Header = "Загрузка…", IsEnabled = false });

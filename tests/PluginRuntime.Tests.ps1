@@ -34,8 +34,17 @@ public static class FakePlugin {
                 // More than a pipe buffer: host must drain stderr independently.
                 Console.Error.Write(new string('x',65536)); Console.Error.Flush();
                 reply.PluginId=request.PluginId; reply.PluginVersion=request.PluginVersion;
+                if(request.PluginId=="test.foreground") reply.Commands=new[]{new PluginCommand{Id="open",Label="Open"},new PluginCommand{Id="decline",Label="Decline"}};
                 if (File.Exists(Path.Combine(data,"mode")) && File.ReadAllText(Path.Combine(data,"mode"))=="hello-hang")
                     Thread.Sleep(Timeout.Infinite);
+            } else if(method=="invoke") {
+                if(request.CommandId=="decline") { reply.Ok=false; reply.Error="declined"; }
+                else File.WriteAllText(Path.Combine(data,"invoked"),request.CommandId);
+            } else if(method=="settings") {
+                File.WriteAllText(Path.Combine(data,"settings"),"opened");
+            } else if(method=="poll") {
+                reply.Notifications=new[]{new PluginNotice{Title="Notice",Message="First"},
+                    new PluginNotice{Title="Excess",Message="Second"}};
             } else if (method=="startBackground") {
                 File.WriteAllText(Path.Combine(data,"started"),"yes");
             } else if (method=="ping") {
@@ -76,7 +85,7 @@ public static class PluginRuntimeTests {
         using(ZipArchive zip=new ZipArchive(s,ZipArchiveMode.Create)) {
             using(StreamWriter w=new StreamWriter(zip.CreateEntry("plugin.json").Open()))
                 w.Write("{\"schemaVersion\":1,\"apiVersion\":1,\"id\":\""+id+"\",\"name\":\"Test\",\"version\":\""+version+
-                    "\",\"entryPoint\":\"bin/FakePlugin.exe\",\"capabilities\":["+(background?"\"background\"":"\"window\"")+"]}");
+                    "\",\"entryPoint\":\"bin/FakePlugin.exe\",\"capabilities\":["+(background?"\"background\",\"notification\"":"\"window\",\"settings\"")+"]}");
             using(Stream target=zip.CreateEntry("bin/FakePlugin.exe").Open())
             using(FileStream source=File.OpenRead(exe)) source.CopyTo(target);
         }
@@ -113,7 +122,9 @@ public static class PluginRuntimeTests {
             int first=Pid(data);
             runtime.StartAsync(bg).GetAwaiter().GetResult();
             Assert(Pid(data)==first,"idempotent start");
-            runtime.CheckHealthAsync().GetAwaiter().GetResult(); State(runtime,bg,"running");
+            var notices=runtime.CheckHealthAsync().GetAwaiter().GetResult(); State(runtime,bg,"running");
+            Assert(notices.Count==1 && notices[0].Id==bg && notices[0].Notice.Message=="First","notification accepted and excess bounded");
+            Assert(runtime.CheckHealthAsync().GetAwaiter().GetResult().Count==0,"notification rate limited");
             runtime.StartAsync(bg,true).GetAwaiter().GetResult();
             int second=Pid(data);
             Assert(first!=second && Exited(first),"restart replaced process");
@@ -152,7 +163,22 @@ public static class PluginRuntimeTests {
             State(runtime,bg,"error"); Assert(Exited(Pid(data)),"hung hello terminated");
             File.Delete(Path.Combine(data,"mode"));
             runtime.StartAsync(bg,true).GetAwaiter().GetResult(); last=Pid(data);
-            runtime.StartAsync(fg).GetAwaiter().GetResult(); State(runtime,fg,"running");
+            try { runtime.InvokeAsync(fg,"9.0.0","open").GetAwaiter().GetResult(); throw new Exception("stale version accepted"); }
+            catch(InvalidOperationException) { count++; }
+            Assert(!File.Exists(Path.Combine(fgData,"pid")),"stale action did not launch");
+            PluginCommand[] commands=runtime.GetCommandsAsync(fg,"1.0.0").GetAwaiter().GetResult();
+            Assert(commands.Length==2 && commands[0].Id=="open","commands discovered on demand");
+            State(runtime,fg,"running");
+            runtime.InvokeAsync(fg,"1.0.0","open").GetAwaiter().GetResult();
+            Assert(File.ReadAllText(Path.Combine(fgData,"invoked"))=="open","command invoked");
+            runtime.OpenSettingsAsync(fg,"1.0.0").GetAwaiter().GetResult();
+            Assert(File.ReadAllText(Path.Combine(fgData,"settings"))=="opened","settings invoked");
+            try { runtime.InvokeAsync(fg,"1.0.0","decline").GetAwaiter().GetResult(); throw new Exception("remote error accepted"); }
+            catch(PluginRemoteException) { count++; }
+            State(runtime,fg,"running");
+            try { runtime.InvokeAsync(fg,"1.0.0","unknown").GetAwaiter().GetResult(); throw new Exception("unknown command accepted"); }
+            catch(InvalidOperationException) { count++; }
+            Assert(File.ReadAllText(Path.Combine(fgData,"invoked"))=="open","unknown command not invoked");
             foreground=Pid(fgData);
             runtime.RemoveAsync(fg).GetAwaiter().GetResult();
             Assert(Exited(foreground) && File.Exists(Path.Combine(fgData,"hello")),"remove stopped process and kept data");

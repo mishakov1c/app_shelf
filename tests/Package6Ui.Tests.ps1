@@ -1247,6 +1247,7 @@ public static class Package6Tests
             PluginRuntime runtime = new PluginRuntime(store);
             try {
                 Assert(Menu(Tools(w), "Плагины") != null, "Tools menu entry missing");
+                Assert(Menu(Tools(w), "Инструменты плагинов") != null, "Plugin actions menu missing");
                 PluginManagerWindow empty = new PluginManagerWindow(w, store, runtime);
                 empty.ShowInTaskbar = false; empty.Show(); Drain();
                 try {
@@ -1286,6 +1287,22 @@ public static class Package6Tests
                     foreach (InstalledPlugin plugin in store.List())
                         if (plugin.Id == "example.hello") enabled = plugin.Enabled;
                     Assert(enabled, "UI toggle did not persist enabled state");
+                    Button commandButton = null;
+                    foreach (Button button in Controls<Button>(manager))
+                        if (Object.Equals(button.Tag, "PluginCommands:example.hello")) commandButton = button;
+                    Assert(commandButton != null && commandButton.IsEnabled, "Command button missing");
+                    MenuItem actionMenu = new MenuItem();
+                    Call(w, "PopulatePluginTools", actionMenu, store.List());
+                    Assert(actionMenu.Items.Count == 1 && Convert.ToString(((MenuItem)actionMenu.Items[0]).Header) == "Hello",
+                        "Enabled plugin menu or broken package exclusion failed");
+                    MenuItem actionGroup = (MenuItem)actionMenu.Items[0];
+                    Assert(actionGroup.Items.Count == 1 && Convert.ToString(((MenuItem)actionGroup.Items[0]).Header) == "Открыть команды…",
+                        "Idle plugin action missing");
+                    Assert(runtime.State("example.hello").Status == "idle", "Menu discovery started plugin");
+                    store.SetEnabled("example.hello", false);
+                    Call(w, "PopulatePluginTools", actionMenu, store.List());
+                    Assert(actionMenu.Items.Count == 1 && !((MenuItem)actionMenu.Items[0]).IsEnabled,
+                        "Disabled plugin still in actions menu");
                     Picture(manager, "plugin-manager");
                 } finally { manager.Close(); }
             } finally { runtime.Dispose(); w.Close(); Directory.Delete(profile, true); }
