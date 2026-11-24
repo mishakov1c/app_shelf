@@ -185,6 +185,16 @@ namespace AppShelf
                                 ". Для установки нужна новая проверка.";
                         return;
                     }
+                    if (result.Error != null)
+                    {
+                        state.Text = "Не удалось проверить обновления: " + result.Error;
+                        notes.Text = result.Releases == null
+                            ? "Установка недоступна до успешной проверки."
+                            : "По предыдущей проверке последний релиз: " +
+                                result.Releases[0].VersionText +
+                                ". Для установки нужна новая проверка.";
+                        return;
+                    }
                     AppUpdate.Release[] releases = result.Releases;
                     string installedVersion = AppUpdate.InstalledVersionText();
                     foreach (AppUpdate.Release latest in releases)
