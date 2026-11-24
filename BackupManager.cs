@@ -703,6 +703,27 @@ namespace AppShelf
             return backups.Length == 0 ? DateTime.MinValue : backups[0].LastWriteTime;
         }
 
+        internal static string LastError(string root)
+        {
+            if (String.IsNullOrWhiteSpace(root)) return null;
+            string path = Path.Combine(root, "Automatic", ".last-error");
+            try { return File.Exists(path) ? File.ReadAllText(path) : null; }
+            catch (Exception error) { ConfigStore.Log(error); return null; }
+        }
+
+        internal static void RecordError(string root, Exception error)
+        {
+            if (String.IsNullOrWhiteSpace(root)) return;
+            try
+            {
+                string folder = Path.Combine(ValidateRoot(root), "Automatic");
+                if (!Directory.Exists(folder)) return;
+                File.WriteAllText(Path.Combine(folder, ".last-error"),
+                    DateTime.Now.ToString("dd.MM.yyyy HH:mm") + ": " + error.Message);
+            }
+            catch (Exception exception) { ConfigStore.Log(exception); }
+        }
+
         private static long FileLength(string file)
         {
             return File.Exists(file) ? new FileInfo(file).Length : 0;
@@ -830,7 +851,12 @@ namespace AppShelf
                     try { if (File.Exists(filename)) File.Delete(filename); } catch { }
                     throw;
                 }
-                try { File.WriteAllText(stamp, before); }
+                try
+                {
+                    File.WriteAllText(stamp, before);
+                    string errorFile = Path.Combine(daily, ".last-error");
+                    if (File.Exists(errorFile)) File.Delete(errorFile);
+                }
                 catch (Exception error) { ConfigStore.Log(error); }
                 Prune(root, config);
                 return true;
@@ -915,7 +941,11 @@ namespace AppShelf
                 ReminderDocument reminders = BackupAutomation.CopyReminders(_reminderDocument);
                 await Task.Run(delegate { BackupAutomation.CreateAutomatic(snapshot, reminders); });
             }
-            catch (Exception error) { ConfigStore.Log(error); }
+            catch (Exception error)
+            {
+                ConfigStore.Log(error);
+                BackupAutomation.RecordError(_config == null ? null : _config.BackupDirectory, error);
+            }
             finally { _automaticBackupInProgress = false; }
         }
 
@@ -1038,6 +1068,10 @@ namespace AppShelf
             lastBackup.TextWrapping = TextWrapping.Wrap;
             lastBackup.Margin = new Thickness(0, 0, 0, 10);
             layout.Children.Add(lastBackup);
+            TextBlock backupStatus = Text("", 12, MutedBrush);
+            backupStatus.TextWrapping = TextWrapping.Wrap;
+            backupStatus.Margin = new Thickness(0, 0, 0, 8);
+            layout.Children.Add(backupStatus);
             Action refreshInfo = delegate
             {
                 configuredFolder.Text = "Папка: " + (String.IsNullOrWhiteSpace(_config.BackupDirectory)
@@ -1048,6 +1082,21 @@ namespace AppShelf
                 lastBackup.Text = recent == DateTime.MinValue
                     ? "Ежедневных копий пока нет."
                     : "Последняя ежедневная копия: " + recent.ToString("dd.MM.yyyy HH:mm");
+                string error = BackupAutomation.LastError(_config.BackupDirectory);
+                backupStatus.Text = String.IsNullOrWhiteSpace(error) ? "" :
+                    "Последняя ошибка: " + error;
+                if (!String.IsNullOrWhiteSpace(_config.BackupDirectory))
+                {
+                    try
+                    {
+                        DriveInfo drive = new DriveInfo(Path.GetPathRoot(_config.BackupDirectory));
+                        if (drive.IsReady)
+                            backupStatus.Text += "
+Свободно на диске: " +
+                                (drive.AvailableFreeSpace / (1024L * 1024L)) + " МБ.";
+                    }
+                    catch (Exception) { /* Network/cloud folder may not expose drive metrics. */ }
+                }
             };
             refreshInfo();
             Button chooseFolder = ActionButton("Выбрать папку копий…", false);
