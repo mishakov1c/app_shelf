@@ -90,13 +90,9 @@ Full manual, daily and pre-core-update ZIP backups default to including Program/
 
 ## Stage 7: standalone notes example
 
-The separately built example lives in `samples/NotesPlugin`. It uses Windows Forms in its own executable, with the binary API 1 frame codec compiled from source. The manifest declares window, settings, background and notification capabilities. Nothing installs automatically. From the repository root, use Windows PowerShell:
+The separately built example lives in `samples/NotesPlugin`. It uses Windows Forms in its own executable, with the binary API 1 frame codec compiled from source. The manifest declares window, settings, background and notification capabilities. Nothing installs automatically. From the repository root, double-click `Build-Plugins.cmd`. It builds sample projects that contain both `plugin.json` and `Build.ps1`, writes packages to `artifacts/plugins/` and opens that folder on success. For unattended builds use `Build-Plugins.cmd --no-open --no-pause`. The host build remains independent. A failed build returns a nonzero exit code and may leave previously built packages intact. For a single plugin, its original PowerShell build script is also available.
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File samples\NotesPlugin\Build.ps1
-```
-
-Install `samples/NotesPlugin/dist/NotesPlugin-1.0.0.asplugin` through the plugin manager. CI also publishes the package as a separate artifact. Enable it explicitly, open Notes from plugin tools, type a note and click Save. The settings window can enable a host notification after each save; notifications are polled and may be coalesced or suppressed by Windows. Closing the notes window hides it; unsaved text remains only in memory until the process exits. The two declared data files are notes.txt and settings.txt, with opt-in backup disabled by default.
+Install `artifacts/plugins/NotesPlugin-1.0.0.asplugin` through the plugin manager. CI also publishes the package as a separate artifact. Enable it explicitly, open Notes from plugin tools, type a note and click Save. The settings window can enable a host notification after each save; notifications are polled and may be coalesced or suppressed by Windows. Closing the notes window hides it; unsaved text remains only in memory until the process exits. The two declared data files are notes.txt and settings.txt, with opt-in backup disabled by default.
 
 Acceptance on an isolated Windows profile: verify disabled installation, enable, open/reopen both windows, save Russian and multiline text, restart and confirm persistence; enable save notification, save again and check the host notification. Enable plugin data backup, create a ZIP with packages, remove the plugin, modify or remove the note data, restore the ZIP (no live installation), extract the package, reinstall with renewed trust, explicitly restore same-version data, then enable and verify the original note. Check the plugin remains disabled immediately after restore and that closing AppShelf stops its child process. Never test destructive restore against the only copy of real user data.
 
