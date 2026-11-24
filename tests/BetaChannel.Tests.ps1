@@ -66,6 +66,14 @@ namespace AppShelf
             Assert(selected.IsBeta && selected.VersionText == "2.24.0-beta.10", "beta channel numeric ordering");
             selected = Select(true, b10, final, stable);
             Assert(!selected.IsBeta && selected.VersionText == "2.24.0", "stable release remains available");
+            AppUpdate.Release[] choices = AppUpdate.SelectAvailableFromJson(
+                "[" + final + "," + Entry("2.25.0-beta.1", true, false) + "]", true);
+            Assert(choices.Length == 2 && choices[0].IsBeta &&
+                !choices[1].IsBeta && choices[1].VersionText == "2.24.0",
+                "newer beta must not hide available stable update");
+            choices = AppUpdate.SelectAvailableFromJson(
+                "[" + final + "," + b10 + "]", false);
+            Assert(choices.Length == 1 && !choices[0].IsBeta, "stable-only choices");
             Assert(Select(true, stable, Entry("3.0.0", true, false)).VersionText == "2.23.0", "flag/tag mismatch");
             Assert(Select(true, stable, Entry("3.0.0-beta.1", false, false)).VersionText == "2.23.0", "unmarked beta rejected");
             Reject(delegate { Select(false, b2, draft); }, "no stable release");
