@@ -49,6 +49,20 @@ jobs:
           & $exe -NoProfile -STA -ExecutionPolicy Bypass -File tests\PluginRuntime.Tests.ps1
           if ($LASTEXITCODE -ne 0) { throw "Plugin runtime regression failed" }
 
+      - name: Build demonstration plugin
+        shell: powershell
+        run: |
+          & .\samples\NotesPlugin\Build.ps1 -OutputDirectory "$env:RUNNER_TEMP\AppShelfSample"
+          if (-not (Test-Path "$env:RUNNER_TEMP\AppShelfSample\NotesPlugin-1.0.0.asplugin")) { throw "Sample package missing" }
+
+      - name: Upload demonstration plugin
+        uses: actions/upload-artifact@v6
+        with:
+          name: NotesPlugin-${{ github.sha }}
+          path: ${{ runner.temp }}/AppShelfSample/NotesPlugin-1.0.0.asplugin
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Run full isolated Windows PowerShell 5.1 STA regression tests
         if: >-
           ${{ github.event_name == 'pull_request' || startsWith(github.event.head_commit.message, 'test: run full regression') }}
