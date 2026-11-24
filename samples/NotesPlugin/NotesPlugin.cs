@@ -197,7 +197,8 @@ namespace AppShelf.Sample
         private static void OpenSettings()
         {
             if (settingsWindow != null && !settingsWindow.IsDisposed) { ShowExisting(settingsWindow); return; }
-            Form form = new Form { Text = "Заметки — настройки", Size = new Size(430, 150), StartPosition = FormStartPosition.CenterScreen };
+            Form form = new Form { Text = "Заметки — настройки", ClientSize = new Size(410, 140),
+                Padding = new Padding(12), MinimumSize = new Size(380, 170), StartPosition = FormStartPosition.CenterScreen };
             CheckBox checkbox = new CheckBox { Text = "Уведомлять о сохранении заметки", Checked = notify, Dock = DockStyle.Top, Height = 42 };
             Button save = new Button { Text = "Сохранить", Dock = DockStyle.Bottom, Height = 34 };
             Label status = new Label { Dock = DockStyle.Fill };
