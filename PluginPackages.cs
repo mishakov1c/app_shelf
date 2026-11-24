@@ -228,7 +228,8 @@ namespace AppShelf
 
         // Stage and validate before replacing the installed code. Runtime must stop the
         // old process before calling this method; data lives in a separate directory.
-        internal PluginManifest Install(string package, Func<PluginManifest, bool> confirm, string expectedId = null)
+        internal PluginManifest Install(string package, Func<PluginManifest, bool> confirm, string expectedId = null,
+            Func<string, IDisposable> beforeCommit = null)
         {
             if (confirm == null) throw new ArgumentNullException("confirm");
             EnsureInstalledRoot();
@@ -241,14 +242,13 @@ namespace AppShelf
                 if (expectedId != null && manifest.Id != expectedId)
                     Reject("Пакет относится к другому плагину.");
                 string target = Child(InstalledRoot, manifest.Id);
+                CheckReplacement(target, manifest);
+                using (IDisposable reservation = ConfirmCommit(manifest, confirm, beforeCommit))
+                {
+                if (reservation == null) return null;
                 if (Directory.Exists(target))
                 {
-                    CheckPlainTree(target);
-                    PluginManifest previous = ReadManifest(target);
-                    if (previous.Id != manifest.Id) Reject("Идентификатор установленного плагина не совпадает.");
-                    if (new Version(manifest.Version).CompareTo(new Version(previous.Version)) <= 0)
-                        Reject("Для обновления требуется более новая версия плагина.");
-                    if (!confirm(manifest)) return null;
+                    CheckReplacement(target, manifest);
                     File.WriteAllText(Path.Combine(stage, "approved.flag"), manifest.Version);
                     string old = Path.Combine(InstalledRoot, ".previous-" + Guid.NewGuid().ToString("N"));
                     Directory.Move(target, old);
@@ -263,13 +263,45 @@ namespace AppShelf
                 }
                 else
                 {
-                    if (!confirm(manifest)) return null;
                     File.WriteAllText(Path.Combine(stage, "approved.flag"), manifest.Version);
                     Directory.Move(stage, target);
                 }
                 return manifest;
+                }
             }
             finally { TryRemoveStage(stage); }
+        }
+
+        private sealed class EmptyReservation : IDisposable { public void Dispose() { } }
+
+        private static IDisposable ConfirmCommit(PluginManifest manifest, Func<PluginManifest, bool> confirm,
+            Func<string, IDisposable> beforeCommit)
+        {
+            if (!confirm(manifest)) return null;
+            return beforeCommit == null ? new EmptyReservation() : beforeCommit(manifest.Id);
+        }
+
+        private static void CheckReplacement(string target, PluginManifest manifest)
+        {
+            if (!Directory.Exists(target)) return;
+            CheckPlainTree(target);
+            PluginManifest previous = ReadManifest(target);
+            if (previous.Id != manifest.Id) Reject("Идентификатор установленного плагина не совпадает.");
+            if (new Version(manifest.Version).CompareTo(new Version(previous.Version)) <= 0)
+                Reject("Для обновления требуется более новая версия плагина.");
+        }
+
+        internal bool HasInstalledDirectory { get { return Directory.Exists(InstalledRoot); } }
+
+        internal PluginManifest ReadEnabled(string id, out string executable)
+        {
+            PluginManifest manifest = ReadInstalled(id);
+            string directory = Child(InstalledRoot, id);
+            string flag = Path.Combine(directory, "enabled.flag");
+            if (!Approved(directory, manifest) || !File.Exists(flag) || new FileInfo(flag).Length != 0)
+                Reject("Плагин отключён или не подтверждён.");
+            executable = Child(directory, manifest.EntryPoint);
+            return manifest;
         }
 
         private static void TryRemoveStage(string path)

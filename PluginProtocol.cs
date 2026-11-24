@@ -237,6 +237,7 @@ namespace AppShelf
                 case "poll":
                     if (!capabilities.Contains("notification")) throw new InvalidOperationException("Plugin has no notifications.");
                     break;
+                case "ping":
                 case "shutdown": break;
                 default: throw new InvalidOperationException("Unknown plugin method.");
             }
@@ -330,6 +331,11 @@ namespace AppShelf
         internal Task<PluginResponse> PollAsync(int timeoutMs, CancellationToken cancel)
         {
             return Exchange(new PluginRequest { Method = "poll" }, timeoutMs, cancel);
+        }
+
+        internal Task<PluginResponse> PingAsync(int timeoutMs, CancellationToken cancel)
+        {
+            return Exchange(new PluginRequest { Method = "ping" }, timeoutMs, cancel);
         }
 
         internal Task<PluginResponse> ShutdownAsync(int timeoutMs, CancellationToken cancel)
