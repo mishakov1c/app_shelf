@@ -646,6 +646,17 @@ namespace AppShelf
             }
         }
 
+        private static void ReadSavedDocuments(out AppConfig config, out ReminderDocument reminders)
+        {
+            string settingsWarning, reminderWarning;
+            bool settingsSafe, remindersSafe;
+            config = ConfigStore.Load(out settingsWarning, out settingsSafe);
+            reminders = ReminderStore.Load(out reminderWarning, out remindersSafe);
+            if (!settingsSafe || !remindersSafe)
+                throw new InvalidDataException("Нельзя создавать копию из повреждённых данных: " +
+                    (settingsWarning ?? "") + " " + (reminderWarning ?? ""));
+        }
+
         private static void AddSignatureFiles(List<string> files, string directory)
         {
             if (!Directory.Exists(directory)) return;
@@ -842,7 +853,10 @@ namespace AppShelf
                     Guid.NewGuid().ToString("N").Substring(0, 6) + ".zip");
                 try
                 {
-                    BackupStore.ExportAll(filename, config, reminders);
+                    AppConfig savedConfig;
+                    ReminderDocument savedReminders;
+                    ReadSavedDocuments(out savedConfig, out savedReminders);
+                    BackupStore.ExportAll(filename, savedConfig, savedReminders);
                     if (!String.Equals(before, DataSignature(), StringComparison.Ordinal))
                         throw new IOException("Данные изменились во время создания резервной копии.");
                 }
@@ -888,7 +902,10 @@ namespace AppShelf
                 {
                     string before = DataSignature();
                     string archive = Path.Combine(temp, "AppShelf-data.zip");
-                    BackupStore.ExportAll(archive, config, reminders);
+                    AppConfig savedConfig;
+                    ReminderDocument savedReminders;
+                    ReadSavedDocuments(out savedConfig, out savedReminders);
+                    BackupStore.ExportAll(archive, savedConfig, savedReminders);
                     if (!String.Equals(before, DataSignature(), StringComparison.Ordinal))
                         throw new IOException("Данные изменились во время резервного копирования.");
                     string executable = Path.Combine(temp, "AppShelf-" + installedVersion + ".exe");
