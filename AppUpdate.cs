@@ -326,7 +326,10 @@ namespace AppShelf
                 throw new InvalidDataException("Проверка SHA-256 перед установкой не пройдена.");
 
             string candidate = target + ".update-" + Guid.NewGuid().ToString("N") + ".tmp";
-            string backup = target + ".previous";
+            // The old EXE is already backed up under the user-selected root.
+            // The running helper in staging is also an emergency local rollback source.
+            // Do not leave .previous beside the application after every update.
+            string backup = Process.GetCurrentProcess().MainModule.FileName;
             bool replaced = false;
             try
             {
@@ -335,7 +338,7 @@ namespace AppShelf
                 if (!String.Equals(FileHash(candidate), expectedHash,
                     StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("Файл изменился во время копирования.");
-                File.Replace(candidate, target, backup, true);
+                File.Replace(candidate, target, null, true);
                 replaced = true;
                 Process.Start(new ProcessStartInfo
                 {
@@ -343,7 +346,7 @@ namespace AppShelf
                     WorkingDirectory = Path.GetDirectoryName(target),
                     UseShellExecute = true
                 });
-                // The .previous EXE is intentionally retained for manual rollback.
+                // Persistent data and old EXE are stored together in BeforeUpdate.
             }
             catch
             {
