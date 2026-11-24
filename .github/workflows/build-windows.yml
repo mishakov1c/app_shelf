@@ -28,6 +28,13 @@ jobs:
             throw "AppShelf.exe is empty."
           }
 
+      - name: Test plugin package storage (Windows PowerShell 5.1 STA)
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File tests\PluginPackages.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Plugin package regression failed" }
+
       - name: Upload Windows application
         uses: actions/upload-artifact@v6
         with:
