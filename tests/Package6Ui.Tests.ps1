@@ -9,7 +9,7 @@ $env:APPSHELF_TEST_DATA = $temp
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs')) {
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
@@ -1026,7 +1026,7 @@ public static class Package6Tests
                         d.Width = d.MinWidth * s; d.Height = d.MinHeight * s;
                         ((FrameworkElement)d.Content).LayoutTransform = new ScaleTransform(s, s); Drain();
                         ScrollViewer scroll = Controls<ScrollViewer>(d)[0];
-                        string[] keys = new string[] { "appearance", "network", "weather", "time", "windows", "collections", "data" };
+                        string[] keys = new string[] { "appearance", "network", "weather", "time", "windows", "collections", "plugins", "data" };
                         Click(ButtonNamed(d, "Свернуть всё"));
                         foreach (string key in keys)
                             Assert(Body(d, key).Visibility == Visibility.Collapsed, "Collapse all missed " + key);
@@ -1242,7 +1242,7 @@ public static class Package6Tests
         Case("settings accordion and saved navigation", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
                 settings = delegate(Window d) {
-                    string[] main = { "appearance", "network", "weather", "time", "windows", "collections", "data" };
+                    string[] main = { "appearance", "network", "weather", "time", "windows", "collections", "plugins", "data" };
                     string[] nested = { "appearance-tiles", "appearance-background", "appearance-panel" };
                     Dictionary<string, Button> headers = new Dictionary<string, Button>();
                     foreach (Button b in Controls<Button>(d))
@@ -1266,9 +1266,9 @@ public static class Package6Tests
                         "Main accordion is not using the reference dark fill");
                     StackPanel rows = frames[0].Child as StackPanel;
                     StackPanel nestedRows = subframes.Count == 1 ? subframes[0].Child as StackPanel : null;
-                    Assert(rows != null && rows.Children.Count == 13 && nestedRows != null &&
-                        nestedRows.Children.Count == 5 && dividers.Count == 8,
-                        "Expected seven main sections and three nested Appearance subsections");
+                    Assert(rows != null && rows.Children.Count == 15 && nestedRows != null &&
+                        nestedRows.Children.Count == 5 && dividers.Count == 9,
+                        "Expected eight main sections and three nested Appearance subsections");
                     foreach (string key in main) {
                         StackPanel caption = Section(d, key).Content as StackPanel;
                         System.Windows.Shapes.Path chevron = caption == null ? null :
