@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Forms = System.Windows.Forms;
 using Microsoft.Win32;
 
 namespace AppShelf
@@ -156,6 +157,31 @@ namespace AppShelf
                 RunAction(delegate { return runtime.StartAsync(plugin.Id, restart); }, "Плагин запущен.");
             };
             actions.Children.Add(start);
+            if (manifest != null && (Array.IndexOf(manifest.Capabilities, "command") >= 0 ||
+                Array.IndexOf(manifest.Capabilities, "window") >= 0))
+            {
+                Button commands = ButtonFor("Команды…", false);
+                commands.Tag = "PluginCommands:" + plugin.Id;
+                commands.IsEnabled = plugin.Enabled && plugin.Error == null;
+                commands.Click += delegate
+                {
+                    RunAction(delegate { return PluginUiActions.ChooseAsync(this, runtime, plugin.Id, manifest.Version); },
+                        "Готово.");
+                };
+                actions.Children.Add(commands);
+            }
+            if (manifest != null && Array.IndexOf(manifest.Capabilities, "settings") >= 0)
+            {
+                Button settings = ButtonFor("Настройки…", false);
+                settings.Tag = "PluginSettings:" + plugin.Id;
+                settings.IsEnabled = plugin.Enabled && plugin.Error == null;
+                settings.Click += delegate
+                {
+                    RunAction(delegate { return runtime.OpenSettingsAsync(plugin.Id, manifest.Version); },
+                        "Запрос открытия настроек выполнен.");
+                };
+                actions.Children.Add(settings);
+            }
             stateUpdates.Add(delegate
             {
                 PluginRuntimeState state = runtime.State(plugin.Id);
@@ -251,10 +277,58 @@ namespace AppShelf
         }
     }
 
+    internal static class PluginUiActions
+    {
+        internal static string LiteralMenuText(string value)
+        {
+            // WPF menu headers otherwise interpret underscores as access keys.
+            return (value ?? "").Replace("_", "__");
+        }
+
+        internal static async Task ChooseAsync(Window owner, PluginRuntime runtime, string id, string version)
+        {
+            PluginCommand[] commands = await runtime.GetCommandsAsync(id, version);
+            if (commands.Length == 0)
+            {
+                AppDialog.Show(owner, "Плагин не предоставил команд.", "AppShelf — Плагины",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            PluginCommand chosen = commands.Length == 1 ? commands[0] : null;
+            if (chosen == null)
+            {
+                Window dialog = new Window { Owner = owner, Title = "AppShelf — Команды плагина",
+                    Width = 420, Height = 360, MinWidth = 300, MinHeight = 220,
+                    WindowStartupLocation = WindowStartupLocation.CenterOwner };
+                FluentUi.PrepareWindow(dialog);
+                StackPanel list = new StackPanel { Margin = new Thickness(15) };
+                ScrollViewer scroll = new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+                FluentUi.StyleSettingsScroll(scroll);
+                dialog.Content = scroll;
+                foreach (PluginCommand command in commands)
+                {
+                    PluginCommand item = command;
+                    Button button = new Button { Content = new TextBlock { Text = item.Label, TextWrapping = TextWrapping.Wrap },
+                        Padding = new Thickness(12, 8, 12, 8), Margin = new Thickness(0, 0, 0, 6),
+                        Foreground = FluentUi.Foreground, Background = FluentUi.SurfaceRaised,
+                        BorderBrush = FluentUi.BorderColor, MinHeight = 34 };
+                    button.Click += delegate { chosen = item; dialog.DialogResult = true; };
+                    list.Children.Add(button);
+                }
+                if (dialog.ShowDialog() != true) return;
+            }
+            await runtime.InvokeAsync(id, version, chosen.Id);
+        }
+    }
+
     public sealed partial class MainWindow
     {
         private PluginRuntime _pluginRuntime;
         private DispatcherTimer _pluginHealthTimer;
+        private DispatcherTimer _pluginNoticeTimer;
+        private readonly Queue<PluginDelivery> _pluginNotices = new Queue<PluginDelivery>();
+        private bool _pluginMenuBusy;
+        private bool _pluginRuntimeStopping;
 
         private PluginRuntime GetPluginRuntime()
         {
@@ -270,9 +344,22 @@ namespace AppShelf
             _pluginHealthTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
             _pluginHealthTimer.Tick += async delegate
             {
-                try { await runtime.CheckHealthAsync(); }
+                try
+                {
+                    List<PluginDelivery> deliveries = await runtime.CheckHealthAsync();
+                    if (_pluginRuntimeStopping) return;
+                    foreach (PluginDelivery delivery in deliveries)
+                        if (_pluginNotices.Count < 12) _pluginNotices.Enqueue(delivery);
+                    if (_pluginNotices.Count > 0 && _pluginNoticeTimer != null && !_pluginNoticeTimer.IsEnabled)
+                    {
+                        DeliverPluginNotice();
+                        if (_pluginNotices.Count > 0) _pluginNoticeTimer.Start();
+                    }
+                }
                 catch (Exception error) { ConfigStore.Log(error); }
             };
+            _pluginNoticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
+            _pluginNoticeTimer.Tick += delegate { DeliverPluginNotice(); };
             _pluginHealthTimer.Start();
             try { await runtime.StartBackgroundsAsync(); }
             catch (Exception error) { ConfigStore.Log(error); }
@@ -280,8 +367,128 @@ namespace AppShelf
 
         private void StopPluginRuntime()
         {
+            _pluginRuntimeStopping = true;
             if (_pluginHealthTimer != null) _pluginHealthTimer.Stop();
+            if (_pluginNoticeTimer != null) _pluginNoticeTimer.Stop();
+            _pluginNotices.Clear();
             if (_pluginRuntime != null) _pluginRuntime.Dispose();
+        }
+
+        private void DeliverPluginNotice()
+        {
+            if (_pluginRuntimeStopping) return;
+            while (_pluginNotices.Count != 0)
+            {
+                PluginDelivery item = _pluginNotices.Dequeue();
+                PluginRuntimeState state = GetPluginRuntime().State(item.Id);
+                if (state.Status != "running" || state.Version != item.Version) continue;
+                string title = "AppShelf · " + item.Name + " · " + item.Notice.Title;
+                if (title.Length > 63) title = title.Substring(0, 63);
+                string message = item.Notice.Message;
+                if (message.Length > 255) message = message.Substring(0, 254) + "…";
+                try
+                {
+                    if (_trayIcon != null && _trayIcon.Visible && _trayIcon.Icon != null)
+                        _trayIcon.ShowBalloonTip(6000, title, message, Forms.ToolTipIcon.Info);
+                    else ShowStatusMessage(title + ": " + message);
+                }
+                catch (Exception error) { ConfigStore.Log(error); }
+                // Keep the timer running for one more tick to guarantee a gap even
+                // when a new batch arrives just after the last item was shown.
+                if (_pluginNoticeTimer != null) _pluginNoticeTimer.Start();
+                return;
+            }
+            if (_pluginNoticeTimer != null) _pluginNoticeTimer.Stop();
+        }
+
+        private MenuItem CreatePluginToolsMenu()
+        {
+            MenuItem menu = new MenuItem { Header = "Инструменты плагинов", Icon = FluentUi.MenuGlyph("settings") };
+            menu.Items.Add(new MenuItem { Header = "Открыть меню…", IsEnabled = false });
+            int revision = 0;
+            menu.SubmenuClosed += delegate { revision++; };
+            menu.SubmenuOpened += async delegate
+            {
+                int current = ++revision;
+                menu.Items.Clear();
+                menu.Items.Add(new MenuItem { Header = "Загрузка…", IsEnabled = false });
+                try
+                {
+                    List<InstalledPlugin> installed = await Task.Run(delegate
+                    {
+                        PluginPackageStore store = new PluginPackageStore(ConfigStore.DirectoryPath);
+                        return store.HasInstalledDirectory ? store.List() : new List<InstalledPlugin>();
+                    });
+                    if (current != revision || _pluginRuntimeStopping) return;
+                    PopulatePluginTools(menu, installed);
+                }
+                catch (Exception error)
+                {
+                    if (current != revision) return;
+                    menu.Items.Clear();
+                    menu.Items.Add(new MenuItem { Header = "Не удалось прочитать плагины", IsEnabled = false });
+                    ConfigStore.Log(error);
+                }
+            };
+            return menu;
+        }
+
+        private void PopulatePluginTools(MenuItem menu, List<InstalledPlugin> installed)
+        {
+            menu.Items.Clear();
+            PluginRuntime runtime = GetPluginRuntime();
+            foreach (InstalledPlugin plugin in installed)
+            {
+                if (!plugin.Enabled || plugin.Error != null || plugin.Manifest == null) continue;
+                string id = plugin.Id, version = plugin.Manifest.Version;
+                bool commands = Array.IndexOf(plugin.Manifest.Capabilities, "command") >= 0 ||
+                    Array.IndexOf(plugin.Manifest.Capabilities, "window") >= 0;
+                bool settings = Array.IndexOf(plugin.Manifest.Capabilities, "settings") >= 0;
+                if (!commands && !settings) continue;
+                MenuItem group = new MenuItem { Header = PluginUiActions.LiteralMenuText(plugin.Manifest.Name), ToolTip = id };
+                if (commands)
+                {
+                    PluginRuntimeState state = runtime.State(id);
+                    if (state.Status == "running" && state.Version == version && state.Commands != null && state.Commands.Length != 0)
+                    {
+                        foreach (PluginCommand command in state.Commands)
+                        {
+                            string commandId = command.Id;
+                            MenuItem item = new MenuItem { Header = PluginUiActions.LiteralMenuText(command.Label) };
+                            item.Click += delegate { RunPluginMenuAction(delegate { return runtime.InvokeAsync(id, version, commandId); }); };
+                            group.Items.Add(item);
+                        }
+                    }
+                    else
+                    {
+                        MenuItem open = new MenuItem { Header = "Открыть команды…" };
+                        open.Click += delegate { RunPluginMenuAction(delegate { return PluginUiActions.ChooseAsync(this, runtime, id, version); }); };
+                        group.Items.Add(open);
+                    }
+                }
+                if (settings)
+                {
+                    MenuItem item = new MenuItem { Header = "Настройки…" };
+                    item.Click += delegate { RunPluginMenuAction(delegate { return runtime.OpenSettingsAsync(id, version); }); };
+                    group.Items.Add(item);
+                }
+                menu.Items.Add(group);
+            }
+            if (menu.Items.Count == 0)
+                menu.Items.Add(new MenuItem { Header = "Нет включённых инструментов", IsEnabled = false });
+        }
+
+        private async void RunPluginMenuAction(Func<Task> action)
+        {
+            if (_pluginMenuBusy || _pluginRuntimeStopping) return;
+            _pluginMenuBusy = true;
+            try { await action(); }
+            catch (Exception error)
+            {
+                if (!_pluginRuntimeStopping)
+                    AppDialog.Show(this, error.Message, "AppShelf — Плагины", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            finally { _pluginMenuBusy = false; }
         }
 
         private void ShowPluginManager(Window owner)

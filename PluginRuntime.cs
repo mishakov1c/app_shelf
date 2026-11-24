@@ -267,10 +267,12 @@ namespace AppShelf
         private volatile bool ready;
         internal PluginCommand[] Commands { get; private set; }
         internal int ProcessId { get; private set; }
+        internal PluginManifest Manifest { get; private set; }
 
         internal PluginChild(PluginManifest manifest, string executable, int timeoutMs)
         {
             timeout = timeoutMs;
+            Manifest = manifest;
             job = new PluginJob();
             try
             {
@@ -317,6 +319,23 @@ namespace AppShelf
             session.PingAsync(timeout, cancel).GetAwaiter().GetResult();
         }
 
+        internal void Invoke(string id, CancellationToken cancel)
+        {
+            session.InvokeAsync(id, timeout, cancel).GetAwaiter().GetResult();
+        }
+
+        internal void OpenSettings(CancellationToken cancel)
+        {
+            session.SettingsAsync(timeout, cancel).GetAwaiter().GetResult();
+        }
+
+        internal PluginNotice[] Poll(CancellationToken cancel)
+        {
+            return session.PollAsync(timeout, cancel).GetAwaiter().GetResult().Notifications ?? new PluginNotice[0];
+        }
+
+        internal bool Failed { get { return session.Failed; } }
+
         internal void ForceTerminate()
         {
             job.Dispose();
@@ -358,6 +377,16 @@ namespace AppShelf
     {
         internal string Status { get; set; }
         internal string Error { get; set; }
+        internal string Version { get; set; }
+        internal PluginCommand[] Commands { get; set; }
+    }
+
+    internal sealed class PluginDelivery
+    {
+        internal string Id { get; set; }
+        internal string Version { get; set; }
+        internal string Name { get; set; }
+        internal PluginNotice Notice { get; set; }
     }
 
     internal sealed class PluginRuntime : IDisposable
@@ -367,6 +396,7 @@ namespace AppShelf
             internal PluginChild Child;
             internal string Status = "idle";
             internal string Error;
+            internal DateTime LastNoticeUtc;
         }
 
         private sealed class Reservation : IDisposable
@@ -412,8 +442,20 @@ namespace AppShelf
                 if (!slots.TryGetValue(id, out slot)) return new PluginRuntimeState { Status = "idle" };
                 if (slot.Status == "running" && slot.Child != null && slot.Child.HasExited)
                     return new PluginRuntimeState { Status = "error", Error = "Процесс плагина завершился." };
-                return new PluginRuntimeState { Status = slot.Status, Error = slot.Error };
+                return new PluginRuntimeState { Status = slot.Status, Error = slot.Error,
+                    Version = slot.Child == null ? null : slot.Child.Manifest.Version,
+                    Commands = slot.Status == "running" && slot.Child != null ?
+                        CopyCommands(slot.Child.Commands) : new PluginCommand[0] };
             }
+        }
+
+        private static PluginCommand[] CopyCommands(PluginCommand[] source)
+        {
+            if (source == null) return new PluginCommand[0];
+            PluginCommand[] copy = new PluginCommand[source.Length];
+            for (int i = 0; i < source.Length; i++)
+                copy[i] = new PluginCommand { Id = source[i].Id, Label = source[i].Label };
+            return copy;
         }
 
         private void SetState(Slot slot, string state, string error = null)
@@ -450,14 +492,15 @@ namespace AppShelf
         {
             CheckOpen();
             Slot slot = GetSlot(id);
-            if (slot.Child != null)
-            {
-                if (!restart && !slot.Child.HasExited) return;
-                StopSlot(slot);
-            }
             string executable;
             PluginManifest manifest = store.ReadEnabled(id, out executable);
             if (backgroundOnly && Array.IndexOf(manifest.Capabilities, "background") < 0) return;
+            if (slot.Child != null)
+            {
+                if (!restart && slot.Status == "running" && !slot.Child.HasExited &&
+                    slot.Child.Manifest.Version == manifest.Version) return;
+                StopSlot(slot);
+            }
             // Startup/enable scanning must never retry a failed plugin automatically.
             if (backgroundOnly && slot.Status == "error") return;
             SetState(slot, "starting");
@@ -492,6 +535,67 @@ namespace AppShelf
         internal Task StartAsync(string id, bool restart = false)
         {
             return Run(delegate { StartCore(id, restart, false); });
+        }
+
+        // A click from a stale menu must not execute a different version of a plugin.
+        private PluginManifest CheckActionVersion(string id, string version)
+        {
+            string executable;
+            PluginManifest manifest = store.ReadEnabled(id, out executable);
+            if (manifest.Version != version)
+                throw new InvalidOperationException("Версия плагина изменилась. Откройте меню заново.");
+            return manifest;
+        }
+
+        internal async Task<PluginCommand[]> GetCommandsAsync(string id, string version)
+        {
+            PluginCommand[] result = null;
+            await Run(delegate
+            {
+                PluginManifest manifest = CheckActionVersion(id, version);
+                if (Array.IndexOf(manifest.Capabilities, "command") < 0 &&
+                    Array.IndexOf(manifest.Capabilities, "window") < 0)
+                    throw new InvalidOperationException("Плагин не объявляет команды.");
+                StartCore(id, false, false);
+                result = CopyCommands(GetSlot(id).Child.Commands);
+            }).ConfigureAwait(false);
+            return result;
+        }
+
+        private void ExecuteAction(string id, string version, string command, bool settings)
+        {
+            PluginManifest manifest = CheckActionVersion(id, version);
+            if (settings && Array.IndexOf(manifest.Capabilities, "settings") < 0)
+                throw new InvalidOperationException("Плагин не предоставляет настройки.");
+            if (!settings && (String.IsNullOrEmpty(command) ||
+                (Array.IndexOf(manifest.Capabilities, "command") < 0 &&
+                 Array.IndexOf(manifest.Capabilities, "window") < 0)))
+                throw new InvalidOperationException("Плагин не объявляет команды.");
+            StartCore(id, false, false);
+            Slot slot = GetSlot(id);
+            PluginChild child = slot.Child;
+            if (!settings && !Array.Exists(child.Commands, delegate(PluginCommand item) { return item.Id == command; }))
+                throw new InvalidOperationException("Команда недоступна. Откройте меню заново.");
+            try
+            {
+                if (settings) child.OpenSettings(lifetime.Token);
+                else child.Invoke(command, lifetime.Token);
+            }
+            catch (Exception error)
+            {
+                if (child.Failed || child.HasExited) FailSlot(slot, error);
+                throw;
+            }
+        }
+
+        internal Task InvokeAsync(string id, string version, string command)
+        {
+            return Run(delegate { ExecuteAction(id, version, command, false); });
+        }
+
+        internal Task OpenSettingsAsync(string id, string version)
+        {
+            return Run(delegate { ExecuteAction(id, version, null, true); });
         }
 
         internal Task SetEnabledAsync(string id, bool enabled)
@@ -538,11 +642,12 @@ namespace AppShelf
             }
         }
 
-        internal Task CheckHealthAsync()
+        internal Task<List<PluginDelivery>> CheckHealthAsync()
         {
             return Task.Run(delegate
             {
-                if (!operations.Wait(0)) return; // no accumulated timer work
+                List<PluginDelivery> deliveries = new List<PluginDelivery>();
+                if (!operations.Wait(0)) return deliveries; // no accumulated timer work
                 try
                 {
                     CheckOpen();
@@ -556,12 +661,29 @@ namespace AppShelf
                         {
                             if (child.HasExited) throw new IOException("Процесс плагина завершился.");
                             child.Ping(lifetime.Token);
+                            if (Array.IndexOf(child.Manifest.Capabilities, "notification") >= 0)
+                            {
+                                // Poll drains the plugin's batch. A malicious or noisy trusted
+                                // plugin must not flood the desktop or an unbounded queue.
+                                PluginNotice[] notices;
+                                try { notices = child.Poll(lifetime.Token); }
+                                catch (PluginRemoteException) { continue; }
+                                DateTime now = DateTime.UtcNow;
+                                if (notices.Length > 0 && deliveries.Count < 8 &&
+                                    now - slot.LastNoticeUtc >= TimeSpan.FromSeconds(15))
+                                {
+                                    slot.LastNoticeUtc = now;
+                                    deliveries.Add(new PluginDelivery { Id = child.Manifest.Id,
+                                        Version = child.Manifest.Version, Name = child.Manifest.Name, Notice = notices[0] });
+                                }
+                            }
                         }
                         catch (Exception error) { FailSlot(slot, error); }
                     }
                 }
                 catch (OperationCanceledException) { }
                 finally { operations.Release(); }
+                return deliveries;
             });
         }
 

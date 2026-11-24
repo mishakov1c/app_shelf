@@ -2058,6 +2058,7 @@ namespace AppShelf
             MenuItem plugins = new MenuItem { Header = "Плагины", Icon = FluentUi.MenuGlyph("settings") };
             plugins.Click += delegate { ShowPluginManager(this); };
             tools.Items.Add(plugins);
+            tools.Items.Add(CreatePluginToolsMenu());
             _newGroupMenuItem = new MenuItem
             {
                 Header = "Создать группу", Icon = FluentUi.MenuGlyph("folder"),
