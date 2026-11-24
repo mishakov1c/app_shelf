@@ -967,6 +967,7 @@ namespace AppShelf
     {
         private DispatcherTimer _automaticBackupTimer;
         private bool _automaticBackupInProgress;
+        private bool _legacyBackupMigrationRunning;
 
         private void StartAutomaticBackupMonitor()
         {
@@ -976,6 +977,7 @@ namespace AppShelf
             {
                 _automaticBackupTimer.Interval = TimeSpan.FromMinutes(30);
                 QueueAutomaticBackup();
+                MigrateLegacyExeIfPossible();
             };
             _automaticBackupTimer.Start();
         }
@@ -1002,6 +1004,24 @@ namespace AppShelf
             finally { _automaticBackupInProgress = false; }
         }
 
+        private async void MigrateLegacyExeIfPossible()
+        {
+            if (_legacyBackupMigrationRunning || _config == null ||
+                String.IsNullOrWhiteSpace(_config.BackupDirectory) ||
+                Dispatcher.HasShutdownStarted) return;
+            _legacyBackupMigrationRunning = true;
+            try
+            {
+                AppConfig policy = _config.Copy();
+                string exe = Process.GetCurrentProcess().MainModule.FileName;
+                await Task.Run(delegate {
+                    BackupAutomation.MigrateLegacyPreviousExe(policy, exe);
+                });
+            }
+            catch (Exception error) { ConfigStore.Log(error); }
+            finally { _legacyBackupMigrationRunning = false; }
+        }
+
         // The configured root is shared by daily, pre-update and pre-restore backups.
         private bool SelectBackupDirectory(Window owner)
         {
@@ -1019,6 +1039,7 @@ namespace AppShelf
                     AppConfig pending = _config.Copy();
                     pending.BackupDirectory = chosen;
                     if (!SaveConfigChanges(pending)) return false;
+                    MigrateLegacyExeIfPossible();
                     return true;
                 }
                 catch (Exception error)
