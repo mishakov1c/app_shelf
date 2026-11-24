@@ -2,7 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Diagnostics;
+using System.Text;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -43,7 +43,7 @@ namespace AppShelf
             ref ExtendedLimits limits, uint length);
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
+        private static extern bool AssignProcessToJobObject(SafeFileHandle job, SafeFileHandle process);
         private SafeFileHandle handle;
 
         internal PluginJob()
@@ -61,9 +61,9 @@ namespace AppShelf
             }
         }
 
-        internal void Attach(Process process)
+        internal void Attach(SafeFileHandle process)
         {
-            if (!AssignProcessToJobObject(handle, process.Handle))
+            if (!AssignProcessToJobObject(handle, process))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
         }
 
@@ -74,9 +74,191 @@ namespace AppShelf
         }
     }
 
+    // Raw Win32 pipes avoid the .NET Framework Process.StandardInput StreamWriter
+    // preamble. The suspended process joins the kill-on-close job before it can run.
+    internal sealed class NativePluginProcess : IDisposable
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SecurityAttributes
+        {
+            public int Length;
+            public IntPtr Descriptor;
+            [MarshalAs(UnmanagedType.Bool)] public bool Inherit;
+        }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct StartupInfo
+        {
+            public int Size;
+            public IntPtr Reserved, Desktop, Title;
+            public uint X, Y, XSize, YSize, XCount, YCount, FillAttribute, Flags;
+            public ushort ShowWindow, ReservedLength;
+            public IntPtr ReservedBytes, StdInput, StdOutput, StdError;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct StartupInfoEx
+        {
+            public StartupInfo Startup;
+            public IntPtr Attributes;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ProcessInfo
+        {
+            public IntPtr Process, Thread;
+            public uint ProcessId, ThreadId;
+        }
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CreatePipe(out SafeFileHandle read, out SafeFileHandle write,
+            ref SecurityAttributes attributes, uint size);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetHandleInformation(SafeFileHandle handle, uint mask, uint flags);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref UIntPtr size);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute,
+            IntPtr value, UIntPtr size, IntPtr previous, IntPtr returnSize);
+        [DllImport("kernel32.dll")]
+        private static extern void DeleteProcThreadAttributeList(IntPtr list);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessW")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CreateProcess(string application, StringBuilder commandLine,
+            IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags,
+            IntPtr environment, string directory, ref StartupInfoEx startup, out ProcessInfo info);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint ResumeThread(SafeFileHandle thread);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(SafeFileHandle handle, uint milliseconds);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool TerminateProcess(SafeFileHandle process, uint code);
+
+        private SafeFileHandle handle;
+        internal Stream Input { get; private set; }
+        internal Stream Output { get; private set; }
+        internal Stream Error { get; private set; }
+        internal int Id { get; private set; }
+
+        private static void Require(bool result)
+        {
+            if (!result) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        private static void Release(SafeFileHandle handle)
+        {
+            if (handle != null) handle.Dispose();
+        }
+
+        internal NativePluginProcess(string executable, PluginJob job)
+        {
+            SafeFileHandle childIn = null, childOut = null, childErr = null;
+            SafeFileHandle parentIn = null, parentOut = null, parentErr = null, thread = null;
+            IntPtr attributes = IntPtr.Zero, inherited = IntPtr.Zero;
+            bool attributesReady = false;
+            try
+            {
+                SecurityAttributes sa = new SecurityAttributes
+                { Length = Marshal.SizeOf(typeof(SecurityAttributes)), Inherit = true };
+                Require(CreatePipe(out childIn, out parentIn, ref sa, 0));
+                Require(CreatePipe(out parentOut, out childOut, ref sa, 0));
+                Require(CreatePipe(out parentErr, out childErr, ref sa, 0));
+                Require(SetHandleInformation(parentIn, 1, 0));
+                Require(SetHandleInformation(parentOut, 1, 0));
+                Require(SetHandleInformation(parentErr, 1, 0));
+
+                // Pass only the three child pipe handles. No unrelated inheritable
+                // handles (in particular no job handles) may leak into the plugin.
+                UIntPtr size = UIntPtr.Zero;
+                InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+                if (size == UIntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+                attributes = Marshal.AllocHGlobal(checked((int)size.ToUInt64()));
+                Require(InitializeProcThreadAttributeList(attributes, 1, 0, ref size));
+                attributesReady = true;
+                inherited = Marshal.AllocHGlobal(IntPtr.Size * 3);
+                Marshal.WriteIntPtr(inherited, 0, childIn.DangerousGetHandle());
+                Marshal.WriteIntPtr(inherited, IntPtr.Size, childOut.DangerousGetHandle());
+                Marshal.WriteIntPtr(inherited, IntPtr.Size * 2, childErr.DangerousGetHandle());
+                Require(UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x00020002),
+                    inherited, new UIntPtr((uint)(IntPtr.Size * 3)), IntPtr.Zero, IntPtr.Zero));
+
+                StartupInfoEx startup = new StartupInfoEx();
+                startup.Startup.Size = Marshal.SizeOf(typeof(StartupInfoEx));
+                startup.Startup.Flags = 0x100; // STARTF_USESTDHANDLES
+                startup.Startup.StdInput = childIn.DangerousGetHandle();
+                startup.Startup.StdOutput = childOut.DangerousGetHandle();
+                startup.Startup.StdError = childErr.DangerousGetHandle();
+                startup.Attributes = attributes;
+                ProcessInfo info;
+                // CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED
+                Require(CreateProcess(executable, new StringBuilder("\"" + executable + "\""),
+                    IntPtr.Zero, IntPtr.Zero, true, 0x08080004, IntPtr.Zero,
+                    Path.GetDirectoryName(executable), ref startup, out info));
+                handle = new SafeFileHandle(info.Process, true);
+                thread = new SafeFileHandle(info.Thread, true);
+                Id = checked((int)info.ProcessId);
+                job.Attach(handle);
+                Release(childIn); childIn = null;
+                Release(childOut); childOut = null;
+                Release(childErr); childErr = null;
+                Input = new FileStream(parentIn, FileAccess.Write, 4096, false); parentIn = null;
+                Output = new FileStream(parentOut, FileAccess.Read, 4096, false); parentOut = null;
+                Error = new FileStream(parentErr, FileAccess.Read, 4096, false); parentErr = null;
+                if (ResumeThread(thread) == UInt32.MaxValue)
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            catch
+            {
+                Kill();
+                Dispose();
+                throw;
+            }
+            finally
+            {
+                Release(thread);
+                Release(childIn); Release(childOut); Release(childErr);
+                Release(parentIn); Release(parentOut); Release(parentErr);
+                if (attributesReady) DeleteProcThreadAttributeList(attributes);
+                if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
+                if (inherited != IntPtr.Zero) Marshal.FreeHGlobal(inherited);
+            }
+        }
+
+        internal bool HasExited { get { return WaitForExit(0); } }
+
+        internal bool WaitForExit(int milliseconds)
+        {
+            SafeFileHandle owned = handle;
+            if (owned == null || owned.IsClosed) return true;
+            uint result;
+            try { result = WaitForSingleObject(owned, (uint)milliseconds); }
+            catch (ObjectDisposedException) { return true; }
+            if (result == 0) return true;
+            if (result == 258) return false;
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        internal void Kill()
+        {
+            SafeFileHandle owned = handle;
+            if (owned == null || owned.IsClosed) return;
+            try { TerminateProcess(owned, 1); }
+            catch (ObjectDisposedException) { }
+        }
+
+        public void Dispose()
+        {
+            try { if (Input != null) Input.Dispose(); } catch (Exception) { }
+            try { if (Output != null) Output.Dispose(); } catch (Exception) { }
+            try { if (Error != null) Error.Dispose(); } catch (Exception) { }
+            Release(Interlocked.Exchange(ref handle, null));
+        }
+    }
+
     internal sealed class PluginChild
     {
-        private readonly Process process;
+        private readonly NativePluginProcess process;
         private readonly PluginJob job;
         private readonly PluginProtocolSession session;
         private readonly int timeout;
@@ -90,27 +272,19 @@ namespace AppShelf
         {
             timeout = timeoutMs;
             job = new PluginJob();
-            process = new Process();
             try
             {
-                process.StartInfo = new ProcessStartInfo
-                {
-                    FileName = executable, WorkingDirectory = Path.GetDirectoryName(executable),
-                    UseShellExecute = false, CreateNoWindow = true,
-                    RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
-                };
-                if (!process.Start()) throw new IOException("Не удалось запустить процесс плагина.");
+                process = new NativePluginProcess(executable, job);
                 ProcessId = process.Id;
-                // Trusted plugins must not spawn children before hello; attach immediately.
-                // If job assignment fails, do not proceed with an unmanaged process.
-                job.Attach(process);
-                session = new PluginProtocolSession(process.StandardInput.BaseStream,
-                    process.StandardOutput.BaseStream, ForceTerminate, manifest.Id, manifest.Version, manifest.Capabilities);
-                DrainErrors(process.StandardError.BaseStream);
+                session = new PluginProtocolSession(process.Input, process.Output,
+                    ForceTerminate, manifest.Id, manifest.Version, manifest.Capabilities);
+                DrainErrors(process.Error);
             }
             catch
             {
-                ForceTerminate(); process.Dispose(); throw;
+                job.Dispose();
+                if (process != null) { process.Kill(); process.Dispose(); }
+                throw;
             }
         }
 
@@ -146,7 +320,7 @@ namespace AppShelf
         internal void ForceTerminate()
         {
             job.Dispose();
-            try { if (!process.HasExited) process.Kill(); }
+            try { process.Kill(); }
             catch (InvalidOperationException) { }
             catch (Win32Exception) { }
         }
@@ -174,9 +348,6 @@ namespace AppShelf
                 // Do not let an update/remove proceed if the owned process is still alive.
                 if (!process.WaitForExit(1000))
                     throw new IOException("Не удалось подтвердить остановку процесса плагина.");
-                try { process.StandardInput.BaseStream.Dispose(); } catch (Exception) { }
-                try { process.StandardOutput.BaseStream.Dispose(); } catch (Exception) { }
-                try { process.StandardError.BaseStream.Dispose(); } catch (Exception) { }
                 process.Dispose();
                 stopped = true;
             }
