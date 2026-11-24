@@ -177,11 +177,16 @@ namespace AppShelf
 
         internal static Release CheckChannel(bool includeBeta)
         {
+            return CheckAvailable(includeBeta)[0];
+        }
+
+        internal static Release[] CheckAvailable(bool includeBeta)
+        {
             string address = "https://api.github.com/repos/" + Owner + "/" +
                 Repository + "/releases";
             if (!includeBeta)
-                return SelectRelease(new List<GithubRelease> {
-                    ReadGithub<GithubRelease>(address + "/latest") }, false);
+                return new Release[] { SelectRelease(new List<GithubRelease> {
+                    ReadGithub<GithubRelease>(address + "/latest") }, false) };
 
             // GitHub returns releases in publication order, not semantic order.
             // Read all bounded pages rather than assuming the first item is newest.
@@ -192,7 +197,7 @@ namespace AppShelf
                     address + "?per_page=100&page=" + page);
                 if (part == null) throw new InvalidDataException("Некорректный ответ GitHub.");
                 releases.AddRange(part);
-                if (part.Count < 100) return SelectRelease(releases, true);
+                if (part.Count < 100) return SelectAvailable(releases, true);
             }
             throw new InvalidDataException("Слишком много релизов GitHub.");
         }
@@ -201,6 +206,22 @@ namespace AppShelf
         {
             using (MemoryStream buffer = new MemoryStream(Encoding.UTF8.GetBytes(json)))
                 return SelectRelease((List<GithubRelease>)new DataContractJsonSerializer(
+                    typeof(List<GithubRelease>)).ReadObject(buffer), includeBeta);
+        }
+
+        private static Release[] SelectAvailable(List<GithubRelease> releases, bool includeBeta)
+        {
+            Release newest = SelectRelease(releases, includeBeta);
+            if (!newest.IsBeta) return new Release[] { newest };
+            // When a newer beta exists, a stable version must still be selectable.
+            Release stable = SelectRelease(releases, false);
+            return new Release[] { newest, stable };
+        }
+
+        internal static Release[] SelectAvailableFromJson(string json, bool includeBeta)
+        {
+            using (MemoryStream buffer = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                return SelectAvailable((List<GithubRelease>)new DataContractJsonSerializer(
                     typeof(List<GithubRelease>)).ReadObject(buffer), includeBeta);
         }
 
