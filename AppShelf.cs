@@ -7108,9 +7108,17 @@ namespace AppShelf
                 IsChecked = _config.ShowCollections != false,
                 Foreground = WhiteBrush, Margin = new Thickness(0, 0, 0, 10)
             };
+            string pendingZipRestore = null;
             Button backupSettings = ActionButton("Экспорт / импорт данных…", false);
             backupSettings.HorizontalAlignment = HorizontalAlignment.Left;
-            backupSettings.Click += delegate { ShowBackupMenuWindow(dialog); };
+            backupSettings.Click += delegate
+            {
+                ShowBackupMenuWindow(dialog, delegate(string filename)
+                {
+                    pendingZipRestore = filename;
+                    dialog.DialogResult = false;
+                });
+            };
 
             List<UIElement> originalSettings = new List<UIElement>();
             foreach (UIElement control in layout.Children) originalSettings.Add(control);
@@ -7388,7 +7396,7 @@ namespace AppShelf
             bool backgroundsSaved = false;
             try
             {
-            if (savedSettings == true)
+            if (savedSettings == true && pendingZipRestore == null)
             {
                 bool changedCity = !String.Equals(_config.WeatherCity, city.Text.Trim(), StringComparison.Ordinal);
                 string selectedProvider = (string)((ComboBoxItem)weatherProvider.SelectedItem).Tag;
@@ -7525,7 +7533,7 @@ namespace AppShelf
                 if (changedCity || changedProvider || _config.ShowWeather != _weatherSettingsVisible || _config.ShowWeather)
                     RefreshWeather();
             }
-            else if (_canSave && _config.SettingsLastSection != selectedSettingsSection)
+            else if (pendingZipRestore == null && _canSave && _config.SettingsLastSection != selectedSettingsSection)
             {
                 // A navigation preference is independent of edits cancelled in the dialog.
                 AppConfig navigation = _config.Copy();
@@ -7543,6 +7551,8 @@ namespace AppShelf
                     catch (Exception ex) { ConfigStore.Log(ex); }
                 }
             }
+            // Run only after the settings dialog and all preview cleanup have completed.
+            if (pendingZipRestore != null) CompleteZipRestore(pendingZipRestore, this);
         }
 
         private bool SaveConfig()
