@@ -1156,9 +1156,9 @@ namespace AppShelf
                 lastBackup.Text = recent == DateTime.MinValue
                     ? "Ежедневных копий пока нет."
                     : "Последняя ежедневная копия: " + recent.ToString("dd.MM.yyyy HH:mm");
-                string error = BackupAutomation.LastError(_config.BackupDirectory);
-                backupStatus.Text = String.IsNullOrWhiteSpace(error) ? "" :
-                    "Последняя ошибка: " + error;
+                string lastIssue = BackupAutomation.LastError(_config.BackupDirectory);
+                backupStatus.Text = String.IsNullOrWhiteSpace(lastIssue) ? "" :
+                    "Последняя ошибка: " + lastIssue;
                 if (!String.IsNullOrWhiteSpace(_config.BackupDirectory))
                 {
                     try
