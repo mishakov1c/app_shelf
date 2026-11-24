@@ -380,8 +380,10 @@ public static class Package6Tests
                 Brushes.White, Brushes.LightBlue, true);
             Assert(panel.Children.Count == 6, "Markdown block count mismatch");
             TextBlock heading = (TextBlock)panel.Children[0];
-            Assert(heading.Text == "Heading" && heading.FontSize > 12 &&
-                heading.FontWeight == FontWeights.SemiBold, "Heading was not formatted");
+            Assert(heading.Text == "Heading", "Heading text mismatch: " + heading.Text);
+            Assert(heading.FontSize > 12, "Heading font size: " + heading.FontSize);
+            Assert(heading.FontWeight == FontWeights.SemiBold,
+                "Heading font weight: " + heading.FontWeight);
             Grid row = (Grid)panel.Children[1];
             TextBlock body = (TextBlock)row.Children[1];
             Assert(((TextBlock)row.Children[0]).Text == "•", "List marker missing");
