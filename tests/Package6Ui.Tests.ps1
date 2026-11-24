@@ -1279,18 +1279,22 @@ public static class Package6Tests
                     Assert(broken != null && !broken.IsEnabled, "Broken package not disabled");
                     good.IsChecked = true;
                     good.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+                    // The enabled flag can reach disk before the manager refreshes its controls.
                     Stopwatch limit = Stopwatch.StartNew();
-                    while (!store.List().Find(delegate(InstalledPlugin p) { return p.Id == "example.hello"; }).Enabled && limit.ElapsedMilliseconds < 5000)
-                    { System.Threading.Thread.Sleep(10); Drain(); }
-                    Drain();
+                    Button commandButton;
+                    do {
+                        Drain();
+                        commandButton = Controls<Button>(manager).Find(delegate(Button button) {
+                            return Object.Equals(button.Tag, "PluginCommands:example.hello");
+                        });
+                        if (commandButton != null && commandButton.IsEnabled) break;
+                        System.Threading.Thread.Sleep(10);
+                    } while (limit.ElapsedMilliseconds < 5000);
                     bool enabled = false;
                     foreach (InstalledPlugin plugin in store.List())
                         if (plugin.Id == "example.hello") enabled = plugin.Enabled;
                     Assert(enabled, "UI toggle did not persist enabled state");
-                    Button commandButton = null;
-                    foreach (Button button in Controls<Button>(manager))
-                        if (Object.Equals(button.Tag, "PluginCommands:example.hello")) commandButton = button;
-                    Assert(commandButton != null && commandButton.IsEnabled, "Command button missing");
+                    Assert(commandButton != null && commandButton.IsEnabled, "Command button did not become enabled after the UI toggle");
                     MenuItem actionMenu = new MenuItem();
                     Call(w, "PopulatePluginTools", actionMenu, store.List());
                     Assert(actionMenu.Items.Count == 1 && Convert.ToString(((MenuItem)actionMenu.Items[0]).Header) == "Hello",
