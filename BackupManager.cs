@@ -1021,11 +1021,115 @@ namespace AppShelf
             note.TextWrapping = TextWrapping.Wrap;
             note.Margin = new Thickness(0, 7, 0, 13);
             layout.Children.Add(note);
+            TextBlock backupHeading = Text("АВТОМАТИЧЕСКИЕ КОПИИ", 11, AccentBrush);
+            backupHeading.Margin = new Thickness(0, 8, 0, 9);
+            layout.Children.Add(backupHeading);
+            TextBlock configuredFolder = Text("", 12, WhiteBrush);
+            configuredFolder.TextWrapping = TextWrapping.Wrap;
+            configuredFolder.Margin = new Thickness(0, 0, 0, 7);
+            layout.Children.Add(configuredFolder);
+            TextBlock lastBackup = Text("", 12, MutedBrush);
+            lastBackup.TextWrapping = TextWrapping.Wrap;
+            lastBackup.Margin = new Thickness(0, 0, 0, 10);
+            layout.Children.Add(lastBackup);
+            Action refreshInfo = delegate
+            {
+                configuredFolder.Text = "Папка: " + (String.IsNullOrWhiteSpace(_config.BackupDirectory)
+                    ? "не выбрана" : _config.BackupDirectory);
+                DateTime recent = DateTime.MinValue;
+                try { recent = BackupAutomation.LastDaily(_config.BackupDirectory); }
+                catch (Exception error) { ConfigStore.Log(error); }
+                lastBackup.Text = recent == DateTime.MinValue
+                    ? "Ежедневных копий пока нет."
+                    : "Последняя ежедневная копия: " + recent.ToString("dd.MM.yyyy HH:mm");
+            };
+            refreshInfo();
+            Button chooseFolder = ActionButton("Выбрать папку копий…", false);
+            chooseFolder.Click += delegate { if (SelectBackupDirectory(dialog)) refreshInfo(); };
+            layout.Children.Add(chooseFolder);
+            CheckBox automatic = new CheckBox
+            {
+                Content = "Автоматически создавать резервные копии",
+                IsChecked = BackupAutomation.AutomaticEnabled(_config),
+                Foreground = WhiteBrush, Margin = new Thickness(0, 6, 0, 8)
+            };
+            layout.Children.Add(automatic);
+            TextBlock cadenceLabel = Text("Периодичность", 12, MutedBrush);
+            cadenceLabel.Margin = new Thickness(0, 3, 0, 4);
+            layout.Children.Add(cadenceLabel);
+            ComboBox cadence = new ComboBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 8) };
+            cadence.Items.Add("Раз в сутки");
+            cadence.Items.Add("Раз в неделю");
+            cadence.SelectedIndex = BackupAutomation.IntervalDays(_config) == 7 ? 1 : 0;
+            layout.Children.Add(cadence);
+            TextBlock countLabel = Text("Количество ежедневных архивов", 12, MutedBrush);
+            countLabel.Margin = new Thickness(0, 3, 0, 4);
+            layout.Children.Add(countLabel);
+            ComboBox count = new ComboBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 8) };
+            count.Items.Add("3"); count.Items.Add("7"); count.Items.Add("14");
+            count.SelectedIndex = BackupAutomation.KeepDaily(_config) == 3 ? 0 :
+                BackupAutomation.KeepDaily(_config) == 14 ? 2 : 1;
+            layout.Children.Add(count);
+            TextBlock quotaLabel = Text("Лимит автоматических копий и копий перед обновлением", 12, MutedBrush);
+            quotaLabel.TextWrapping = TextWrapping.Wrap;
+            quotaLabel.Margin = new Thickness(0, 3, 0, 4);
+            layout.Children.Add(quotaLabel);
+            ComboBox quota = new ComboBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 8) };
+            quota.Items.Add("512 МБ"); quota.Items.Add("1 ГБ");
+            quota.Items.Add("2 ГБ"); quota.Items.Add("4 ГБ");
+            int currentQuota = BackupAutomation.QuotaMb(_config);
+            quota.SelectedIndex = currentQuota == 512 ? 0 : currentQuota == 2048 ? 2 :
+                currentQuota == 4096 ? 3 : 1;
+            layout.Children.Add(quota);
+            Button savePolicy = ActionButton("Сохранить настройки бэкапа", false);
+            savePolicy.Click += delegate
+            {
+                if (automatic.IsChecked == true && !EnsureBackupDirectory(dialog)) return;
+                AppConfig pending = _config.Copy();
+                pending.AutomaticBackupsEnabled = automatic.IsChecked == true;
+                pending.AutomaticBackupDays = cadence.SelectedIndex == 1 ? 7 : 1;
+                pending.AutomaticBackupKeep = count.SelectedIndex == 0 ? 3 :
+                    count.SelectedIndex == 2 ? 14 : 7;
+                pending.AutomaticBackupQuotaMb = quota.SelectedIndex == 0 ? 512 :
+                    quota.SelectedIndex == 2 ? 2048 : quota.SelectedIndex == 3 ? 4096 : 1024;
+                if (SaveConfigChanges(pending))
+                {
+                    refreshInfo();
+                    QueueAutomaticBackup();
+                }
+            };
+            layout.Children.Add(savePolicy);
+            Button openBackupFolder = ActionButton("Открыть папку резервных копий", false);
+            openBackupFolder.Click += delegate
+            {
+                if (!EnsureBackupDirectory(dialog)) return;
+                try
+                {
+                    Directory.CreateDirectory(_config.BackupDirectory);
+                    Process.Start(new ProcessStartInfo("explorer.exe",
+                        "\"" + _config.BackupDirectory + "\"") { UseShellExecute = true });
+                }
+                catch (Exception error) { ShowError("Не удалось открыть папку копий.", error); }
+            };
+            layout.Children.Add(openBackupFolder);
+            TextBlock backupHelp = Text(
+                "Ежедневные копии создаются в фоне, только если данные изменились. " +
+                "Перед обновлением сохраняются ZIP и старый EXE. " +
+                "Dropbox/OneDrive могут синхронизировать выбранную папку, но AppShelf не проверяет загрузку в облако.",
+                12, MutedBrush);
+            backupHelp.TextWrapping = TextWrapping.Wrap;
+            backupHelp.Margin = new Thickness(0, 0, 0, 12);
+            layout.Children.Add(backupHelp);
             Button exportAll = ActionButton("Экспортировать всё в ZIP…", true);
             exportAll.Click += delegate
             {
                 if (!_canSave || !_remindersCanSave) { ShowSaveDisabled(); return; }
+                if (!EnsureBackupDirectory(dialog)) return;
+                string manualDirectory = Path.Combine(_config.BackupDirectory, "Manual");
+                try { Directory.CreateDirectory(manualDirectory); }
+                catch (Exception error) { ShowError("Не удалось создать папку ручных копий.", error); return; }
                 SaveFileDialog picker = new SaveFileDialog { Title = "Экспорт AppShelf",
+                    InitialDirectory = manualDirectory,
                     Filter = "Архив AppShelf (*.zip)|*.zip", FileName = "AppShelf-backup-" + DateTime.Now.ToString("yyyy-MM-dd") + ".zip" };
                 if (picker.ShowDialog(dialog) != true) return;
                 try
@@ -1047,7 +1151,9 @@ namespace AppShelf
                         "AppShelf", MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
+                if (!EnsureBackupDirectory(dialog)) return;
                 OpenFileDialog picker = new OpenFileDialog { Title = "Восстановление AppShelf",
+                    InitialDirectory = _config.BackupDirectory,
                     Filter = "Архив AppShelf (*.zip)|*.zip" };
                 if (picker.ShowDialog(dialog) != true) return;
                 if (MessageBox.Show(dialog, "Заменить текущие приложения, группы, настройки, напоминания и подборки (если они есть в архиве)?\n" +
