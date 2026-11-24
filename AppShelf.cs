@@ -208,6 +208,10 @@ namespace AppShelf
 
         public bool CloseToTrayEnabled { get { return CloseToTray ?? MinimizeToTray; } }
 
+        // Missing in older apps.json: stable releases only.
+        [DataMember(Name = "checkBetaUpdates", EmitDefaultValue = false)]
+        public bool CheckBetaUpdates;
+
         // Auto-backup remains idle until the user chooses an external folder.
         [DataMember(Name = "backupDirectory", EmitDefaultValue = false)]
         public string BackupDirectory;
@@ -5251,9 +5255,7 @@ namespace AppShelf
 
         private void ShowAboutWindow()
         {
-            Version version = typeof(MainWindow).Assembly.GetName().Version;
-            string versionText = version == null ? "неизвестна" :
-                version.Major + "." + version.Minor + "." + version.Build;
+            string versionText = AppUpdate.InstalledVersionText();
             Window dialog = new Window
             {
                 Title = "AppShelf — О программе", Owner = this,
