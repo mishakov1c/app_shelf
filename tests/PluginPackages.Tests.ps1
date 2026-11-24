@@ -73,7 +73,7 @@ public static class PluginPackageTests {
 '@
     $parameters = New-Object System.CodeDom.Compiler.CompilerParameters
     $parameters.GenerateInMemory = $true
-    foreach ($ref in @('System.dll','System.Core.dll','System.Runtime.Serialization.dll','System.IO.Compression.dll')) {
+    foreach ($ref in @('System.dll','System.Core.dll','System.Runtime.Serialization.dll','System.Xml.dll','System.IO.Compression.dll')) {
         [void]$parameters.ReferencedAssemblies.Add($ref)
     }
     $result = $provider.CompileAssemblyFromSource($parameters, [string[]]@($source,$harness))
