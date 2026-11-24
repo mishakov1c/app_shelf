@@ -2,13 +2,12 @@
 // At release preparation, update the version AND the matching release notes below.
 // The About dialog reads only metadata embedded in the compiled executable.
 using System.Reflection;
-[assembly: AssemblyVersion("2.22.0.0")]
-[assembly: AssemblyFileVersion("2.22.0.0")]
-[assembly: AssemblyInformationalVersion("2.22.0")]
-[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.22.0")]
+[assembly: AssemblyVersion("2.23.0.0")]
+[assembly: AssemblyFileVersion("2.23.0.0")]
+[assembly: AssemblyInformationalVersion("2.23.0-beta.1")]
+[assembly: AssemblyMetadata("AppShelf.ReleaseNotesVersion", "2.23.0-beta.1")]
 [assembly: AssemblyMetadata("AppShelf.ReleaseNotes",
-    "Кнопка сворачивания теперь всегда оставляет окно на панели задач Windows.\n" +
-    "Новая настройка «При закрытии окна сворачивать в трей» определяет действие крестика и Alt+F4.\n" +
-    "Команда «Выход» в трее всегда полностью завершает AppShelf.\n" +
-    "Сохранены автозапуск скрытым, Ctrl+Alt+Space и прежние параметры пользователя.\n" +
-    "Погода, RDP и нижняя панель открывают сразу нужные разделы настроек.")]
+    "Автоматические резервные копии в выбранную папку с ограничением количества и объёма.\n" +
+    "Перед обновлением сохраняются данные и предыдущий EXE.\n" +
+    "В окне обновлений можно включить проверку бета-версий; стабильные обновления остаются доступны.\n" +
+    "Предварительный выпуск для ручной проверки.")]
