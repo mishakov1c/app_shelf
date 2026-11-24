@@ -1243,11 +1243,16 @@ public static class Package6Tests
             Seed("normal", 1); MainWindow w = Open();
             string profile = Path.Combine(ConfigStore.DirectoryPath, "PluginUiCase");
             Directory.CreateDirectory(profile);
-            PluginPackageStore store = new PluginPackageStore(profile);
+            // The main menu must read the same isolated profile as the manager.
+            PluginPackageStore store = new PluginPackageStore(ConfigStore.DirectoryPath);
             PluginRuntime runtime = new PluginRuntime(store);
             try {
-                Assert(Menu(Tools(w), "Плагины") != null, "Tools menu entry missing");
-                Assert(Menu(Tools(w), "Инструменты плагинов") != null, "Plugin actions menu missing");
+                ContextMenu tools = Tools(w);
+                MenuItem pluginMenu = Menu(tools, "Плагины");
+                Assert(pluginMenu.Visibility == Visibility.Collapsed, "Empty plugins menu should be hidden");
+                Assert(!Controls<MenuItem>(tools).Exists(delegate(MenuItem m) {
+                    return Convert.ToString(m.Header) == "Инструменты плагинов";
+                }), "Duplicate plugin menu still present");
                 PluginManagerWindow empty = new PluginManagerWindow(w, store, runtime);
                 empty.ShowInTaskbar = false; empty.Show(); Drain();
                 try {
@@ -1266,7 +1271,7 @@ public static class Package6Tests
                         writer.Write("not executed");
                 }
                 store.Install(package, delegate { return true; });
-                Directory.CreateDirectory(Path.Combine(profile, "Plugins", "Installed", "example.broken"));
+                Directory.CreateDirectory(Path.Combine(ConfigStore.DirectoryPath, "Plugins", "Installed", "example.broken"));
                 PluginManagerWindow manager = new PluginManagerWindow(w, store, runtime);
                 manager.ShowInTaskbar = false; manager.Show(); Drain();
                 try {
@@ -1319,11 +1324,22 @@ public static class Package6Tests
                     Assert(process != null && process.Text == "Состояние процесса: Остановлен", "Enabled idle process state conflated with switch");
                     MenuItem actionMenu = new MenuItem();
                     Call(w, "PopulatePluginTools", actionMenu, store.List());
-                    Assert(actionMenu.Items.Count == 1 && Convert.ToString(((MenuItem)actionMenu.Items[0]).Header) == "Hello",
+                    Assert(actionMenu.Visibility == Visibility.Visible && actionMenu.Items.Count == 1 &&
+                        Convert.ToString(((MenuItem)actionMenu.Items[0]).Header) == "Hello",
                         "Enabled plugin menu or broken package exclusion failed");
                     MenuItem actionGroup = (MenuItem)actionMenu.Items[0];
-                    Assert(actionGroup.Items.Count == 1 && Convert.ToString(((MenuItem)actionGroup.Items[0]).Header) == "Открыть команды…",
-                        "Idle plugin action missing");
+                    Assert(actionGroup.Items.Count == 0, "Idle plugin should offer direct activation, not an extra submenu");
+                    InstalledPlugin active = store.List().Find(delegate(InstalledPlugin p) { return p.Id == "example.hello"; });
+                    // Known commands: a single command is a leaf; multiple commands are nested.
+                    PluginRuntimeState known = new PluginRuntimeState { Status = "running", Version = active.Manifest.Version,
+                        Commands = new[] { new PluginCommand { Id = "open", Label = "Open" } } };
+                    MenuItem single = (MenuItem)Call(w, "CreatePluginMenuItem", active, known);
+                    Assert(single.Items.Count == 0, "Single command has an unnecessary submenu");
+                    known.Commands = new[] { new PluginCommand { Id = "open", Label = "Open" },
+                        new PluginCommand { Id = "other", Label = "Other" } };
+                    MenuItem multiple = (MenuItem)Call(w, "CreatePluginMenuItem", active, known);
+                    Assert(multiple.Items.Count == 2 && Convert.ToString(((MenuItem)multiple.Items[0]).Header) == "Open" &&
+                        Convert.ToString(((MenuItem)multiple.Items[1]).Header) == "Other", "Multiple commands not nested");
                     Assert(runtime.State("example.hello").Status == "idle", "Menu discovery started plugin");
                     refreshed.IsChecked = false;
                     refreshed.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
@@ -1346,11 +1362,14 @@ public static class Package6Tests
                         !store.List().Find(delegate(InstalledPlugin p) { return p.Id == "example.hello"; }).Enabled,
                         "UI switch failed to disable the plugin");
                     Call(w, "PopulatePluginTools", actionMenu, store.List());
-                    Assert(actionMenu.Items.Count == 1 && !((MenuItem)actionMenu.Items[0]).IsEnabled,
+                    Assert(actionMenu.Items.Count == 0 && actionMenu.Visibility == Visibility.Collapsed,
                         "Disabled plugin still in actions menu");
                     Picture(manager, "plugin-manager");
                 } finally { manager.Close(); }
-            } finally { runtime.Dispose(); w.Close(); Directory.Delete(profile, true); }
+            } finally { runtime.Dispose(); w.Close(); Directory.Delete(profile, true);
+                string pluginsRoot = Path.Combine(ConfigStore.DirectoryPath, "Plugins");
+                if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+            }
         });
         Case("settings accordion and saved navigation", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
