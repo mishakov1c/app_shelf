@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $metadata = [IO.File]::ReadAllText((Join-Path $root 'VersionInfo.cs'))
-$version = [regex]::Match($metadata, 'AssemblyInformationalVersion\("((\d+\.\d+\.\d+)(?:-rc\.[1-9]\d*)?)"\)')
+$version = [regex]::Match($metadata, 'AssemblyInformationalVersion\("((\d+\.\d+\.\d+)(?:-(?:rc|beta)\.[1-9]\d*)?)"\)')
 if (-not $version.Success) { throw 'Declared application version missing from VersionInfo.cs.' }
 $expected = $version.Groups[1].Value
 $numeric = $version.Groups[2].Value
@@ -26,7 +26,13 @@ $fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion
 if ($fileVersion -ne "$numeric.0" -or $values['InformationalVersion'] -ne $expected) {
     throw "File/informational version must match $expected."
 }
-if ($values['AppShelf.ReleaseNotesVersion'] -ne $numeric) {
+$notesVersion = $numeric
+if ($expected -match '-beta\.') {
+    $notesVersion = $expected
+    $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion
+    if ($productVersion -cne $expected) { throw "Product version must match $expected; got $productVersion." }
+}
+if ($values['AppShelf.ReleaseNotesVersion'] -cne $notesVersion) {
     throw 'Embedded release notes do not match the candidate version.'
 }
 $notes = [regex]::Match($metadata, '(?s)AssemblyMetadata\("AppShelf\.ReleaseNotes",\s*((?:"(?:[^"\\]|\\.)*"\s*\+?\s*)+)\)')

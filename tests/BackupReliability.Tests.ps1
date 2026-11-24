@@ -81,6 +81,9 @@ public static class BackupTests
     private const long MiB = 1024 * 1024;
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     private static bool failCommit, failImport;
+    private static int changesDuringExport, archiveCommits;
+    private static bool lockCopiedExe;
+    private static FileStream copiedExeLock;
     private static bool failImageCopy;
     public static void CopyImage(Stream input, Stream output)
     {
@@ -102,6 +105,15 @@ public static class BackupTests
     {
         if (failCommit) throw new IOException("export-commit-failure");
         File.Move(temp, filename);
+        if (Path.GetFileName(filename) == "AppShelf-data.zip")
+        {
+            archiveCommits++;
+            if (changesDuringExport > 0)
+            {
+                changesDuringExport--;
+                File.WriteAllText(Shortcut(0), "concurrent change " + archiveCommits);
+            }
+        }
     }
     public static void Replace(string temp, string filename)
     {
@@ -117,6 +129,8 @@ public static class BackupTests
             if (rollbackFailures.Contains(target)) throw new IOException("rollback-failure:" + Path.GetFileName(target));
         }
         File.Copy(source, target, overwrite);
+        if (lockCopiedExe && target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            copiedExeLock = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read);
     }
     public static void SaveImported(ReminderDocument document)
     {
@@ -159,6 +173,7 @@ public static class BackupTests
     private static void Reset()
     {
         failCommit = failImport = false;
+        changesDuringExport = archiveCommits = 0;
         rollbackFailures.Clear(); rollbackAttempts.Clear();
         Assert(Root == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         // Delete only this test run's verified data directory, never a real profile.
@@ -722,6 +737,79 @@ public static class BackupTests
             "Pre-restore safety copy was not moved to the selected folder");
     }
 
+    private static void CloudReaderDoesNotBlockBackupPublication()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string executable = Path.Combine(Path.GetDirectoryName(Root), "Cloud-test.exe");
+        File.WriteAllText(executable, "old EXE locked by cloud reader after copy");
+        lockCopiedExe = true;
+        try
+        {
+            string result = BackupAutomation.CreateBeforeUpdate(config,
+                executable, "2.23.0-beta.1", "2.23.0-beta.2");
+            Assert(copiedExeLock != null, "Cloud reader simulation was not active");
+            Assert(File.Exists(Path.Combine(result, ".complete")) &&
+                File.Exists(Path.Combine(result, "AppShelf-data.zip")) &&
+                File.ReadAllText(Path.Combine(result, "AppShelf-2.23.0-beta.1.exe")) ==
+                    File.ReadAllText(executable),
+                "Locked copied EXE prevented complete backup publication");
+        }
+        finally
+        {
+            lockCopiedExe = false;
+            if (copiedExeLock != null) { copiedExeLock.Dispose(); copiedExeLock = null; }
+        }
+    }
+
+    private static void IncompleteUpdateSetsAreNotRetained()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string executable = Path.Combine(Path.GetDirectoryName(Root), "Cloud-test.exe");
+        File.WriteAllText(executable, "test EXE");
+        string result = BackupAutomation.CreateBeforeUpdate(config,
+            executable, "2.23.0-beta.1", "2.23.0-beta.2");
+        string parent = Path.GetDirectoryName(result);
+        string incomplete = Path.Combine(parent,
+            "20260101-010101-v2.23.0-beta.1-to-2.23.0-beta.2-aaaaaa-set");
+        Directory.CreateDirectory(incomplete);
+        File.WriteAllText(Path.Combine(incomplete, "AppShelf-2.23.0-beta.1.exe"), "partial");
+        Directory.SetCreationTimeUtc(incomplete, DateTime.UtcNow.AddDays(-2));
+        BackupAutomation.CreateBeforeUpdate(config, executable, "2.23.0-beta.2", "2.23.0-beta.3");
+        Assert(!Directory.Exists(incomplete) && Directory.Exists(result),
+            "Stale incomplete set not cleaned or prior completed set lost");
+    }
+
+    private static void RetryChangedData(bool persistent)
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string executable = Path.Combine(Path.GetDirectoryName(Root), "Retry-test.exe");
+        File.WriteAllText(executable, "test executable");
+        changesDuringExport = persistent ? 3 : 1;
+        if (persistent)
+        {
+            Exception error = Throws(delegate {
+                BackupAutomation.CreateBeforeUpdate(config, executable, "2.23.0-beta.6", "2.23.0-beta.7");
+            });
+            Assert(error is IOException && archiveCommits == 3 &&
+                Directory.GetDirectories(Path.Combine(config.BackupDirectory, "BeforeUpdate")).Length == 0,
+                "Persistent changes did not stop after three clean attempts");
+        }
+        else
+        {
+            string result = BackupAutomation.CreateBeforeUpdate(config, executable,
+                "2.23.0-beta.6", "2.23.0-beta.7");
+            Assert(archiveCommits == 2 && File.Exists(Path.Combine(result, ".complete")) &&
+                Directory.GetDirectories(Path.GetDirectoryName(result)).Length == 1,
+                "Transient data change did not recover on second attempt");
+        }
+    }
+
     private static void FailedPreUpdateKeepsOldCopies()
     {
         AppConfig config = Loaded();
@@ -801,6 +889,10 @@ public static class BackupTests
         Case("failed automatic copy preserves existing ZIP", FailedAutomaticPreservesPrevious);
         Case("paired pre-update ZIP, EXE and external restore safety", PreUpdateBackupAndRestoreLocation);
         Case("failed pre-update keeps prior archives", FailedPreUpdateKeepsOldCopies);
+        Case("transient data change retries backup", delegate { RetryChangedData(false); });
+        Case("persistent data changes stop after three attempts", delegate { RetryChangedData(true); });
+        Case("cloud reader locks copied EXE without blocking publication", CloudReaderDoesNotBlockBackupPublication);
+        Case("stale incomplete update set cleanup", IncompleteUpdateSetsAreNotRetained);
         Case("legacy .previous moves to selected backup directory", MigrateOldAdjacentExecutable);
         Case("full rollback and retry", delegate { Rollback(false, false); });
         Case("config rollback failure does not stop others", delegate { Rollback(true, false); });

@@ -1,0 +1,57 @@
+name: Verify update channel changes
+
+on:
+  pull_request:
+    paths:
+      - 'AppUpdate.cs'
+      - 'AppUpdateWindow.cs'
+      - 'VersionInfo.cs'
+      - 'tests/BetaChannel.Tests.ps1'
+      - '.github/workflows/release-beta.yml'
+      - '.github/workflows/verify-update-channel.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out proposed changes
+        uses: actions/checkout@v5
+      - name: Build .NET Framework Windows EXE
+        shell: cmd
+        run: Build-AppShelf.cmd --no-start --no-pause
+
+      - name: Run isolated Windows PowerShell 5.1 STA regression tests
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $tests = @(Get-ChildItem -LiteralPath tests -Filter '*.Tests.ps1' | Sort-Object Name)
+          if ($tests.Count -lt 15) { throw "Expected at least 15 regression test files" }
+          foreach ($test in $tests) {
+            Write-Host "START $($test.Name)"
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo.FileName = $exe
+            $process.StartInfo.Arguments = '-NoProfile -STA -ExecutionPolicy Bypass -File "' + $test.FullName + '"'
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.CreateNoWindow = $true
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            [void]$process.Start()
+            $out = $process.StandardOutput.ReadToEndAsync()
+            $err = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(180000)) {
+              $process.Kill()
+              $process.WaitForExit()
+              Write-Host $out.Result
+              Write-Host $err.Result
+              throw "TIMEOUT $($test.Name) after 180 seconds"
+            }
+            Write-Host $out.Result
+            Write-Host $err.Result
+            if ($process.ExitCode -ne 0) { throw "FAIL $($test.Name) (exit $($process.ExitCode))" }
+            Write-Host "PASS $($test.Name)"
+          }
+

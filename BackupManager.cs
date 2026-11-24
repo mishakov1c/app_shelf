@@ -16,6 +16,7 @@ using Forms = System.Windows.Forms;
 using System.Runtime.Serialization.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Win32;
 
 namespace AppShelf
@@ -782,12 +783,7 @@ namespace AppShelf
                 {
                     DirectoryInfo directory = new DirectoryInfo(path);
                     if ((directory.Attributes & FileAttributes.ReparsePoint) == 0 &&
-                        (Regex.IsMatch(directory.Name,
-                            @"\A\d{8}-\d{6}-v\d+\.\d+\.\d+-to-\d+\.\d+\.\d+-[0-9a-f]{6}\z",
-                            RegexOptions.IgnoreCase) ||
-                         Regex.IsMatch(directory.Name,
-                            @"\Alegacy-\d{8}-\d{6}-[0-9a-f]{6}\z",
-                            RegexOptions.IgnoreCase)))
+                        IsCompletedUpdateSet(directory))
                         groups.Add(directory);
                 }
                 groups.Sort(delegate(DirectoryInfo a, DirectoryInfo b) {
@@ -801,6 +797,49 @@ namespace AppShelf
                 }
             }
             return entries;
+        }
+
+        // Old releases atomically renamed their folders. New sets use a distinct
+        // suffix and a completion marker instead: cloud clients can open a new
+        // EXE without FILE_SHARE_DELETE and prevent renaming its parent folder.
+        private const string UpdateSetMarker = ".complete";
+        private const string UpdateSetMarkerText = "AppShelf backup complete v1";
+
+        private static bool IsUpdateSetName(string name)
+        {
+            return Regex.IsMatch(name,
+                @"\A(?:\d{8}-\d{6}-v\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?-to-\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?|legacy-\d{8}-\d{6})-[0-9a-f]{6}(?:-set)?\z",
+                RegexOptions.IgnoreCase);
+        }
+
+        private static bool IsCompletedUpdateSet(DirectoryInfo directory)
+        {
+            if (!IsUpdateSetName(directory.Name)) return false;
+            if (!directory.Name.EndsWith("-set", StringComparison.OrdinalIgnoreCase))
+                return true; // Atomic publication by older AppShelf versions.
+            string marker = Path.Combine(directory.FullName, UpdateSetMarker);
+            // File.Exists also returns false on access errors. Only a genuinely
+            // missing marker is incomplete; an unreadable marker is preserved.
+            try
+            {
+                return String.Equals(File.ReadAllText(marker), UpdateSetMarkerText,
+                    StringComparison.Ordinal);
+            }
+            catch (FileNotFoundException) { return false; }
+        }
+
+        private static void CompleteUpdateSet(string folder)
+        {
+            // All payload streams are already closed and hashes verified.
+            // No rename or deletion of a payload is needed to publish the set.
+            string marker = Path.Combine(folder, UpdateSetMarker);
+            using (FileStream output = new FileStream(marker, FileMode.CreateNew,
+                FileAccess.Write, FileShare.Read))
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes(UpdateSetMarkerText);
+                output.Write(bytes, 0, bytes.Length);
+                output.Flush(true);
+            }
         }
 
         // An interrupted shutdown may leave only temporary ZIPs or an unpublished
@@ -827,6 +866,18 @@ namespace AppShelf
                             info.CreationTimeUtc < cutoff &&
                             (Regex.IsMatch(info.Name, @"\A\.tmp-\d{8}-\d{6}-v", RegexOptions.IgnoreCase) ||
                              Regex.IsMatch(info.Name, @"\A\.tmp-legacy-\d{8}-\d{6}-", RegexOptions.IgnoreCase)))
+                            Directory.Delete(folder, true);
+                    }
+                    catch (Exception error) { ConfigStore.Log(error); }
+            if (Directory.Exists(beforeUpdate))
+                foreach (string folder in Directory.GetDirectories(beforeUpdate, "*-set",
+                    SearchOption.TopDirectoryOnly))
+                    try
+                    {
+                        DirectoryInfo info = new DirectoryInfo(folder);
+                        if ((info.Attributes & FileAttributes.ReparsePoint) == 0 &&
+                            info.CreationTimeUtc < cutoff && IsUpdateSetName(info.Name) &&
+                            !IsCompletedUpdateSet(info))
                             Directory.Delete(folder, true);
                     }
                     catch (Exception error) { ConfigStore.Log(error); }
@@ -941,18 +992,19 @@ namespace AppShelf
                 Directory.CreateDirectory(parent);
                 string id = "legacy-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" +
                     Guid.NewGuid().ToString("N").Substring(0, 6);
-                string staging = Path.Combine(parent, ".tmp-" + id);
-                string destination = Path.Combine(parent, id);
-                Directory.CreateDirectory(staging);
+                string destination = Path.Combine(parent, id + "-set");
+                Directory.CreateDirectory(destination);
+                bool completed = false;
                 try
                 {
-                    string candidate = Path.Combine(staging, "AppShelf-previous.exe");
+                    string candidate = Path.Combine(destination, "AppShelf-previous.exe");
                     string originalHash = Sha256File(legacy);
                     File.Copy(legacy, candidate, false);
                     if (!String.Equals(originalHash, Sha256File(candidate),
                         StringComparison.OrdinalIgnoreCase))
                         throw new IOException("Не удалось проверить прежнюю копию EXE.");
-                    Directory.Move(staging, destination);
+                    CompleteUpdateSet(destination);
+                    completed = true;
                     // If another process changed the original, preserve it.
                     try
                     {
@@ -968,13 +1020,34 @@ namespace AppShelf
                 }
                 finally
                 {
-                    try { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
+                    try { if (!completed && Directory.Exists(destination)) Directory.Delete(destination, true); }
                     catch (Exception error) { ConfigStore.Log(error); }
                 }
             }
         }
 
+        private sealed class BackupDataChangedException : IOException
+        {
+            internal BackupDataChangedException()
+                : base("Данные изменились во время резервного копирования.") { }
+        }
+
         internal static string CreateBeforeUpdate(AppConfig config,
+            string oldExecutable, string installedVersion, string newVersion)
+        {
+            // Retry only concurrent data changes, not disk-full, access or hash errors.
+            for (int attempt = 1; ; attempt++)
+            {
+                try { return CreateBeforeUpdateOnce(config, oldExecutable, installedVersion, newVersion); }
+                catch (BackupDataChangedException)
+                {
+                    if (attempt >= 3) throw;
+                    Thread.Sleep(attempt * 1000);
+                }
+            }
+        }
+
+        private static string CreateBeforeUpdateOnce(AppConfig config,
             string oldExecutable, string installedVersion, string newVersion)
         {
             lock (Gate)
@@ -986,29 +1059,30 @@ namespace AppShelf
                 string name = DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-v" +
                     installedVersion + "-to-" + newVersion + "-" +
                     Guid.NewGuid().ToString("N").Substring(0, 6);
-                string temp = Path.Combine(baseFolder, ".tmp-" + name);
-                string result = Path.Combine(baseFolder, name);
-                Directory.CreateDirectory(temp);
+                string result = Path.Combine(baseFolder, name + "-set");
+                Directory.CreateDirectory(result);
+                bool completed = false;
                 try
                 {
                     string before = DataSignature();
-                    string archive = Path.Combine(temp, "AppShelf-data.zip");
+                    string archive = Path.Combine(result, "AppShelf-data.zip");
                     AppConfig savedConfig;
                     ReminderDocument savedReminders;
                     ReadSavedDocuments(out savedConfig, out savedReminders);
                     BackupStore.ExportAll(archive, savedConfig, savedReminders);
                     if (!String.Equals(before, DataSignature(), StringComparison.Ordinal))
-                        throw new IOException("Данные изменились во время резервного копирования.");
-                    string executable = Path.Combine(temp, "AppShelf-" + installedVersion + ".exe");
+                        throw new BackupDataChangedException();
+                    string executable = Path.Combine(result, "AppShelf-" + installedVersion + ".exe");
                     File.Copy(oldExecutable, executable, false);
                     if (!String.Equals(Sha256File(executable), Sha256File(oldExecutable),
                         StringComparison.OrdinalIgnoreCase))
                         throw new IOException("Копия исполняемого файла не прошла проверку.");
-                    Directory.Move(temp, result);
+                    CompleteUpdateSet(result);
+                    completed = true;
                 }
                 finally
                 {
-                    try { if (Directory.Exists(temp)) Directory.Delete(temp, true); }
+                    try { if (!completed && Directory.Exists(result)) Directory.Delete(result, true); }
                     catch (Exception error) { ConfigStore.Log(error); }
                 }
                 try { Prune(root, config); }
@@ -1179,16 +1253,14 @@ namespace AppShelf
             StackPanel layout = new StackPanel { Margin = new Thickness(22) };
             scroll.Content = layout;
             dialog.Content = scroll;
-            TextBlock title = Text("Экспорт и восстановление", 23, WhiteBrush);
+            TextBlock title = Text("Резервные копии", 23, WhiteBrush);
             title.FontWeight = FontWeights.Bold;
             layout.Children.Add(title);
             TextBlock note = Text("Полная копия содержит приложения, настройки, напоминания, подборки с обложками и скопированные ярлыки. Журнал ошибок и посторонние файлы не экспортируются.", 12, MutedBrush);
             note.TextWrapping = TextWrapping.Wrap;
             note.Margin = new Thickness(0, 7, 0, 13);
-            layout.Children.Add(note);
-            TextBlock backupHeading = Text("АВТОМАТИЧЕСКИЕ КОПИИ", 11, AccentBrush);
-            backupHeading.Margin = new Thickness(0, 8, 0, 9);
-            layout.Children.Add(backupHeading);
+            // Keep the compact status visible even when every group is collapsed.
+            title.Margin = new Thickness(0, 0, 0, 12);
             TextBlock configuredFolder = Text("", 12, WhiteBrush);
             configuredFolder.TextWrapping = TextWrapping.Wrap;
             configuredFolder.Margin = new Thickness(0, 0, 0, 7);
@@ -1201,6 +1273,7 @@ namespace AppShelf
             backupStatus.TextWrapping = TextWrapping.Wrap;
             backupStatus.Margin = new Thickness(0, 0, 0, 8);
             layout.Children.Add(backupStatus);
+            backupStatus.Visibility = Visibility.Collapsed;
             Action refreshInfo = delegate
             {
                 configuredFolder.Text = "Папка: " + (String.IsNullOrWhiteSpace(_config.BackupDirectory)
@@ -1225,45 +1298,48 @@ namespace AppShelf
                     }
                     catch (Exception) { /* Network/cloud folder may not expose drive metrics. */ }
                 }
+                backupStatus.Text = backupStatus.Text.Trim();
+                backupStatus.Visibility = String.IsNullOrWhiteSpace(backupStatus.Text)
+                    ? Visibility.Collapsed : Visibility.Visible;
             };
             refreshInfo();
             Button chooseFolder = ActionButton("Выбрать папку копий…", false);
             chooseFolder.Click += delegate { if (SelectBackupDirectory(dialog)) refreshInfo(); };
-            layout.Children.Add(chooseFolder);
+
             CheckBox automatic = new CheckBox
             {
                 Content = "Автоматически создавать резервные копии",
                 IsChecked = BackupAutomation.AutomaticEnabled(_config),
                 Foreground = WhiteBrush, Margin = new Thickness(0, 6, 0, 8)
             };
-            layout.Children.Add(automatic);
+
             TextBlock cadenceLabel = Text("Периодичность", 12, MutedBrush);
             cadenceLabel.Margin = new Thickness(0, 3, 0, 4);
-            layout.Children.Add(cadenceLabel);
+
             ComboBox cadence = new ComboBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 8) };
             cadence.Items.Add("Раз в сутки");
             cadence.Items.Add("Раз в неделю");
             cadence.SelectedIndex = BackupAutomation.IntervalDays(_config) == 7 ? 1 : 0;
-            layout.Children.Add(cadence);
+
             TextBlock countLabel = Text("Количество ежедневных архивов", 12, MutedBrush);
             countLabel.Margin = new Thickness(0, 3, 0, 4);
-            layout.Children.Add(countLabel);
+
             ComboBox count = new ComboBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 8) };
             count.Items.Add("3"); count.Items.Add("7"); count.Items.Add("14");
             count.SelectedIndex = BackupAutomation.KeepDaily(_config) == 3 ? 0 :
                 BackupAutomation.KeepDaily(_config) == 14 ? 2 : 1;
-            layout.Children.Add(count);
+
             TextBlock quotaLabel = Text("Лимит автоматических копий и копий перед обновлением", 12, MutedBrush);
             quotaLabel.TextWrapping = TextWrapping.Wrap;
             quotaLabel.Margin = new Thickness(0, 3, 0, 4);
-            layout.Children.Add(quotaLabel);
+
             ComboBox quota = new ComboBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 8) };
             quota.Items.Add("512 МБ"); quota.Items.Add("1 ГБ");
             quota.Items.Add("2 ГБ"); quota.Items.Add("4 ГБ");
             int currentQuota = BackupAutomation.QuotaMb(_config);
             quota.SelectedIndex = currentQuota == 512 ? 0 : currentQuota == 2048 ? 2 :
                 currentQuota == 4096 ? 3 : 1;
-            layout.Children.Add(quota);
+
             Button savePolicy = ActionButton("Сохранить настройки бэкапа", false);
             savePolicy.Click += delegate
             {
@@ -1281,7 +1357,7 @@ namespace AppShelf
                     QueueAutomaticBackup();
                 }
             };
-            layout.Children.Add(savePolicy);
+
             Button openBackupFolder = ActionButton("Открыть папку резервных копий", false);
             openBackupFolder.Click += delegate
             {
@@ -1294,7 +1370,7 @@ namespace AppShelf
                 }
                 catch (Exception error) { ShowError("Не удалось открыть папку копий.", error); }
             };
-            layout.Children.Add(openBackupFolder);
+
             TextBlock backupHelp = Text(
                 "Ежедневные копии создаются в фоне, только если данные изменились. " +
                 "Перед обновлением сохраняются ZIP и старый EXE. " +
@@ -1302,7 +1378,7 @@ namespace AppShelf
                 12, MutedBrush);
             backupHelp.TextWrapping = TextWrapping.Wrap;
             backupHelp.Margin = new Thickness(0, 0, 0, 12);
-            layout.Children.Add(backupHelp);
+
             Button exportAll = ActionButton("Экспортировать всё в ZIP…", true);
             exportAll.Click += delegate
             {
@@ -1323,7 +1399,7 @@ namespace AppShelf
                 }
                 catch (Exception ex) { ShowError("Не удалось экспортировать данные.", ex); }
             };
-            layout.Children.Add(exportAll);
+
             Button importAll = ActionButton("Восстановить из ZIP…", false);
             importAll.Click += delegate
             {
@@ -1358,10 +1434,7 @@ namespace AppShelf
                     ShowError("Не удалось восстановить данные. Текущие файлы проверь в папке Backups.", ex);
                 }
             };
-            layout.Children.Add(importAll);
-            TextBlock section = Text("ТОЛЬКО НАПОМИНАНИЯ", 11, AccentBrush);
-            section.Margin = new Thickness(0, 16, 0, 8);
-            layout.Children.Add(section);
+
             Button exportRem = ActionButton("Экспортировать напоминания в JSON…", false);
             exportRem.Click += delegate
             {
@@ -1371,7 +1444,7 @@ namespace AppShelf
                 try { BackupStore.ExportReminders(picker.FileName, _reminderDocument); }
                 catch (Exception ex) { ShowError("Не удалось экспортировать напоминания.", ex); }
             };
-            layout.Children.Add(exportRem);
+
             Button importRem = ActionButton("Импортировать напоминания из JSON…", false);
             importRem.Click += delegate
             {
@@ -1393,7 +1466,7 @@ namespace AppShelf
                 }
                 catch (Exception ex) { ShowError("Не удалось импортировать напоминания.", ex); }
             };
-            layout.Children.Add(importRem);
+
             Button openFolder = ActionButton("Открыть папку данных AppShelf", false);
             openFolder.Margin = new Thickness(0, 16, 0, 0);
             openFolder.Click += delegate
@@ -1402,6 +1475,51 @@ namespace AppShelf
                 Process.Start(new ProcessStartInfo("explorer.exe", "\"" + ConfigStore.DirectoryPath + "\"")
                 { UseShellExecute = true });
             };
+            StackPanel backupRows = new StackPanel();
+            Border backupFrame = new Border
+            {
+                Tag = "BackupSectionsFrame",
+                CornerRadius = new CornerRadius(10),
+                BorderThickness = new Thickness(1),
+                BorderBrush = FluentUi.Brush("#344A66"),
+                Background = FluentUi.Brush("#152135"),
+                Padding = new Thickness(4),
+                Child = backupRows
+            };
+            layout.Children.Add(backupFrame);
+
+            // Reuse the same accordion rows, arrows and selection treatment as
+            // Appearance. The controls are created once; collapsing a group
+            // does not discard changes or invoke any backup operation.
+            Dictionary<string, Border> bodies = new Dictionary<string, Border>();
+            Dictionary<string, System.Windows.Shapes.Path> arrows =
+                new Dictionary<string, System.Windows.Shapes.Path>();
+            Dictionary<string, Border> headers = new Dictionary<string, Border>();
+            LinearGradientBrush selectedHeading = new LinearGradientBrush(
+                (Color)ColorConverter.ConvertFromString("#223751"),
+                (Color)ColorConverter.ConvertFromString("#1D314A"), 0);
+            selectedHeading.Freeze();
+            Action<string> toggleBackupSection = delegate(string key)
+            {
+                bool expand = bodies[key].Visibility != Visibility.Visible;
+                foreach (KeyValuePair<string, Border> part in bodies)
+                {
+                    bool active = expand && part.Key == key;
+                    part.Value.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
+                    SetSettingsArrow(arrows[part.Key], active);
+                    headers[part.Key].Background = active ? (Brush)selectedHeading : Brushes.Transparent;
+                }
+            };
+            AddSettingsSection(backupRows, "backup-automatic", "Автоматические копии",
+                new List<UIElement> { chooseFolder, automatic, cadenceLabel, cadence,
+                    countLabel, count, quotaLabel, quota, savePolicy, openBackupFolder, backupHelp },
+                bodies, arrows, headers, toggleBackupSection);
+            AddSettingsSection(backupRows, "backup-full", "Экспорт и восстановление",
+                new List<UIElement> { note, exportAll, importAll },
+                bodies, arrows, headers, toggleBackupSection);
+            AddSettingsSection(backupRows, "backup-reminders", "Только напоминания",
+                new List<UIElement> { exportRem, importRem },
+                bodies, arrows, headers, toggleBackupSection);
             layout.Children.Add(openFolder);
             dialog.ShowDialog();
         }
