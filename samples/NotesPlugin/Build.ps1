@@ -13,7 +13,7 @@ $stage = Join-Path ([IO.Path]::GetTempPath()) ('AppShelf-Notes-' + [guid]::NewGu
 try {
     [void][IO.Directory]::CreateDirectory((Join-Path $stage 'bin'))
     $exe = Join-Path $stage 'bin\NotesPlugin.exe'
-    & $csc /nologo /target:winexe /platform:anycpu /optimize+ "/out:$exe" /reference:System.dll /reference:System.Core.dll /reference:System.Xml.dll /reference:System.Runtime.Serialization.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll (Join-Path $root 'PluginProtocol.cs') (Join-Path $PSScriptRoot 'NotesPlugin.cs')
+    & $csc /nologo /codepage:65001 /target:winexe /platform:anycpu /optimize+ "/out:$exe" /reference:System.dll /reference:System.Core.dll /reference:System.Xml.dll /reference:System.Runtime.Serialization.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll (Join-Path $root 'PluginProtocol.cs') (Join-Path $PSScriptRoot 'NotesPlugin.cs')
     if ($LASTEXITCODE -ne 0) { throw 'Notes plugin compilation failed.' }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'plugin.json') -Destination $stage
     $output = [IO.Path]::GetFullPath($OutputDirectory)
