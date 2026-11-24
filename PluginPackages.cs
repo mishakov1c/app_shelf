@@ -6,6 +6,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace AppShelf
@@ -40,6 +41,9 @@ namespace AppShelf
         internal const long MaxManifestBytes = 64L * 1024;
         private const int MaxEntries = 2048;
         private readonly string root;
+        // All store instances in the single AppShelf process share this commit gate.
+        // Never hold it during the trust dialog or while acquiring the runtime gate.
+        private static readonly object CommitGate = new object();
         private string InstalledRoot { get { return Path.Combine(root, "Installed"); } }
         private string DataRoot { get { return Path.Combine(root, "Data"); } }
         private static readonly Regex IdPattern = new Regex(
@@ -219,6 +223,7 @@ namespace AppShelf
                                 copied += read;
                             }
                             if (copied != entry.Length) Reject("Повреждённая запись ZIP.");
+                            output.Flush(true);
                             total += copied;
                         }
                     }
@@ -226,14 +231,144 @@ namespace AppShelf
             }
         }
 
-        // Stage and validate before replacing the installed code. Runtime must stop the
-        // old process before calling this method; data lives in a separate directory.
+        [DataContract]
+        private sealed class UpdateJournal
+        {
+            [DataMember(Name = "id", IsRequired = true)] public string Id { get; set; }
+            [DataMember(Name = "token", IsRequired = true)] public string Token { get; set; }
+            [DataMember(Name = "oldVersion", IsRequired = true)] public string OldVersion { get; set; }
+            [DataMember(Name = "newVersion", IsRequired = true)] public string NewVersion { get; set; }
+        }
+
+        private string JournalPath(string id) { return Child(InstalledRoot, ".update-" + id + ".json"); }
+        private string StagePath(string token) { return Child(InstalledRoot, ".stage-" + token); }
+        private string PreviousPath(string token) { return Child(InstalledRoot, ".previous-" + token); }
+
+        private static void WriteApproval(string directory, string version)
+        {
+            byte[] bytes = new UTF8Encoding(false).GetBytes(version);
+            using (FileStream output = new FileStream(Path.Combine(directory, "approved.flag"), FileMode.CreateNew))
+            {
+                output.Write(bytes, 0, bytes.Length);
+                output.Flush(true);
+            }
+        }
+
+        private void WriteJournal(UpdateJournal journal)
+        {
+            string path = JournalPath(journal.Id);
+            string temporary = Child(InstalledRoot, ".journal-" + journal.Token + ".tmp");
+            try
+            {
+                using (FileStream output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    new DataContractJsonSerializer(typeof(UpdateJournal)).WriteObject(output, journal);
+                    output.Flush(true);
+                }
+                File.Move(temporary, path);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+
+        private UpdateJournal ReadJournal(string id)
+        {
+            string path = JournalPath(id);
+            FileInfo file = new FileInfo(path);
+            if ((file.Attributes & FileAttributes.ReparsePoint) != 0 || file.Length < 1 || file.Length > 4096)
+                Reject("Некорректный журнал обновления плагина.");
+            UpdateJournal journal;
+            using (FileStream input = File.OpenRead(path))
+                journal = (UpdateJournal)new DataContractJsonSerializer(typeof(UpdateJournal)).ReadObject(input);
+            if (journal == null || journal.Id != id || journal.Token == null ||
+                !Regex.IsMatch(journal.Token, @"\A[0-9a-f]{32}\z", RegexOptions.CultureInvariant) ||
+                journal.OldVersion == null || journal.NewVersion == null ||
+                !VersionPattern.IsMatch(journal.OldVersion) || !VersionPattern.IsMatch(journal.NewVersion) ||
+                new Version(journal.NewVersion).CompareTo(new Version(journal.OldVersion)) <= 0)
+                Reject("Некорректный журнал обновления плагина.");
+            return journal;
+        }
+
+        private static PluginManifest CheckedVersion(string path, string id, string version, bool requireApproval)
+        {
+            CheckPlainTree(path);
+            PluginManifest manifest = ReadManifest(path);
+            if (manifest.Id != id || manifest.Version != version || (requireApproval && !Approved(path, manifest)))
+                Reject("Версия или идентификатор пакета не совпадает с журналом обновления.");
+            return manifest;
+        }
+
+        private static void DeleteTransactionTree(string path)
+        {
+            if (!Directory.Exists(path)) return;
+            CheckPlainTree(path);
+            Directory.Delete(path, true);
+        }
+
+        // Recovery is called under CommitGate before discovery or execution.
+        // The journal exists only after approval and after the old process is stopped.
+        // Never guess from unassociated .stage/.previous directories.
+        private void RecoverOne(string id)
+        {
+            ValidateId(id);
+            string journalPath = JournalPath(id);
+            if (!File.Exists(journalPath)) return;
+            UpdateJournal journal = ReadJournal(id);
+            string target = Child(InstalledRoot, id);
+            string stage = StagePath(journal.Token), previous = PreviousPath(journal.Token);
+            if (Directory.Exists(target))
+            {
+                CheckPlainTree(target);
+                PluginManifest current = ReadManifest(target);
+                if (current.Id != id) Reject("Конфликт идентификаторов при восстановлении плагина.");
+                if (current.Version == journal.OldVersion)
+                {
+                    // Crash before moving old, or after rollback. No second old tree is expected.
+                    if (Directory.Exists(previous)) Reject("Два каталога старой версии; требуется проверка.");
+                    DeleteTransactionTree(stage);
+                }
+                else if (current.Version == journal.NewVersion && Approved(target, current))
+                {
+                    // New version is installed. Verify old before deletion; a missing old tree
+                    // is valid if cleanup completed just before the crash.
+                    if (Directory.Exists(stage)) Reject("Конфликт каталогов новой версии.");
+                    // The old tree may be partially deleted by a previous cleanup attempt.
+                    // The validated new target is authoritative at this point; never follow links.
+                    DeleteTransactionTree(previous);
+                }
+                else Reject("Не удалось однозначно определить установленную версию плагина.");
+            }
+            else
+            {
+                // Crash between renames. Restore only the exact old version; never
+                // activate staged code in the absence of a valid old package.
+                if (!Directory.Exists(previous)) Reject("Не найдена предыдущая версия плагина.");
+                CheckedVersion(previous, id, journal.OldVersion, false);
+                Directory.Move(previous, target);
+                DeleteTransactionTree(stage);
+            }
+            File.Delete(journalPath);
+        }
+
+        private void RecoverOrThrow(string id)
+        {
+            try { RecoverOne(id); }
+            catch (Exception error)
+            {
+                throw new InvalidDataException("Не завершено восстановление обновления " + id +
+                    ". Файлы сохранены. " + error.Message, error);
+            }
+        }
+
+        // Stage and validate before replacing the installed code. Runtime reservation
+        // is obtained after confirmation, before the atomic directory swap.
         internal PluginManifest Install(string package, Func<PluginManifest, bool> confirm, string expectedId = null,
             Func<string, IDisposable> beforeCommit = null)
         {
             if (confirm == null) throw new ArgumentNullException("confirm");
             EnsureInstalledRoot();
-            string stage = Path.Combine(InstalledRoot, ".stage-" + Guid.NewGuid().ToString("N"));
+            string token = Guid.NewGuid().ToString("N");
+            string stage = StagePath(token);
+            string pendingId = null;
             Directory.CreateDirectory(stage);
             try
             {
@@ -242,34 +377,53 @@ namespace AppShelf
                 if (expectedId != null && manifest.Id != expectedId)
                     Reject("Пакет относится к другому плагину.");
                 string target = Child(InstalledRoot, manifest.Id);
-                CheckReplacement(target, manifest);
+                lock (CommitGate)
+                {
+                    RecoverOrThrow(manifest.Id);
+                    CheckReplacement(target, manifest);
+                }
                 using (IDisposable reservation = ConfirmCommit(manifest, confirm, beforeCommit))
                 {
-                if (reservation == null) return null;
-                if (Directory.Exists(target))
-                {
-                    CheckReplacement(target, manifest);
-                    File.WriteAllText(Path.Combine(stage, "approved.flag"), manifest.Version);
-                    string old = Path.Combine(InstalledRoot, ".previous-" + Guid.NewGuid().ToString("N"));
-                    Directory.Move(target, old);
-                    try { Directory.Move(stage, target); }
-                    catch
+                    if (reservation == null) return null;
+                    lock (CommitGate)
                     {
-                        // Never silently discard the previous package if rollback itself fails.
-                        if (!Directory.Exists(target)) Directory.Move(old, target);
-                        throw;
+                        RecoverOrThrow(manifest.Id);
+                        CheckReplacement(target, manifest);
+                        WriteApproval(stage, manifest.Version);
+                        if (!Directory.Exists(target))
+                        {
+                            Directory.Move(stage, target);
+                            return manifest;
+                        }
+                        PluginManifest previous = ReadManifest(target);
+                        UpdateJournal journal = new UpdateJournal { Id = manifest.Id, Token = token,
+                            OldVersion = previous.Version, NewVersion = manifest.Version };
+                        WriteJournal(journal);
+                        pendingId = manifest.Id;
+                        try
+                        {
+                            Directory.Move(target, PreviousPath(token));
+                            Directory.Move(stage, target);
+                        }
+                        catch
+                        {
+                            // Roll back using the same recovery logic as startup.
+                            // If rollback fails, retain the journal and all remaining files.
+                            RecoverOrThrow(manifest.Id);
+                            throw;
+                        }
+                        RecoverOrThrow(manifest.Id);
+                        return manifest;
                     }
-                    TryRemoveStage(old);
-                }
-                else
-                {
-                    File.WriteAllText(Path.Combine(stage, "approved.flag"), manifest.Version);
-                    Directory.Move(stage, target);
-                }
-                return manifest;
                 }
             }
-            finally { TryRemoveStage(stage); }
+            finally
+            {
+                lock (CommitGate)
+                {
+                    if (pendingId == null || !File.Exists(JournalPath(pendingId))) TryRemoveStage(stage);
+                }
+            }
         }
 
         private sealed class EmptyReservation : IDisposable { public void Dispose() { } }
@@ -295,13 +449,16 @@ namespace AppShelf
 
         internal PluginManifest ReadEnabled(string id, out string executable)
         {
-            PluginManifest manifest = ReadInstalled(id);
-            string directory = Child(InstalledRoot, id);
-            string flag = Path.Combine(directory, "enabled.flag");
-            if (!Approved(directory, manifest) || !File.Exists(flag) || new FileInfo(flag).Length != 0)
-                Reject("Плагин отключён или не подтверждён.");
-            executable = Child(directory, manifest.EntryPoint);
-            return manifest;
+            lock (CommitGate)
+            {
+                PluginManifest manifest = ReadInstalled(id);
+                string directory = Child(InstalledRoot, id);
+                string flag = Path.Combine(directory, "enabled.flag");
+                if (!Approved(directory, manifest) || !File.Exists(flag) || new FileInfo(flag).Length != 0)
+                    Reject("Плагин отключён или не подтверждён.");
+                executable = Child(directory, manifest.EntryPoint);
+                return manifest;
+            }
         }
 
         private static void TryRemoveStage(string path)
@@ -322,11 +479,15 @@ namespace AppShelf
         {
             ValidateId(id);
             EnsureInstalledRoot();
-            string path = Child(InstalledRoot, id);
-            CheckPlainTree(path);
-            PluginManifest manifest = ReadManifest(path);
-            if (manifest.Id != id) Reject("Идентификатор установленного плагина не совпадает.");
-            return manifest;
+            lock (CommitGate)
+            {
+                RecoverOrThrow(id);
+                string path = Child(InstalledRoot, id);
+                CheckPlainTree(path);
+                PluginManifest manifest = ReadManifest(path);
+                if (manifest.Id != id) Reject("Идентификатор установленного плагина не совпадает.");
+                return manifest;
+            }
         }
 
         internal string GetDataDirectory(string id)
@@ -349,12 +510,26 @@ namespace AppShelf
         internal List<InstalledPlugin> List()
         {
             EnsureInstalledRoot();
+            lock (CommitGate)
+            {
             List<InstalledPlugin> result = new List<InstalledPlugin>();
+            HashSet<string> pending = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string file in Directory.GetFiles(InstalledRoot, ".update-*.json"))
+            {
+                string name = Path.GetFileName(file);
+                string id = name.Substring(8, name.Length - 13);
+                try { RecoverOrThrow(id); }
+                catch (Exception error)
+                {
+                    pending.Add(id);
+                    result.Add(new InstalledPlugin { Id = id, Error = error.Message });
+                }
+            }
             foreach (string directory in Directory.GetDirectories(InstalledRoot))
             {
                 string id = Path.GetFileName(directory);
                 if (id.StartsWith(".stage-", StringComparison.Ordinal) ||
-                    id.StartsWith(".previous-", StringComparison.Ordinal)) continue;
+                    id.StartsWith(".previous-", StringComparison.Ordinal) || pending.Contains(id)) continue;
                 InstalledPlugin row = new InstalledPlugin { Id = id };
                 try
                 {
@@ -374,10 +549,13 @@ namespace AppShelf
                     b.Manifest == null ? b.Id : b.Manifest.Name);
             });
             return result;
+            }
         }
 
         internal void SetEnabled(string id, bool enabled)
         {
+            lock (CommitGate)
+            {
             PluginManifest manifest = ReadInstalled(id);
             string directory = Child(InstalledRoot, id);
             string flag = Path.Combine(directory, "enabled.flag");
@@ -388,6 +566,7 @@ namespace AppShelf
                     output.Flush(true);
             }
             else File.Delete(flag);
+            }
         }
 
         // Uninstall package code only. Data deletion requires a separate explicit action.
@@ -395,9 +574,13 @@ namespace AppShelf
         {
             ValidateId(id);
             EnsureInstalledRoot();
-            string path = Child(InstalledRoot, id);
-            CheckPlainTree(path);
-            Directory.Delete(path, true);
+            lock (CommitGate)
+            {
+                RecoverOrThrow(id);
+                string path = Child(InstalledRoot, id);
+                CheckPlainTree(path);
+                Directory.Delete(path, true);
+            }
         }
     }
 }

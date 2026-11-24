@@ -37,6 +37,47 @@ public static class PluginPackageTests {
         return path;
     }
     static PluginManifest Install(PluginPackageStore store, string package) { return store.Install(package, delegate { return true; }); }
+    static void Recovery(string root, string scenario) {
+        string profile=Path.Combine(root,scenario);
+        Directory.CreateDirectory(profile);
+        PluginPackageStore store=new PluginPackageStore(profile);
+        string id="example.recovery", token=Guid.NewGuid().ToString("N");
+        string installed=Path.Combine(profile,"Plugins","Installed");
+        string target=Path.Combine(installed,id);
+        string previous=Path.Combine(installed,".previous-"+token);
+        string stage=Path.Combine(installed,".stage-"+token);
+        string journal=Path.Combine(installed,".update-"+id+".json");
+        Install(store,Package(root,Manifest("1.0.0",id,1),null,true));
+        store.SetEnabled(id,true);
+        string data=Path.Combine(store.GetDataDirectory(id),"keep.txt");
+        File.WriteAllText(data,"keep");
+        // Create valid new package using an independent profile, then stage its code.
+        PluginPackageStore other=new PluginPackageStore(Path.Combine(profile,"other"));
+        Install(other,Package(root,Manifest("1.1.0",id,1),null,true));
+        Directory.Move(Path.Combine(profile,"other","Plugins","Installed",id),stage);
+        File.WriteAllText(journal,"{\"id\":\""+id+"\",\"token\":\""+token+
+            "\",\"oldVersion\":\"1.0.0\",\"newVersion\":\"1.1.0\"}",new UTF8Encoding(false));
+        if(scenario!="before") Directory.Move(target,previous);
+        if(scenario=="after" || scenario=="cleanup") Directory.Move(stage,target);
+        if(scenario=="cleanup") File.Delete(Path.Combine(previous,"plugin.json")); // interrupted old tree deletion
+        if(scenario=="missing") Directory.Delete(previous,true);
+        if(scenario=="badjournal") File.WriteAllText(journal,"{\"id\":\""+id+"\",\"token\":\"../escape\"}");
+        var rows=new PluginPackageStore(profile).List();
+        Assert(rows.Count==1,"recovery list count "+scenario);
+        if(scenario=="missing" || scenario=="badjournal") {
+            Assert(rows[0].Error!=null && !rows[0].Enabled,"unresolved recovery disabled "+scenario);
+            Assert(File.Exists(journal)&&Directory.Exists(stage),"unresolved files preserved "+scenario);
+            Reject(delegate { string exe; store.ReadEnabled(id,out exe); },"unresolved cannot execute "+scenario);
+            Reject(delegate { store.Remove(id); },"unresolved cannot remove "+scenario);
+        } else {
+            bool committed=scenario=="after" || scenario=="cleanup";
+            Assert(rows[0].Error==null && rows[0].Manifest.Version==(committed?"1.1.0":"1.0.0"),"recovered version "+scenario);
+            Assert(rows[0].Enabled==!committed,"recovered enabled state "+scenario);
+            Assert(!File.Exists(journal)&&!Directory.Exists(stage)&&!Directory.Exists(previous),"cleaned transaction "+scenario);
+            Assert(new PluginPackageStore(profile).List()[0].Manifest.Version==rows[0].Manifest.Version,"idempotent recovery "+scenario);
+        }
+        Assert(File.ReadAllText(data)=="keep","recovery preserved user data "+scenario);
+    }
     public static void Run() {
         string root = Path.Combine(Path.GetTempPath(), "AppShelf-PluginTests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -77,6 +118,7 @@ public static class PluginPackageTests {
             Assert(File.ReadAllText(data) == "keep", "remove preserved data");
             Assert(!Directory.Exists(Path.Combine(root, "Plugins", "Installed", "example.hello")), "code removed");
             Assert(Directory.GetDirectories(Path.Combine(root, "Plugins", "Installed")).Length == 0, "no staging leftovers");
+            foreach(string scenario in new[]{"before","between","after","cleanup","missing","badjournal"}) Recovery(root,scenario);
             Console.WriteLine("PASS: " + count + " package checks");
         } finally { Directory.Delete(root, true); }
     }
