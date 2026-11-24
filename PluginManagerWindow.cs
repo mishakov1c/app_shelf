@@ -555,7 +555,7 @@ namespace AppShelf
             int revision = 0;
             // Refresh from storage each time the main menu opens. Do not launch a
             // plugin to discover its commands just because the user opens a menu.
-            owner.Closed += delegate { revision++; menu.Items.Clear(); menu.Visibility = Visibility.Collapsed; };
+            owner.Closed += delegate { revision++; };
             owner.Opened += async delegate
             {
                 int current = ++revision;
