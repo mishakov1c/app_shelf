@@ -548,18 +548,18 @@ namespace AppShelf
             if (_pluginNoticeTimer != null) _pluginNoticeTimer.Stop();
         }
 
-        private MenuItem CreatePluginToolsMenu()
+        private MenuItem CreatePluginToolsMenu(ContextMenu owner)
         {
-            MenuItem menu = new MenuItem { Header = "Инструменты плагинов", Icon = FluentUi.MenuGlyph("settings") };
-            menu.Items.Add(new MenuItem { Header = "Открыть меню…", IsEnabled = false });
+            MenuItem menu = new MenuItem { Header = "Плагины", Icon = FluentUi.MenuGlyph("puzzle"),
+                Visibility = Visibility.Collapsed };
             int revision = 0;
-            menu.SubmenuClosed += delegate(object sender, RoutedEventArgs e) { if (Object.ReferenceEquals(e.Source, menu)) revision++; };
-            menu.SubmenuOpened += async delegate(object sender, RoutedEventArgs e)
+            // Refresh from storage each time the main menu opens. Do not launch a
+            // plugin to discover its commands just because the user opens a menu.
+            owner.Closed += delegate { revision++; menu.Items.Clear(); menu.Visibility = Visibility.Collapsed; };
+            owner.Opened += async delegate
             {
-                if (!Object.ReferenceEquals(e.Source, menu)) return;
                 int current = ++revision;
-                menu.Items.Clear();
-                menu.Items.Add(new MenuItem { Header = "Загрузка…", IsEnabled = false });
+                menu.Items.Clear(); menu.Visibility = Visibility.Collapsed;
                 try
                 {
                     List<InstalledPlugin> installed = await Task.Run(delegate
@@ -567,18 +567,60 @@ namespace AppShelf
                         PluginPackageStore store = new PluginPackageStore(ConfigStore.DirectoryPath);
                         return store.HasInstalledDirectory ? store.List() : new List<InstalledPlugin>();
                     });
-                    if (current != revision || _pluginRuntimeStopping) return;
+                    if (current != revision || !owner.IsOpen || _pluginRuntimeStopping) return;
                     PopulatePluginTools(menu, installed);
                 }
                 catch (Exception error)
                 {
                     if (current != revision) return;
-                    menu.Items.Clear();
-                    menu.Items.Add(new MenuItem { Header = "Не удалось прочитать плагины", IsEnabled = false });
                     ConfigStore.Log(error);
                 }
             };
             return menu;
+        }
+
+        private MenuItem CreatePluginMenuItem(InstalledPlugin plugin, PluginRuntimeState state)
+        {
+            if (!plugin.Enabled || plugin.Error != null || plugin.Manifest == null) return null;
+            string id = plugin.Id, version = plugin.Manifest.Version;
+            bool commands = Array.IndexOf(plugin.Manifest.Capabilities, "command") >= 0 ||
+                Array.IndexOf(plugin.Manifest.Capabilities, "window") >= 0;
+            bool settings = Array.IndexOf(plugin.Manifest.Capabilities, "settings") >= 0;
+            if (!commands && !settings) return null;
+            MenuItem group = new MenuItem { Header = PluginUiActions.LiteralMenuText(plugin.Manifest.Name), ToolTip = id };
+            if (!commands)
+            {
+                group.Click += delegate { RunPluginMenuAction(delegate { return GetPluginRuntime().OpenSettingsAsync(id, version); }); };
+                return group;
+            }
+
+            bool known = state.Status == "running" && state.Version == version && state.Commands != null;
+            if (known && state.Commands.Length == 1)
+            {
+                string commandId = state.Commands[0].Id;
+                group.Click += delegate { RunPluginMenuAction(delegate { return GetPluginRuntime().InvokeAsync(id, version, commandId); }); };
+            }
+            else if (known && state.Commands.Length > 1)
+            {
+                foreach (PluginCommand command in state.Commands)
+                {
+                    string commandId = command.Id;
+                    MenuItem item = new MenuItem { Header = PluginUiActions.LiteralMenuText(command.Label) };
+                    item.Click += delegate { RunPluginMenuAction(delegate { return GetPluginRuntime().InvokeAsync(id, version, commandId); }); };
+                    group.Items.Add(item);
+                }
+            }
+            else if (known && settings)
+            {
+                group.Click += delegate { RunPluginMenuAction(delegate { return GetPluginRuntime().OpenSettingsAsync(id, version); }); };
+            }
+            else
+            {
+                // An idle plugin has no known command list until its first explicit
+                // activation. ChooseAsync opens one command or presents a chooser.
+                group.Click += delegate { RunPluginMenuAction(delegate { return PluginUiActions.ChooseAsync(this, GetPluginRuntime(), id, version); }); };
+            }
+            return group;
         }
 
         private void PopulatePluginTools(MenuItem menu, List<InstalledPlugin> installed)
@@ -588,42 +630,10 @@ namespace AppShelf
             foreach (InstalledPlugin plugin in installed)
             {
                 if (!plugin.Enabled || plugin.Error != null || plugin.Manifest == null) continue;
-                string id = plugin.Id, version = plugin.Manifest.Version;
-                bool commands = Array.IndexOf(plugin.Manifest.Capabilities, "command") >= 0 ||
-                    Array.IndexOf(plugin.Manifest.Capabilities, "window") >= 0;
-                bool settings = Array.IndexOf(plugin.Manifest.Capabilities, "settings") >= 0;
-                if (!commands && !settings) continue;
-                MenuItem group = new MenuItem { Header = PluginUiActions.LiteralMenuText(plugin.Manifest.Name), ToolTip = id };
-                if (commands)
-                {
-                    PluginRuntimeState state = runtime.State(id);
-                    if (state.Status == "running" && state.Version == version && state.Commands != null && state.Commands.Length != 0)
-                    {
-                        foreach (PluginCommand command in state.Commands)
-                        {
-                            string commandId = command.Id;
-                            MenuItem item = new MenuItem { Header = PluginUiActions.LiteralMenuText(command.Label) };
-                            item.Click += delegate { RunPluginMenuAction(delegate { return runtime.InvokeAsync(id, version, commandId); }); };
-                            group.Items.Add(item);
-                        }
-                    }
-                    else
-                    {
-                        MenuItem open = new MenuItem { Header = "Открыть команды…" };
-                        open.Click += delegate { RunPluginMenuAction(delegate { return PluginUiActions.ChooseAsync(this, runtime, id, version); }); };
-                        group.Items.Add(open);
-                    }
-                }
-                if (settings)
-                {
-                    MenuItem item = new MenuItem { Header = "Настройки…" };
-                    item.Click += delegate { RunPluginMenuAction(delegate { return runtime.OpenSettingsAsync(id, version); }); };
-                    group.Items.Add(item);
-                }
-                menu.Items.Add(group);
+                MenuItem item = CreatePluginMenuItem(plugin, runtime.State(plugin.Id));
+                if (item != null) menu.Items.Add(item);
             }
-            if (menu.Items.Count == 0)
-                menu.Items.Add(new MenuItem { Header = "Нет включённых инструментов", IsEnabled = false });
+            menu.Visibility = menu.Items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         }
 
         private async void RunPluginMenuAction(Func<Task> action)
