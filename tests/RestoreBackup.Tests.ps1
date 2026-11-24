@@ -60,6 +60,7 @@ public static class RestoreBackupTests
     private static Action<Window> settingsAction, backupAction;
     private static string pickedFile;
     private static int filePickers;
+    private static bool declineConfirmation;
     private static readonly List<string> notices = new List<string>();
     public static bool PickFile(Microsoft.Win32.FileDialog picker)
     {
@@ -72,7 +73,7 @@ public static class RestoreBackupTests
         MessageBoxButton buttons, MessageBoxImage image)
     {
         notices.Add(text);
-        return buttons == MessageBoxButton.YesNo ? MessageBoxResult.Yes : MessageBoxResult.OK;
+        return buttons == MessageBoxButton.YesNo ? (declineConfirmation ? MessageBoxResult.No : MessageBoxResult.Yes) : MessageBoxResult.OK;
     }
     public static bool? Settings(Window dialog)
     {
@@ -91,7 +92,7 @@ public static class RestoreBackupTests
     {
         dialog.Show();
         try { backupAction(dialog); }
-        finally { dialog.Close(); }
+        finally { if (dialog.IsVisible) dialog.Close(); }
     }
     private static List<T> Controls<T>(DependencyObject root) where T : DependencyObject
     {
@@ -239,7 +240,7 @@ public static class RestoreBackupTests
         Assert(ConfigStore.IsValidGeometry(window.Left, window.Top, window.ActualWidth, window.ActualHeight),
             "Test must have valid geometry so Closing would save stale settings without the fix");
     }
-    private static void SettingsRestoreGuard()
+    private static void SettingsRestoreFlow()
     {
         Seed("B");
         string root = Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA");
@@ -272,42 +273,38 @@ public static class RestoreBackupTests
                     Assert(File.Exists(zip), "ZIP export from settings was blocked");
                     string configBefore = File.ReadAllText(ConfigStore.FilePath);
                     string remindersBefore = File.ReadAllText(ReminderStore.FilePath);
-                    string backups = Path.Combine(ConfigStore.DirectoryPath, "Backups");
-                    int safetyCopiesBefore = Directory.Exists(backups) ? Directory.GetDirectories(backups).Length : 0;
-                    int pickersBefore = filePickers, noticesBefore = notices.Count;
-                    Click(backup, "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0438\u0437 ZIP\u2026");
-                    Assert(filePickers == pickersBefore, "Blocked restore opened a file picker");
-                    Assert(notices.Count == noticesBefore + 1 &&
-                        notices[notices.Count - 1].Contains("\u0437\u0430\u043a\u0440\u043e\u0439 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438") &&
-                        notices[notices.Count - 1].Contains("\u0433\u043b\u0430\u0432\u043d\u043e\u0433\u043e \u043c\u0435\u043d\u044e"),
-                        "Blocked restore did not explain the safe workflow");
+                    int pickersBefore = filePickers;
+                    // Cancelling at the confirmation must keep the nested dialogs and
+                    // staged files intact; the second confirmation schedules restore.
+                    declineConfirmation = true;
+                    try { Click(backup, "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0438\u0437 ZIP\u2026"); }
+                    finally { declineConfirmation = false; }
+                    Assert(filePickers == pickersBefore + 1 && backup.IsVisible && settings.IsVisible,
+                        "Cancel closed dialogs or skipped file selection");
                     Assert(File.ReadAllText(ConfigStore.FilePath) == configBefore &&
                         File.ReadAllText(ReminderStore.FilePath) == remindersBefore &&
                         Convert.ToBase64String(File.ReadAllBytes(image)) == stagedBytes,
-                        "Blocked restore changed user data or staged wallpaper");
-                    Assert((bool)Get(window, "_canSave") && (bool)Get(window, "_remindersCanSave") &&
-                        window.IsVisible && settings.IsVisible &&
-                        (Directory.Exists(backups) ? Directory.GetDirectories(backups).Length : 0) == safetyCopiesBefore,
-                        "Blocked restore entered restore/shutdown workflow");
+                        "Cancel modified data or staged wallpaper");
+                    Click(backup, "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0438\u0437 ZIP\u2026");
+                    Assert(filePickers == pickersBefore + 2 && !backup.IsVisible && !settings.IsVisible,
+                        "Confirmed restore did not close nested dialogs");
+                    Assert(window.IsVisible && (bool)Get(window, "_canSave") &&
+                        File.ReadAllText(ConfigStore.FilePath) == configBefore &&
+                        Convert.ToBase64String(File.ReadAllBytes(image)) == stagedBytes,
+                        "Restore ran before settings cleanup");
                 };
                 Click(settings, "\u042d\u043a\u0441\u043f\u043e\u0440\u0442 / \u0438\u043c\u043f\u043e\u0440\u0442 \u0434\u0430\u043d\u043d\u044b\u0445\u2026");
             };
             Call(window, "ShowSettings");
-            Assert(!File.Exists(CustomBackgroundStore.FilePath(staged)),
-                "Cancel no longer removes the unsaved wallpaper");
-            backupAction = delegate(Window backup)
-            {
-                ToggleBackupGroup(backup, "backup-full");
-                pickedFile = zip;
-                int before = filePickers;
-                Click(backup, "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0438\u0437 ZIP\u2026");
-                Assert(filePickers == before + 1, "Main-menu restore was blocked");
-            };
-            MethodInfo mainMenu = typeof(MainWindow).GetMethod("ShowBackupMenuWindow", Private,
-                null, Type.EmptyTypes, null);
-            mainMenu.Invoke(window, null);
+            Assert(!window.IsVisible && (bool)Get(window, "_explicitExitRequested") &&
+                !(bool)Get(window, "_canSave") && !(bool)Get(window, "_remindersCanSave"),
+                "Settings restore did not fully exit or block stale saves");
             Assert(Convert.ToBase64String(File.ReadAllBytes(CustomBackgroundStore.FilePath(staged))) == stagedBytes,
-                "Main-menu restore did not recover the exported wallpaper");
+                "Settings cleanup deleted restored wallpaper");
+            string warning; bool safe;
+            AppConfig restored = ConfigStore.Load(out warning, out safe);
+            Assert(safe && warning == null && restored.WeatherCity == "B" && restored.WindowWidth == 950,
+                "Closing overwrote restored config or geometry");
         }
         finally { window.Close(); settingsAction = backupAction = null; }
         MainWindow reopened = new MainWindow();
@@ -317,7 +314,7 @@ public static class RestoreBackupTests
                 "Recovered wallpaper was deleted after Close/reopen");
         }
         finally { reopened.Close(); }
-        Console.WriteLine("PASS: settings block ZIP restore before picker; export and main-menu restore preserve wallpaper after Cancel/Close/reopen");
+        Console.WriteLine("PASS: settings ZIP restore cancellation, deferred cleanup, full exit and wallpaper preservation");
     }
     public static void Run()
     {
@@ -407,7 +404,7 @@ public static class RestoreBackupTests
             }
             finally { window.Close(); }
         }
-        SettingsRestoreGuard();
+        SettingsRestoreFlow();
     }
 }
 '@
