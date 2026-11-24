@@ -1512,6 +1512,7 @@ namespace AppShelf
                 IsChecked = _config.BackupPluginPackages != false, Foreground = WhiteBrush, Margin = new Thickness(0, 4, 0, 8) };
             TextBlock privateWarning = Text("В архив попадут и приватные плагины. ZIP не шифруется.", 12, MutedBrush);
             privateWarning.TextWrapping = TextWrapping.Wrap;
+            privateWarning.Margin = new Thickness(0, 0, 0, 10);
             Button savePolicy = ActionButton("Сохранить настройки бэкапа", false);
             savePolicy.Click += delegate
             {
