@@ -130,6 +130,8 @@ public static class RestoreBackupTests
     private static AppConfig Config(string name)
     {
         AppConfig config = new AppConfig();
+        // Real profile is redirected; choose a sibling folder for cloud-backup tests.
+        config.BackupDirectory = Path.Combine(Path.GetDirectoryName(ConfigStore.DirectoryPath), "CloudBackups");
         config.MinimizeToTray = false; // Restore tests must exercise a real Close.
         config.GroupingEnabled = true;
         config.Groups.Add("Group-" + name);
