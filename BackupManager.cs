@@ -16,6 +16,7 @@ using Forms = System.Windows.Forms;
 using System.Runtime.Serialization.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Win32;
 
 namespace AppShelf
@@ -1179,16 +1180,14 @@ namespace AppShelf
             StackPanel layout = new StackPanel { Margin = new Thickness(22) };
             scroll.Content = layout;
             dialog.Content = scroll;
-            TextBlock title = Text("Экспорт и восстановление", 23, WhiteBrush);
+            TextBlock title = Text("Резервные копии", 23, WhiteBrush);
             title.FontWeight = FontWeights.Bold;
             layout.Children.Add(title);
             TextBlock note = Text("Полная копия содержит приложения, настройки, напоминания, подборки с обложками и скопированные ярлыки. Журнал ошибок и посторонние файлы не экспортируются.", 12, MutedBrush);
             note.TextWrapping = TextWrapping.Wrap;
             note.Margin = new Thickness(0, 7, 0, 13);
-            layout.Children.Add(note);
-            TextBlock backupHeading = Text("АВТОМАТИЧЕСКИЕ КОПИИ", 11, AccentBrush);
-            backupHeading.Margin = new Thickness(0, 8, 0, 9);
-            layout.Children.Add(backupHeading);
+            // Keep the compact status visible even when every group is collapsed.
+            title.Margin = new Thickness(0, 0, 0, 12);
             TextBlock configuredFolder = Text("", 12, WhiteBrush);
             configuredFolder.TextWrapping = TextWrapping.Wrap;
             configuredFolder.Margin = new Thickness(0, 0, 0, 7);
@@ -1201,6 +1200,7 @@ namespace AppShelf
             backupStatus.TextWrapping = TextWrapping.Wrap;
             backupStatus.Margin = new Thickness(0, 0, 0, 8);
             layout.Children.Add(backupStatus);
+            backupStatus.Visibility = Visibility.Collapsed;
             Action refreshInfo = delegate
             {
                 configuredFolder.Text = "Папка: " + (String.IsNullOrWhiteSpace(_config.BackupDirectory)
@@ -1225,45 +1225,48 @@ namespace AppShelf
                     }
                     catch (Exception) { /* Network/cloud folder may not expose drive metrics. */ }
                 }
+                backupStatus.Text = backupStatus.Text.Trim();
+                backupStatus.Visibility = String.IsNullOrWhiteSpace(backupStatus.Text)
+                    ? Visibility.Collapsed : Visibility.Visible;
             };
             refreshInfo();
             Button chooseFolder = ActionButton("Выбрать папку копий…", false);
             chooseFolder.Click += delegate { if (SelectBackupDirectory(dialog)) refreshInfo(); };
-            layout.Children.Add(chooseFolder);
+
             CheckBox automatic = new CheckBox
             {
                 Content = "Автоматически создавать резервные копии",
                 IsChecked = BackupAutomation.AutomaticEnabled(_config),
                 Foreground = WhiteBrush, Margin = new Thickness(0, 6, 0, 8)
             };
-            layout.Children.Add(automatic);
+
             TextBlock cadenceLabel = Text("Периодичность", 12, MutedBrush);
             cadenceLabel.Margin = new Thickness(0, 3, 0, 4);
-            layout.Children.Add(cadenceLabel);
+
             ComboBox cadence = new ComboBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 8) };
             cadence.Items.Add("Раз в сутки");
             cadence.Items.Add("Раз в неделю");
             cadence.SelectedIndex = BackupAutomation.IntervalDays(_config) == 7 ? 1 : 0;
-            layout.Children.Add(cadence);
+
             TextBlock countLabel = Text("Количество ежедневных архивов", 12, MutedBrush);
             countLabel.Margin = new Thickness(0, 3, 0, 4);
-            layout.Children.Add(countLabel);
+
             ComboBox count = new ComboBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 8) };
             count.Items.Add("3"); count.Items.Add("7"); count.Items.Add("14");
             count.SelectedIndex = BackupAutomation.KeepDaily(_config) == 3 ? 0 :
                 BackupAutomation.KeepDaily(_config) == 14 ? 2 : 1;
-            layout.Children.Add(count);
+
             TextBlock quotaLabel = Text("Лимит автоматических копий и копий перед обновлением", 12, MutedBrush);
             quotaLabel.TextWrapping = TextWrapping.Wrap;
             quotaLabel.Margin = new Thickness(0, 3, 0, 4);
-            layout.Children.Add(quotaLabel);
+
             ComboBox quota = new ComboBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 8) };
             quota.Items.Add("512 МБ"); quota.Items.Add("1 ГБ");
             quota.Items.Add("2 ГБ"); quota.Items.Add("4 ГБ");
             int currentQuota = BackupAutomation.QuotaMb(_config);
             quota.SelectedIndex = currentQuota == 512 ? 0 : currentQuota == 2048 ? 2 :
                 currentQuota == 4096 ? 3 : 1;
-            layout.Children.Add(quota);
+
             Button savePolicy = ActionButton("Сохранить настройки бэкапа", false);
             savePolicy.Click += delegate
             {
@@ -1281,7 +1284,7 @@ namespace AppShelf
                     QueueAutomaticBackup();
                 }
             };
-            layout.Children.Add(savePolicy);
+
             Button openBackupFolder = ActionButton("Открыть папку резервных копий", false);
             openBackupFolder.Click += delegate
             {
@@ -1294,7 +1297,7 @@ namespace AppShelf
                 }
                 catch (Exception error) { ShowError("Не удалось открыть папку копий.", error); }
             };
-            layout.Children.Add(openBackupFolder);
+
             TextBlock backupHelp = Text(
                 "Ежедневные копии создаются в фоне, только если данные изменились. " +
                 "Перед обновлением сохраняются ZIP и старый EXE. " +
@@ -1302,7 +1305,7 @@ namespace AppShelf
                 12, MutedBrush);
             backupHelp.TextWrapping = TextWrapping.Wrap;
             backupHelp.Margin = new Thickness(0, 0, 0, 12);
-            layout.Children.Add(backupHelp);
+
             Button exportAll = ActionButton("Экспортировать всё в ZIP…", true);
             exportAll.Click += delegate
             {
@@ -1323,7 +1326,7 @@ namespace AppShelf
                 }
                 catch (Exception ex) { ShowError("Не удалось экспортировать данные.", ex); }
             };
-            layout.Children.Add(exportAll);
+
             Button importAll = ActionButton("Восстановить из ZIP…", false);
             importAll.Click += delegate
             {
@@ -1358,10 +1361,7 @@ namespace AppShelf
                     ShowError("Не удалось восстановить данные. Текущие файлы проверь в папке Backups.", ex);
                 }
             };
-            layout.Children.Add(importAll);
-            TextBlock section = Text("ТОЛЬКО НАПОМИНАНИЯ", 11, AccentBrush);
-            section.Margin = new Thickness(0, 16, 0, 8);
-            layout.Children.Add(section);
+
             Button exportRem = ActionButton("Экспортировать напоминания в JSON…", false);
             exportRem.Click += delegate
             {
@@ -1371,7 +1371,7 @@ namespace AppShelf
                 try { BackupStore.ExportReminders(picker.FileName, _reminderDocument); }
                 catch (Exception ex) { ShowError("Не удалось экспортировать напоминания.", ex); }
             };
-            layout.Children.Add(exportRem);
+
             Button importRem = ActionButton("Импортировать напоминания из JSON…", false);
             importRem.Click += delegate
             {
@@ -1393,7 +1393,7 @@ namespace AppShelf
                 }
                 catch (Exception ex) { ShowError("Не удалось импортировать напоминания.", ex); }
             };
-            layout.Children.Add(importRem);
+
             Button openFolder = ActionButton("Открыть папку данных AppShelf", false);
             openFolder.Margin = new Thickness(0, 16, 0, 0);
             openFolder.Click += delegate
@@ -1402,6 +1402,51 @@ namespace AppShelf
                 Process.Start(new ProcessStartInfo("explorer.exe", "\"" + ConfigStore.DirectoryPath + "\"")
                 { UseShellExecute = true });
             };
+            StackPanel backupRows = new StackPanel();
+            Border backupFrame = new Border
+            {
+                Tag = "BackupSectionsFrame",
+                CornerRadius = new CornerRadius(10),
+                BorderThickness = new Thickness(1),
+                BorderBrush = FluentUi.Brush("#344A66"),
+                Background = FluentUi.Brush("#152135"),
+                Padding = new Thickness(4),
+                Child = backupRows
+            };
+            layout.Children.Add(backupFrame);
+
+            // Reuse the same accordion rows, arrows and selection treatment as
+            // Appearance. The controls are created once; collapsing a group
+            // does not discard changes or invoke any backup operation.
+            Dictionary<string, Border> bodies = new Dictionary<string, Border>();
+            Dictionary<string, System.Windows.Shapes.Path> arrows =
+                new Dictionary<string, System.Windows.Shapes.Path>();
+            Dictionary<string, Border> headers = new Dictionary<string, Border>();
+            LinearGradientBrush selectedHeading = new LinearGradientBrush(
+                (Color)ColorConverter.ConvertFromString("#223751"),
+                (Color)ColorConverter.ConvertFromString("#1D314A"), 0);
+            selectedHeading.Freeze();
+            Action<string> toggleBackupSection = delegate(string key)
+            {
+                bool expand = bodies[key].Visibility != Visibility.Visible;
+                foreach (KeyValuePair<string, Border> part in bodies)
+                {
+                    bool active = expand && part.Key == key;
+                    part.Value.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
+                    SetSettingsArrow(arrows[part.Key], active);
+                    headers[part.Key].Background = active ? (Brush)selectedHeading : Brushes.Transparent;
+                }
+            };
+            AddSettingsSection(backupRows, "backup-automatic", "Автоматические копии",
+                new List<UIElement> { chooseFolder, automatic, cadenceLabel, cadence,
+                    countLabel, count, quotaLabel, quota, savePolicy, openBackupFolder, backupHelp },
+                bodies, arrows, headers, toggleBackupSection);
+            AddSettingsSection(backupRows, "backup-full", "Экспорт и восстановление",
+                new List<UIElement> { note, exportAll, importAll },
+                bodies, arrows, headers, toggleBackupSection);
+            AddSettingsSection(backupRows, "backup-reminders", "Только напоминания",
+                new List<UIElement> { exportRem, importRem },
+                bodies, arrows, headers, toggleBackupSection);
             layout.Children.Add(openFolder);
             dialog.ShowDialog();
         }
