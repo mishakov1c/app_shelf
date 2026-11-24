@@ -143,9 +143,10 @@ namespace AppShelf
 
                 setBusy(true);
                 state.Text = "Скачивание обновления…";
+                AppUpdate.PreparedUpdate prepared = null;
                 try
                 {
-                    AppUpdate.PreparedUpdate prepared = await Task.Run<AppUpdate.PreparedUpdate>(
+                    prepared = await Task.Run<AppUpdate.PreparedUpdate>(
                         delegate
                         {
                             return AppUpdate.Download(release, delegate(long received, long total)
@@ -217,7 +218,11 @@ namespace AppShelf
                         notes.Text = "Текущий EXE не изменён. Можно повторить попытку.";
                     }
                 }
-                finally { if (dialog.IsVisible) setBusy(false); }
+                finally
+                {
+                    if (!installing) AppUpdate.Discard(prepared);
+                    if (dialog.IsVisible) setBusy(false);
+                }
             };
             check.IsEnabled = true;
             dialog.ShowDialog();
