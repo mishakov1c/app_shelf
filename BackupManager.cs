@@ -423,7 +423,7 @@ namespace AppShelf
             }
         }
 
-        public static string RestoreAll(string filename)
+        public static string RestoreAll(string filename, string selectedBackupRoot = null)
         {
             string stage = Path.Combine(Path.GetTempPath(), "AppShelfRestore_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(stage);
@@ -437,7 +437,12 @@ namespace AppShelf
                     out collections, out images);
                 // Save the current state before touching it. Never delete prior backups.
                 Directory.CreateDirectory(ConfigStore.DirectoryPath);
-                string backupDir = Path.Combine(ConfigStore.DirectoryPath, "Backups",
+                // Current releases use the user-selected location. The no-argument
+                // API stays available for legacy callers and isolated test fixtures.
+                string safetyRoot = String.IsNullOrWhiteSpace(selectedBackupRoot)
+                    ? Path.Combine(ConfigStore.DirectoryPath, "Backups")
+                    : Path.Combine(BackupAutomation.ValidateRoot(selectedBackupRoot), "BeforeRestore");
+                string backupDir = Path.Combine(safetyRoot,
                     "before-restore-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6));
                 Directory.CreateDirectory(backupDir);
                 string[] documents = { "apps.json", "apps.json.bak", "reminders.json",
@@ -892,7 +897,7 @@ namespace AppShelf
             if (_remindersTimer != null) _remindersTimer.Stop();
             try
             {
-                string safetyCopy = BackupStore.RestoreAll(filename);
+                string safetyCopy = BackupStore.RestoreAll(filename, _config.BackupDirectory);
                 restored = true;
                 return safetyCopy;
             }
@@ -977,6 +982,7 @@ namespace AppShelf
                         "Предыдущие файлы сохранены в:\n" + safetyCopy, "AppShelf",
                         MessageBoxButton.OK, MessageBoxImage.Information);
                     dialog.Close();
+                    _explicitExitRequested = true;
                     Close();
                 }
                 catch (Exception ex)
