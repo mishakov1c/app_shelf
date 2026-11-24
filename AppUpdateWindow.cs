@@ -6,9 +6,140 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Documents;
+using System.Text.RegularExpressions;
 
 namespace AppShelf
 {
+    // Render a deliberately small Markdown subset using native WPF elements.
+    // Remote notes are text, never HTML/XAML or executable content.
+    internal static class ReleaseNotesView
+    {
+        private static readonly Regex InlinePattern = new Regex(
+            @"\x60([^\x60\r\n]+)\x60|\*\*([^*\r\n]+)\*\*|__([^_\r\n]+)__|\*([^*\r\n]+)\*|_([^_\r\n]+)_|\[([^\]\r\n]+)\]\(([^)\s]+)\)",
+            RegexOptions.CultureInvariant);
+        private static readonly Regex HeadingPattern = new Regex(@"^(#{1,6})\s+(.+)$");
+        private static readonly Regex ListPattern = new Regex(@"^(\s*)([-+*]|\d{1,9}[.)])\s+(.+)$");
+
+        internal static bool SafeLink(string value, out Uri uri)
+        {
+            return Uri.TryCreate(value, UriKind.Absolute, out uri) &&
+                (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp) &&
+                !String.IsNullOrWhiteSpace(uri.Host) && String.IsNullOrEmpty(uri.UserInfo);
+        }
+
+        private static void AddInlines(TextBlock block, string value, Brush accent)
+        {
+            int previous = 0;
+            foreach (Match match in InlinePattern.Matches(value))
+            {
+                if (match.Index > previous)
+                    block.Inlines.Add(new Run(value.Substring(previous, match.Index - previous)));
+                if (match.Groups[1].Success)
+                    block.Inlines.Add(new Run(match.Groups[1].Value) {
+                        FontFamily = new FontFamily("Consolas"), Background = FluentUi.Brush("#222E43") });
+                else if (match.Groups[2].Success || match.Groups[3].Success)
+                    block.Inlines.Add(new Bold(new Run(match.Groups[2].Success ?
+                        match.Groups[2].Value : match.Groups[3].Value)));
+                else if (match.Groups[4].Success || match.Groups[5].Success)
+                    block.Inlines.Add(new Italic(new Run(match.Groups[4].Success ?
+                        match.Groups[4].Value : match.Groups[5].Value)));
+                else
+                {
+                    Uri uri;
+                    if (SafeLink(match.Groups[7].Value, out uri))
+                    {
+                        Hyperlink link = new Hyperlink(new Run(match.Groups[6].Value)) {
+                            NavigateUri = uri, Foreground = accent, ToolTip = uri.AbsoluteUri };
+                        link.RequestNavigate += delegate(object sender,
+                            System.Windows.Navigation.RequestNavigateEventArgs e)
+                        {
+                            e.Handled = true;
+                            Uri safe;
+                            if (!SafeLink(e.Uri.AbsoluteUri, out safe)) return;
+                            try { Process.Start(new ProcessStartInfo(safe.AbsoluteUri) { UseShellExecute = true }); }
+                            catch (Exception error) { ConfigStore.Log(error); }
+                        };
+                        block.Inlines.Add(link);
+                    }
+                    else block.Inlines.Add(new Run(match.Value));
+                }
+                previous = match.Index + match.Length;
+            }
+            if (previous < value.Length) block.Inlines.Add(new Run(value.Substring(previous)));
+        }
+
+        internal static void Render(StackPanel panel, string source, Brush foreground,
+            Brush accent, bool markdown)
+        {
+            panel.Children.Clear();
+            if (String.IsNullOrEmpty(source)) return;
+            if (!markdown)
+            {
+                panel.Children.Add(new TextBlock { Text = source, FontSize = 12,
+                    Foreground = foreground, TextWrapping = TextWrapping.Wrap,
+                    VerticalAlignment = VerticalAlignment.Top });
+                return;
+            }
+
+            bool fenced = false, gap = false;
+            foreach (string line in source.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                string trimmed = line.Trim();
+                if (trimmed.StartsWith(new string((char)96, 3), StringComparison.Ordinal))
+                {
+                    fenced = !fenced;
+                    gap = true;
+                    continue;
+                }
+                if (trimmed.Length == 0 && !fenced) { gap = true; continue; }
+                Match heading = HeadingPattern.Match(trimmed);
+                Match list = ListPattern.Match(line);
+                TextBlock block = new TextBlock { Foreground = foreground,
+                    FontSize = 12, TextWrapping = TextWrapping.Wrap,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(0, gap && panel.Children.Count > 0 ? 7 : 0, 0, 4) };
+                gap = false;
+                if (fenced)
+                {
+                    block.FontFamily = new FontFamily("Consolas");
+                    block.Background = FluentUi.Brush("#222E43");
+                    block.Text = line;
+                    panel.Children.Add(block);
+                }
+                else if (heading.Success)
+                {
+                    block.FontSize = heading.Groups[1].Length <= 2 ? 16 : 14;
+                    block.FontWeight = FontWeights.SemiBold;
+                    block.Margin = new Thickness(0, panel.Children.Count == 0 ? 0 : 9, 0, 5);
+                    AddInlines(block, heading.Groups[2].Value, accent);
+                    panel.Children.Add(block);
+                }
+                else if (list.Success)
+                {
+                    Grid row = new Grid { Margin = new Thickness(
+                        Math.Min(48, list.Groups[1].Length * 5), block.Margin.Top, 0, 4) };
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                    row.ColumnDefinitions.Add(new ColumnDefinition());
+                    string marker = list.Groups[2].Value;
+                    TextBlock bullet = new TextBlock { Text = marker.Length == 1 ? "•" : marker,
+                        FontSize = 12, Foreground = foreground, Margin = new Thickness(0, 0, 8, 0) };
+                    row.Children.Add(bullet);
+                    block.Margin = new Thickness(0);
+                    Grid.SetColumn(block, 1);
+                    AddInlines(block, list.Groups[3].Value, accent);
+                    row.Children.Add(block);
+                    panel.Children.Add(row);
+                }
+                else
+                {
+                    AddInlines(block, trimmed, accent);
+                    panel.Children.Add(block);
+                }
+            }
+        }
+    }
+
     public sealed partial class MainWindow
     {
         private void ShowUpdateWindow(Window owner)
@@ -89,10 +220,20 @@ namespace AppShelf
             };
             FluentUi.StyleSettingsScroll(notesScroll);
             root.Children.Add(notesScroll);
-            TextBlock notes = Text("Здесь появится список изменений новой версии.",
-                12, WhiteBrush);
-            notes.TextWrapping = TextWrapping.Wrap;
+            StackPanel notes = new StackPanel { VerticalAlignment = VerticalAlignment.Top };
+            notesScroll.VerticalContentAlignment = VerticalAlignment.Top;
             notesScroll.Content = notes;
+            Action<string> plainNotes = delegate(string value)
+            {
+                ReleaseNotesView.Render(notes, value, WhiteBrush, AccentBrush, false);
+                notesScroll.ScrollToHome();
+            };
+            Action<string> releaseNotes = delegate(string value)
+            {
+                ReleaseNotesView.Render(notes, value, WhiteBrush, AccentBrush, true);
+                notesScroll.ScrollToHome();
+            };
+            plainNotes("Здесь появится список изменений новой версии.");
 
             bool busy = false;
             bool installing = false;
@@ -117,7 +258,7 @@ namespace AppShelf
                 if (latest == null) { install.IsEnabled = false; return; }
                 state.Text = (latest.IsBeta ? "Доступна бета-версия " : "Доступно обновление до ") + latest.VersionText +
                     " (" + (latest.Size / 1024) + " КБ).";
-                notes.Text = "Изменения версии " + latest.VersionText + ":\n\n" + latest.Notes;
+                releaseNotes("### Изменения версии " + latest.VersionText + "\n\n" + latest.Notes);
                 install.IsEnabled = !busy;
             };
             versions.SelectionChanged += delegate
@@ -149,7 +290,7 @@ namespace AppShelf
                 setBusy(false);
                 lastCheck.Text = "";
                 state.Text = "Канал обновлений изменён. Нажми «Проверить».";
-                notes.Text = "";
+                plainNotes("");
             };
             beta.Checked += changeChannel;
             beta.Unchecked += changeChannel;
@@ -162,7 +303,7 @@ namespace AppShelf
                 bool includeBeta = _config.CheckBetaUpdates;
                 state.Text = includeBeta ? "Проверяю стабильные и бета-релизы GitHub…" :
                     "Проверяю стабильный релиз GitHub…";
-                notes.Text = "";
+                plainNotes("");
                 lastCheck.Text = "";
                 try
                 {
@@ -178,21 +319,21 @@ namespace AppShelf
                     {
                         state.Text = "GitHub временно ограничил запросы. Следующая проверка доступна после " +
                             result.RetryUtc.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") + ".";
-                        notes.Text = result.Releases == null
+                        plainNotes(result.Releases == null
                             ? "Нет сохранённого результата проверки. Установка недоступна."
                             : "По предыдущей проверке последний релиз: " +
                                 result.Releases[0].VersionText +
-                                ". Для установки нужна новая проверка.";
+                                ". Для установки нужна новая проверка.");
                         return;
                     }
                     if (result.Error != null)
                     {
                         state.Text = "Не удалось проверить обновления: " + result.Error;
-                        notes.Text = result.Releases == null
+                        plainNotes(result.Releases == null
                             ? "Установка недоступна до успешной проверки."
                             : "По предыдущей проверке последний релиз: " +
                                 result.Releases[0].VersionText +
-                                ". Для установки нужна новая проверка.";
+                                ". Для установки нужна новая проверка.");
                         return;
                     }
                     AppUpdate.Release[] releases = result.Releases;
@@ -211,7 +352,7 @@ namespace AppShelf
                     {
                         state.Text = "Нет более новой версии в выбранном канале. Последний релиз: " +
                             releases[0].VersionText + ".";
-                        notes.Text = releases[0].Notes;
+                        releaseNotes(releases[0].Notes);
                     }
                     else
                     {
@@ -225,8 +366,8 @@ namespace AppShelf
                     if (dialog.IsVisible)
                     {
                         state.Text = "Не удалось проверить обновления: " + error.Message;
-                        notes.Text = "Проверьте доступ к GitHub и наличие опубликованного " +
-                            "Release с AppShelf.exe. Установленная версия не изменена.";
+                        plainNotes("Проверьте доступ к GitHub и наличие опубликованного " +
+                            "Release с AppShelf.exe. Установленная версия не изменена.");
                     }
                 }
                 finally { if (dialog.IsVisible) setBusy(false); }
@@ -319,7 +460,7 @@ namespace AppShelf
                     if (dialog.IsVisible)
                     {
                         state.Text = "Обновление не установлено: " + error.Message;
-                        notes.Text = "Текущий EXE не изменён. Можно повторить попытку.";
+                        plainNotes("Текущий EXE не изменён. Можно повторить попытку.");
                     }
                 }
                 finally
