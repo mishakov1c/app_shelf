@@ -92,7 +92,12 @@ namespace AppShelf
             try
             {
                 var plugins = store.List();
-                recovered = store.ReadRecovered();
+                try { recovered = store.ReadRecovered(); }
+                catch (Exception error)
+                {
+                    recovered = new List<PluginBackupItem>();
+                    status.Text = "Не удалось прочитать восстановленные данные плагинов: " + error.Message;
+                }
                 if (plugins.Count == 0)
                 {
                     TextBlock empty = Label("Плагины пока не установлены.", 14, FluentUi.Secondary);

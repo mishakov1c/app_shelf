@@ -872,6 +872,87 @@ public static class BackupTests
             "Second migration duplicated a previous executable");
     }
 
+    private static void PluginBackupRoundtrip()
+    {
+        string oldArchive = Path.Combine(Root, "old.zip");
+        BackupStore.ExportAll(oldArchive, Loaded(), Reminders("B"));
+        string package = Path.Combine(Root, "test.asplugin");
+        using (FileStream input = File.Create(package))
+        using (ZipArchive zip = new ZipArchive(input, ZipArchiveMode.Create))
+        {
+            using (StreamWriter writer = new StreamWriter(zip.CreateEntry("plugin.json").Open()))
+                writer.Write("{\"schemaVersion\":1,\"apiVersion\":1,\"id\":\"test.backup\",\"name\":\"Backup test\",\"version\":\"1.0.0\",\"entryPoint\":\"bin/Test.exe\",\"capabilities\":[\"window\"],\"backupFiles\":[\"settings.json\"]}");
+            using (StreamWriter writer = new StreamWriter(zip.CreateEntry("bin/Test.exe").Open()))
+                writer.Write("never executed");
+        }
+        PluginPackageStore store = new PluginPackageStore(Root);
+        store.Install(package, delegate { return true; });
+        store.SetEnabled("test.backup", true);
+        string data = store.GetDataDirectory("test.backup");
+        string settings = Path.Combine(data, "settings.json");
+        File.WriteAllText(settings, "saved settings");
+        File.WriteAllText(Path.Combine(data, "history.txt"), "private history");
+        string before = BackupAutomation.DataSignature();
+        File.WriteAllText(settings, "changed but not opted in");
+        Assert(before == BackupAutomation.DataSignature(), "Unselected data changed signature");
+        File.WriteAllText(settings, "saved settings");
+        store.SetBackupDataEnabled("test.backup", true);
+        Assert(before != BackupAutomation.DataSignature(), "Consent not included in signature");
+        string opted = BackupAutomation.DataSignature();
+        File.WriteAllText(Path.Combine(data, "history.txt"), "changed private history");
+        Assert(opted == BackupAutomation.DataSignature(), "Undeclared data changed signature");
+        string zipFile = Path.Combine(Root, "plugins.zip");
+        BackupStore.ExportAll(zipFile, Loaded(), Reminders("B"));
+        using (ZipArchive zip = ZipFile.OpenRead(zipFile))
+        {
+            ZipArchiveEntry entry = zip.GetEntry(PluginPackageStore.BackupArchiveEntry);
+            Assert(entry != null, "Plugin backup missing");
+            using (Stream content = entry.Open())
+            using (StreamReader reader = new StreamReader(content))
+            {
+                string json = reader.ReadToEnd();
+                Assert(json.Contains("settings.json") && !json.Contains("history.txt") &&
+                    !json.Contains("Test.exe") && !json.Contains("approved.flag"), "Private data or executable leaked");
+            }
+        }
+        File.WriteAllText(settings, "live settings");
+        Assert(opted != BackupAutomation.DataSignature(), "Selected data not included in signature");
+        BackupStore.RestoreAll(zipFile);
+        Assert(File.ReadAllText(settings) == "live settings" && store.List()[0].Enabled,
+            "Full restore modified the live plugin or enabled state");
+        Assert(store.ReadRecovered().Count == 1 && store.ReadRecovered()[0].Files.Count == 1,
+            "Full restore did not stage plugin data");
+        byte[] recovery = File.ReadAllBytes(store.RecoveredPath());
+        BackupStore.RestoreAll(oldArchive);
+        Assert(Convert.ToBase64String(File.ReadAllBytes(store.RecoveredPath())) == Convert.ToBase64String(recovery),
+            "Old archive overwrote pending plugin recovery");
+        string secondSafety = BackupStore.RestoreAll(zipFile);
+        Assert(File.Exists(Path.Combine(secondSafety, PluginPackageStore.RecoveredRelativePath)),
+            "Previous staged recovery not saved before restore");
+        string invalid = Path.Combine(Root, "invalid-plugins.zip");
+        using (ZipArchive original = ZipFile.OpenRead(zipFile))
+        using (ZipArchive output = ZipFile.Open(invalid, ZipArchiveMode.Create))
+        {
+            foreach (ZipArchiveEntry entry in original.Entries)
+            {
+                ZipArchiveEntry copy = output.CreateEntry(entry.FullName);
+                using (Stream target = copy.Open())
+                {
+                    if (entry.FullName == PluginPackageStore.BackupArchiveEntry)
+                    {
+                        byte[] bytes = System.Text.Encoding.UTF8.GetBytes("{\"schemaVersion\":999,\"plugins\":[]}");
+                        target.Write(bytes, 0, bytes.Length);
+                    }
+                    else using (Stream source = entry.Open()) source.CopyTo(target);
+                }
+            }
+        }
+        Throws(delegate { BackupStore.RestoreAll(invalid); });
+        Assert(File.ReadAllText(settings) == "live settings" &&
+            Convert.ToBase64String(File.ReadAllBytes(store.RecoveredPath())) == Convert.ToBase64String(recovery),
+            "Invalid archive touched live or recovered data");
+    }
+
     private static void Case(string name, Action action)
     {
         try { Reset(); action(); passes++; Console.WriteLine("PASS: " + name); }
@@ -885,6 +966,7 @@ public static class BackupTests
             bool j = json, e = existing, f = fail;
             Case((json ? "JSON" : "ZIP") + " existing=" + existing + " fail=" + fail, delegate { ExportCase(j, e, f); });
         }
+        Case("plugin ZIP inventory, privacy, signature and staged restore", PluginBackupRoundtrip);
         Case("chosen backup directory isolation", InvalidBackupDirectory);
         Case("automatic backup schedule, changed data, retention", AutomaticBackupRetention);
         Case("failed automatic copy preserves existing ZIP", FailedAutomaticPreservesPrevious);
