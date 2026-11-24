@@ -1,0 +1,90 @@
+# Offline regression for the stable/beta release contract. Windows PowerShell 5.1 -STA.
+$ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSEdition -eq 'Core' -or [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') { throw 'Use Windows PowerShell 5.1 -STA.' }
+$root = Split-Path $PSScriptRoot -Parent
+$provider = New-Object Microsoft.CSharp.CSharpCodeProvider
+try {
+    $source = [IO.File]::ReadAllText((Join-Path $root 'AppUpdate.cs'))
+    $source = $source.Replace('using System.Windows;', '')
+    $harness = @'
+using System;
+using System.IO;
+using System.Runtime.Serialization.Json;
+
+namespace AppShelf
+{
+    internal static class ConfigStore { internal static void Log(Exception error) { } }
+    public static class BetaChannelTests
+    {
+        private static int count;
+        private static void Assert(bool condition, string name)
+        {
+            if (!condition) throw new Exception(name);
+            count++;
+        }
+
+        private static string Entry(string tag, bool beta, bool draft, string digest = null)
+        {
+            return "{\"tag_name\":\"" + tag + "\",\"prerelease\":" +
+                (beta ? "true" : "false") + ",\"draft\":" +
+                (draft ? "true" : "false") + ",\"assets\":[{\"name\":\"AppShelf.exe\",\"size\":20000," +
+                "\"digest\":\"" + (digest ?? ("sha256:" + new string('a', 64))) + "\"," +
+                "\"browser_download_url\":\"https://github.com/mishakov1c/app_shelf/releases/download/" +
+                tag + "/AppShelf.exe\"}]}";
+        }
+
+        private static AppUpdate.Release Select(bool include, params string[] entries)
+        {
+            return AppUpdate.SelectReleaseFromJson("[" + String.Join(",", entries) + "]", include);
+        }
+
+        private static void Reject(Action action, string name)
+        {
+            try { action(); }
+            catch (InvalidDataException) { count++; return; }
+            throw new Exception(name);
+        }
+
+        public static int Run()
+        {
+            Assert(AppUpdate.CompareReleaseVersions("2.24.0-beta.10", "2.24.0-beta.2") > 0, "numeric beta order");
+            Assert(AppUpdate.CompareReleaseVersions("2.24.0", "2.24.0-beta.999") > 0, "final beats beta");
+            Assert(AppUpdate.CompareReleaseVersions("2.25.0-beta.1", "2.24.0") > 0, "next beta beats previous stable");
+            Assert(AppUpdate.CompareReleaseVersions("2.23.0", "2.24.0-beta.1") < 0, "no downgrade");
+            Assert(AppUpdate.CompareReleaseVersions("v2.24.0", "2.24.0") == 0, "v prefix");
+            Reject(delegate { AppUpdate.NormalizeReleaseVersion("2.24.0-beta.0"); }, "beta zero");
+            Reject(delegate { AppUpdate.NormalizeReleaseVersion("2.24.0-beta.01"); }, "leading zero");
+            Reject(delegate { AppUpdate.NormalizeReleaseVersion("2.24.0-rc.1"); }, "unsupported suffix");
+            Reject(delegate { AppUpdate.NormalizeReleaseVersion("2.24.65535"); }, "assembly component bound");
+            string stable = Entry("2.23.0", false, false);
+            string b2 = Entry("2.24.0-beta.2", true, false);
+            string b10 = Entry("2.24.0-beta.10", true, false);
+            string final = Entry("2.24.0", false, false);
+            string draft = Entry("9.0.0", false, true);
+            Assert(Select(false, b10, draft, stable).VersionText == "2.23.0", "stable channel excludes beta and draft");
+            AppUpdate.Release selected = Select(true, b2, stable, b10, draft);
+            Assert(selected.IsBeta && selected.VersionText == "2.24.0-beta.10", "beta channel numeric ordering");
+            selected = Select(true, b10, final, stable);
+            Assert(!selected.IsBeta && selected.VersionText == "2.24.0", "stable release remains available");
+            Assert(Select(true, stable, Entry("3.0.0", true, false)).VersionText == "2.23.0", "flag/tag mismatch");
+            Assert(Select(true, stable, Entry("3.0.0-beta.1", false, false)).VersionText == "2.23.0", "unmarked beta rejected");
+            Reject(delegate { Select(false, b2, draft); }, "no stable release");
+            Reject(delegate { Select(true, stable, Entry("2.24.0-beta.11", true, false, "bad")); }, "missing digest blocks latest");
+            Reject(delegate { Select(true, b10.Replace("/download/2.24.0-beta.10/", "/download/2.24.0-beta.2/")); }, "tag/url mismatch");
+            return count;
+        }
+    }
+}
+'@
+    $parameters = New-Object System.CodeDom.Compiler.CompilerParameters
+    $parameters.GenerateInMemory = $true
+    $parameters.TreatWarningsAsErrors = $true
+    foreach ($reference in @('System.dll','System.Core.dll','System.Runtime.Serialization.dll','System.Xml.dll')) {
+        [void]$parameters.ReferencedAssemblies.Add($reference)
+    }
+    $result = $provider.CompileAssemblyFromSource($parameters, [string[]]@($source, $harness))
+    if ($result.Errors.HasErrors) { throw ($result.Errors | Out-String) }
+    $count = $result.CompiledAssembly.GetType('AppShelf.BetaChannelTests').GetMethod('Run').Invoke($null, $null)
+    Write-Host "Beta channel: $count passed."
+}
+finally { $provider.Dispose() }
