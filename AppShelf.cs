@@ -1800,6 +1800,7 @@ namespace AppShelf
                 }
                 if (_networkTimer == null) StartMonitors();
                 StartAutomaticBackupMonitor();
+                StartPluginRuntime();
             };
             SourceInitialized += OnWindowSourceInitialized;
             StateChanged += OnWindowStateChanged;
@@ -2566,6 +2567,7 @@ namespace AppShelf
 
         private void OnClosed(object sender, EventArgs e)
         {
+            StopPluginRuntime();
             if (Application.Current != null)
                 Application.Current.SessionEnding -= OnApplicationSessionEnding;
             if (_windowPlacementSaveTimer != null) _windowPlacementSaveTimer.Stop();

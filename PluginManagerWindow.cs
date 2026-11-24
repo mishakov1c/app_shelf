@@ -1,6 +1,8 @@
-// Package management UI. Stage 2 does not execute plugin code.
+// Package management and process lifecycle UI.
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
+using System.Windows.Threading;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
@@ -14,14 +16,18 @@ namespace AppShelf
     internal sealed class PluginManagerWindow : Window
     {
         private readonly PluginPackageStore store;
+        private readonly PluginRuntime runtime;
+        private readonly DispatcherTimer stateTimer;
+        private readonly List<Action> stateUpdates = new List<Action>();
         private readonly StackPanel rows = new StackPanel();
         private readonly TextBlock status = new TextBlock();
         private readonly Button install;
         private bool busy;
 
-        internal PluginManagerWindow(Window owner, PluginPackageStore packages)
+        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller)
         {
             store = packages;
+            runtime = controller;
             Owner = owner;
             Title = "AppShelf — Плагины";
             Width = 760; Height = 580; MinWidth = 480; MinHeight = 360;
@@ -42,7 +48,7 @@ namespace AppShelf
             install.Click += delegate { ChoosePackage(null); };
             heading.Children.Add(install);
             heading.Children.Add(Label("Или перетащите файл .asplugin в это окно.", 12, FluentUi.Secondary));
-            TextBlock phase = Label("На этом этапе плагины не запускаются. Включение сохраняет только выбранное состояние.", 12, FluentUi.Secondary);
+            TextBlock phase = Label("Фоновые плагины запускаются автоматически. Остальные — по требованию.", 12, FluentUi.Secondary);
             phase.Margin = new Thickness(0, 8, 0, 0);
             heading.Children.Add(phase);
             status.Foreground = FluentUi.Secondary; status.TextWrapping = TextWrapping.Wrap;
@@ -55,7 +61,10 @@ namespace AppShelf
             DragOver += OnDragOver;
             Drop += OnDrop;
             Closing += delegate(object sender, CancelEventArgs e) { if (busy) e.Cancel = true; };
-            Refresh();
+            stateTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            stateTimer.Tick += delegate { UpdateStates(); };
+            Closed += delegate { stateTimer.Stop(); };
+            Refresh(); stateTimer.Start();
         }
 
         private static TextBlock Label(string text, double size, Brush brush)
@@ -74,6 +83,7 @@ namespace AppShelf
 
         private void Refresh()
         {
+            stateUpdates.Clear();
             rows.Children.Clear();
             try
             {
@@ -85,8 +95,24 @@ namespace AppShelf
                     rows.Children.Add(empty);
                 }
                 foreach (InstalledPlugin plugin in plugins) AddRow(plugin);
+                UpdateStates();
             }
             catch (Exception error) { status.Text = "Не удалось прочитать список: " + error.Message; }
+        }
+
+        private void UpdateStates()
+        {
+            foreach (Action update in stateUpdates) update();
+        }
+
+        private async void RunAction(Func<Task> action, string success)
+        {
+            if (busy) return;
+            busy = true; install.IsEnabled = false; rows.IsEnabled = false;
+            status.Text = "Выполнение…";
+            try { await action(); status.Text = success; }
+            catch (Exception error) { status.Text = error.Message; }
+            finally { busy = false; install.IsEnabled = true; rows.IsEnabled = true; Refresh(); }
         }
 
         private void AddRow(InstalledPlugin plugin)
@@ -108,7 +134,9 @@ namespace AppShelf
             if (manifest != null && !String.IsNullOrWhiteSpace(manifest.Description))
                 body.Children.Add(Label(manifest.Description, 13, FluentUi.Foreground));
             if (manifest != null) body.Children.Add(Label("Возможности: " + String.Join(", ", manifest.Capabilities), 12, FluentUi.Secondary));
-            if (plugin.Error != null) body.Children.Add(Label("Ошибка: " + plugin.Error, 12, Brushes.Salmon));
+            TextBlock liveState = Label("", 12, FluentUi.Secondary);
+            liveState.Tag = "PluginState:" + plugin.Id;
+            body.Children.Add(liveState);
             WrapPanel actions = new WrapPanel { Margin = new Thickness(0, 9, 0, 0) };
             body.Children.Add(actions);
             CheckBox enabled = new CheckBox { Content = plugin.Enabled ? "Включён" : "Отключён",
@@ -116,11 +144,35 @@ namespace AppShelf
                 Foreground = FluentUi.Foreground, Margin = new Thickness(0, 0, 12, 4), Tag = "PluginEnabled:" + plugin.Id };
             enabled.Click += delegate
             {
-                try { store.SetEnabled(plugin.Id, enabled.IsChecked == true); status.Text = "Состояние сохранено."; }
-                catch (Exception error) { status.Text = error.Message; }
-                Refresh();
+                bool enable = enabled.IsChecked == true;
+                RunAction(delegate { return runtime.SetEnabledAsync(plugin.Id, enable); }, "Состояние сохранено.");
             };
             actions.Children.Add(enabled);
+            Button start = ButtonFor("Запустить", false);
+            start.Tag = "PluginStart:" + plugin.Id;
+            start.Click += delegate
+            {
+                bool restart = runtime.State(plugin.Id).Status != "idle";
+                RunAction(delegate { return runtime.StartAsync(plugin.Id, restart); }, "Плагин запущен.");
+            };
+            actions.Children.Add(start);
+            stateUpdates.Add(delegate
+            {
+                PluginRuntimeState state = runtime.State(plugin.Id);
+                string value;
+                Brush color = FluentUi.Secondary;
+                if (plugin.Error != null) { value = "Ошибка: " + plugin.Error; color = Brushes.Salmon; }
+                else if (!plugin.Enabled) value = "Отключён";
+                else if (state.Status == "running") { value = "Работает"; color = Brushes.LightGreen; }
+                else if (state.Status == "starting") value = "Запускается…";
+                else if (state.Status == "stopping") value = "Останавливается…";
+                else if (state.Status == "error") { value = "Ошибка: " + state.Error; color = Brushes.Salmon; }
+                else value = "Ожидает запуска";
+                liveState.Text = value; liveState.Foreground = color;
+                start.Content = state.Status == "idle" ? "Запустить" : "Перезапустить";
+                start.IsEnabled = plugin.Enabled && plugin.Error == null &&
+                    state.Status != "starting" && state.Status != "stopping";
+            });
             Button update = ButtonFor("Обновить…", false);
             update.IsEnabled = plugin.Error == null; update.Click += delegate { ChoosePackage(plugin.Id); };
             actions.Children.Add(update);
@@ -130,9 +182,7 @@ namespace AppShelf
                 if (AppDialog.Show(this, "Удалить плагин " + (manifest == null ? plugin.Id : manifest.Name) +
                     "?\nПользовательские данные плагина останутся на диске.", "AppShelf — Плагины",
                     MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-                try { store.Remove(plugin.Id); status.Text = "Плагин удалён. Данные сохранены."; }
-                catch (Exception error) { status.Text = error.Message; }
-                Refresh();
+                RunAction(delegate { return runtime.RemoveAsync(plugin.Id); }, "Плагин удалён. Данные сохранены.");
             };
             actions.Children.Add(remove);
         }
@@ -192,7 +242,7 @@ namespace AppShelf
                                 "AppShelf — Доверие к плагину", MessageBoxButton.YesNo,
                                 MessageBoxImage.Warning) == MessageBoxResult.Yes;
                         }));
-                    }, expectedId);
+                    }, expectedId, runtime.BeforePackageCommit);
                 });
                 status.Text = manifest == null ? "Установка отменена." : "Установлен " + manifest.Name + " " + manifest.Version + ". Плагин отключён.";
             }
@@ -203,11 +253,42 @@ namespace AppShelf
 
     public sealed partial class MainWindow
     {
+        private PluginRuntime _pluginRuntime;
+        private DispatcherTimer _pluginHealthTimer;
+
+        private PluginRuntime GetPluginRuntime()
+        {
+            if (_pluginRuntime == null)
+                _pluginRuntime = new PluginRuntime(new PluginPackageStore(ConfigStore.DirectoryPath));
+            return _pluginRuntime;
+        }
+
+        private async void StartPluginRuntime()
+        {
+            if (_pluginHealthTimer != null) return;
+            PluginRuntime runtime = GetPluginRuntime();
+            _pluginHealthTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+            _pluginHealthTimer.Tick += async delegate
+            {
+                try { await runtime.CheckHealthAsync(); }
+                catch (Exception error) { ConfigStore.Log(error); }
+            };
+            _pluginHealthTimer.Start();
+            try { await runtime.StartBackgroundsAsync(); }
+            catch (Exception error) { ConfigStore.Log(error); }
+        }
+
+        private void StopPluginRuntime()
+        {
+            if (_pluginHealthTimer != null) _pluginHealthTimer.Stop();
+            if (_pluginRuntime != null) _pluginRuntime.Dispose();
+        }
+
         private void ShowPluginManager(Window owner)
         {
             try
             {
-                PluginManagerWindow manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath));
+                PluginManagerWindow manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime());
                 manager.ShowDialog();
             }
             catch (Exception error)

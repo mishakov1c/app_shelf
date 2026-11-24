@@ -57,3 +57,11 @@ Example handshake (JSON payloads; actual frames include length prefix):
 ```
 
 Stage 3 supplies the codec/session only. The process owner, process cleanup, UI binding, background polling, notification delivery, hotkeys, backup and sample plugin are not active yet. API 1 is provisional until the first accepted beta.
+
+## Stage 4: process lifecycle
+
+- Enabled background-capable packages start at AppShelf load or when enabled; other enabled packages wait for explicit start. Runtime revalidates the installed package and enabled/trust markers immediately before launch. Manual restart is explicit; no automatic crash/restart loop.
+- Windows child process with redirected stdin/stdout/stderr; stderr is drained without retaining private text. Each process is assigned to a non-inherited, kill-on-close Job Object immediately after Process.Start. If assignment fails, terminate rather than allow an unsupervised plugin. Trusted plugins must not create child processes before hello; this is lifecycle containment, not a security sandbox. Host closure, including update, closes jobs. A normal shutdown requests shutdown and bounds the wait; on timeout the job is closed. Replacement/removal require confirmed process exit; data remains separate.
+- API 1 adds ping, successful empty response (apiVersion/id/ok). Every 15 seconds the host checks running plugins, skips an overlapping operation, and marks a crashed/unresponsive plugin as an error, without automatic restart. Plugin operations serialized off UI; package commit obtains same reservation after trust confirmation, not during the modal prompt. Updates disable new version; cancelled update leaves previous process untouched. If package swap fails after stop, previous version may remain enabled but stopped; manually start it.
+- Manager shows actual runtime state, explicit start/restart, and persists enable/disable as before. During an action the window is temporarily busy. Core locale is ru-RU until localization release. No command menu or notification delivery yet.
+- Unhandled host termination closes the job handle; there is a small process creation-to-job-assignment window because this implementation uses managed Process.Start, not suspended Win32 creation. This is not a protection from malicious same-user code. Crash-safe package swap recovery remains to be implemented before beta.

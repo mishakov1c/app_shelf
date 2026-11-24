@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -81,7 +80,8 @@ namespace AppShelf
         private readonly PluginJob job;
         private readonly PluginProtocolSession session;
         private readonly int timeout;
-        private int closing;
+        private readonly object stopGate = new object();
+        private bool stopped;
         private volatile bool ready;
         internal PluginCommand[] Commands { get; private set; }
         internal int ProcessId { get; private set; }
@@ -130,7 +130,7 @@ namespace AppShelf
         internal void Initialize(PluginManifest manifest, string data, CancellationToken cancel)
         {
             PluginResponse hello = session.HelloAsync(
-                CultureInfo.CurrentUICulture.Name.Length == 0 ? "ru-RU" : CultureInfo.CurrentUICulture.Name,
+                "ru-RU",
                 data, timeout, cancel).GetAwaiter().GetResult();
             Commands = hello.Commands ?? new PluginCommand[0];
             if (Array.IndexOf(manifest.Capabilities, "background") >= 0)
@@ -155,24 +155,30 @@ namespace AppShelf
         // still force the job closed if the bounded grace period expires.
         internal void Stop()
         {
-            if (Interlocked.Exchange(ref closing, 1) != 0) return;
-            try
+            lock (stopGate)
             {
-                if (ready && !session.Failed && !HasExited)
+                if (stopped) return;
+                try
                 {
-                    try
+                    if (ready && !session.Failed && !HasExited)
                     {
-                        session.ShutdownAsync(Math.Min(timeout, 1000), CancellationToken.None).GetAwaiter().GetResult();
-                        process.WaitForExit(500);
+                        try
+                        {
+                            session.ShutdownAsync(Math.Min(timeout, 1000), CancellationToken.None).GetAwaiter().GetResult();
+                            process.WaitForExit(500);
+                        }
+                        catch (Exception) { }
                     }
-                    catch (Exception) { }
                 }
-            }
-            finally
-            {
-                ForceTerminate();
-                try { process.WaitForExit(500); } catch (InvalidOperationException) { }
+                finally { ForceTerminate(); }
+                // Do not let an update/remove proceed if the owned process is still alive.
+                if (!process.WaitForExit(1000))
+                    throw new IOException("Не удалось подтвердить остановку процесса плагина.");
+                try { process.StandardInput.BaseStream.Dispose(); } catch (Exception) { }
+                try { process.StandardOutput.BaseStream.Dispose(); } catch (Exception) { }
+                try { process.StandardError.BaseStream.Dispose(); } catch (Exception) { }
                 process.Dispose();
+                stopped = true;
             }
         }
     }
@@ -256,7 +262,8 @@ namespace AppShelf
             if (child != null)
             {
                 SetState(slot, "stopping");
-                child.Stop();
+                try { child.Stop(); }
+                catch (Exception error) { SetState(slot, "error", error.Message); throw; }
                 lock (sync) { if (slot.Child == child) slot.Child = null; }
             }
             SetState(slot, "idle");
