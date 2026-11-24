@@ -163,6 +163,8 @@ public static class BackupTests
         Assert(Root == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         // Delete only this test run's verified data directory, never a real profile.
         if (Directory.Exists(Root)) Directory.Delete(Root, true);
+        string cloud = Path.Combine(Path.GetDirectoryName(Root), "CloudBackups");
+        if (Directory.Exists(cloud)) Directory.Delete(cloud, true);
         Directory.CreateDirectory(ConfigStore.ShortcutsDirectory);
         Seed("B");
     }
@@ -742,6 +744,23 @@ public static class BackupTests
             "Failed pre-update backup deleted a good copy or left staging data");
     }
 
+    private static void MigrateOldAdjacentExecutable()
+    {
+        AppConfig config = Loaded();
+        config.BackupDirectory = ExternalBackupRoot();
+        ConfigStore.Save(config);
+        string currentExe = Path.Combine(Path.GetDirectoryName(Root), "AppShelf.exe");
+        string previous = currentExe + ".previous";
+        File.WriteAllText(previous, "old 2.21.1 executable");
+        string destination = BackupAutomation.MigrateLegacyPreviousExe(config, currentExe);
+        Assert(destination != null && Directory.Exists(destination) &&
+            !File.Exists(previous) &&
+            File.ReadAllText(Path.Combine(destination, "AppShelf-previous.exe")) ==
+                "old 2.21.1 executable", "Legacy EXE was not preserved or adjacent file remains");
+        Assert(BackupAutomation.MigrateLegacyPreviousExe(config, currentExe) == null,
+            "Second migration duplicated a previous executable");
+    }
+
     private static void Case(string name, Action action)
     {
         try { Reset(); action(); passes++; Console.WriteLine("PASS: " + name); }
@@ -759,6 +778,7 @@ public static class BackupTests
         Case("automatic backup schedule, changed data, retention", AutomaticBackupRetention);
         Case("paired pre-update ZIP, EXE and external restore safety", PreUpdateBackupAndRestoreLocation);
         Case("failed pre-update keeps prior archives", FailedPreUpdateKeepsOldCopies);
+        Case("legacy .previous moves to selected backup directory", MigrateOldAdjacentExecutable);
         Case("full rollback and retry", delegate { Rollback(false, false); });
         Case("config rollback failure does not stop others", delegate { Rollback(true, false); });
         Case("shortcut rollback failure does not stop others", delegate { Rollback(false, true); });
