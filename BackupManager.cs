@@ -879,6 +879,85 @@ namespace AppShelf
 
     public sealed partial class MainWindow
     {
+        private DispatcherTimer _automaticBackupTimer;
+        private bool _automaticBackupInProgress;
+
+        private void StartAutomaticBackupMonitor()
+        {
+            if (_automaticBackupTimer != null) return;
+            _automaticBackupTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(3) };
+            _automaticBackupTimer.Tick += delegate
+            {
+                _automaticBackupTimer.Interval = TimeSpan.FromMinutes(30);
+                QueueAutomaticBackup();
+            };
+            _automaticBackupTimer.Start();
+        }
+
+        private async void QueueAutomaticBackup()
+        {
+            if (_automaticBackupInProgress || !_canSave || !_remindersCanSave ||
+                !BackupAutomation.AutomaticEnabled(_config) ||
+                String.IsNullOrWhiteSpace(_config.BackupDirectory) ||
+                Dispatcher.HasShutdownStarted) return;
+            _automaticBackupInProgress = true;
+            try
+            {
+                // Snapshot the two in-memory documents on the UI thread. ZIP compression
+                // and filesystem reads happen in a background worker.
+                AppConfig snapshot = _config.Copy();
+                ReminderDocument reminders = BackupAutomation.CopyReminders(_reminderDocument);
+                await Task.Run(delegate { BackupAutomation.CreateAutomatic(snapshot, reminders); });
+            }
+            catch (Exception error) { ConfigStore.Log(error); }
+            finally { _automaticBackupInProgress = false; }
+        }
+
+        // The configured root is shared by daily, pre-update and pre-restore backups.
+        private bool SelectBackupDirectory(Window owner)
+        {
+            using (Forms.FolderBrowserDialog picker = new Forms.FolderBrowserDialog())
+            {
+                picker.Description = "Выбери папку для резервных копий AppShelf (можно Dropbox или OneDrive).";
+                picker.ShowNewFolderButton = true;
+                picker.SelectedPath = !String.IsNullOrWhiteSpace(_config.BackupDirectory) &&
+                    Directory.Exists(_config.BackupDirectory) ? _config.BackupDirectory :
+                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                if (picker.ShowDialog() != Forms.DialogResult.OK) return false;
+                try
+                {
+                    string chosen = BackupAutomation.ValidateRoot(picker.SelectedPath);
+                    AppConfig pending = _config.Copy();
+                    pending.BackupDirectory = chosen;
+                    if (!SaveConfigChanges(pending)) return false;
+                    return true;
+                }
+                catch (Exception error)
+                {
+                    MessageBox.Show(owner, "Не удалось выбрать папку копий:\n" + error.Message,
+                        "AppShelf", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+            }
+        }
+
+        private bool EnsureBackupDirectory(Window owner)
+        {
+            if (String.IsNullOrWhiteSpace(_config.BackupDirectory))
+                return SelectBackupDirectory(owner);
+            try
+            {
+                BackupAutomation.ValidateRoot(_config.BackupDirectory);
+                return true;
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show(owner, "Папка резервных копий недоступна или выбрана неправильно:\n" +
+                    error.Message, "AppShelf", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return SelectBackupDirectory(owner);
+            }
+        }
+
         private string RestoreBackup(string filename)
         {
             if (_collectionsWindow != null)
