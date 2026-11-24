@@ -43,6 +43,7 @@ namespace AppShelf
             internal DateTime? CheckedUtc;
             internal DateTime? RetryUtc;
             internal bool FromCache;
+            internal string Error;
         }
 
         internal sealed class GithubRateLimitException : IOException
@@ -340,6 +341,12 @@ namespace AppShelf
                     return new CheckResult { Releases = cached, CheckedUtc = checkedUtc,
                         RetryUtc = error.RetryUtc, FromCache = true };
                 }
+                catch (Exception error)
+                {
+                    ConfigStore.Log(error);
+                    return new CheckResult { Releases = cached, CheckedUtc = checkedUtc,
+                        FromCache = cached != null, Error = error.Message };
+                }
             }
         }
 
@@ -362,6 +369,7 @@ namespace AppShelf
         {
             CheckResult result = CheckWithDetails(includeBeta);
             if (result.RetryUtc.HasValue) throw new GithubRateLimitException(result.RetryUtc.Value);
+            if (result.Error != null) throw new IOException(result.Error);
             return result.Releases;
         }
 
@@ -637,8 +645,15 @@ namespace AppShelf
             {
                 using (Process previous = Process.GetProcessById(parentId))
                 {
-                    if (!previous.HasExited && !String.Equals(
-                        Path.GetFullPath(previous.MainModule.FileName), target,
+                    string parentPath = null;
+                    try
+                    {
+                        if (!previous.HasExited)
+                            parentPath = Path.GetFullPath(previous.MainModule.FileName);
+                    }
+                    catch (InvalidOperationException) { if (!previous.HasExited) throw; }
+                    catch (System.ComponentModel.Win32Exception) { if (!previous.HasExited) throw; }
+                    if (parentPath != null && !String.Equals(parentPath, target,
                         StringComparison.OrdinalIgnoreCase))
                         throw new InvalidOperationException("Установщик запущен не для исходного процесса AppShelf.");
                     if (!previous.WaitForExit(60000))
