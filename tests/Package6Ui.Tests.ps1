@@ -1277,6 +1277,17 @@ public static class Package6Tests
                     }
                     Assert(good != null && good.IsEnabled && good.IsChecked == false, "Installed row not disabled");
                     Assert(broken != null && !broken.IsEnabled, "Broken package not disabled");
+                    good.ApplyTemplate();
+                    Border knob = good.Template.FindName("SwitchKnob", good) as Border;
+                    Assert(knob != null && knob.HorizontalAlignment == HorizontalAlignment.Left &&
+                        Convert.ToString(good.Content) == "Плагин выключен", "Disabled switch appearance or label missing");
+                    TextBlock process = Controls<TextBlock>(manager).Find(delegate(TextBlock block) {
+                        return Object.Equals(block.Tag, "PluginState:example.hello");
+                    });
+                    Assert(process != null && process.Text == "Состояние процесса: Остановлен", "Disabled process state missing");
+                    Assert(Controls<TextBlock>(manager).Exists(delegate(TextBlock block) {
+                        return block.Text == "Возможности: собственные окна";
+                    }), "Capability not localized");
                     good.IsChecked = true;
                     good.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
                     // The enabled flag can reach disk before the manager refreshes its controls.
@@ -1295,6 +1306,17 @@ public static class Package6Tests
                         if (plugin.Id == "example.hello") enabled = plugin.Enabled;
                     Assert(enabled, "UI toggle did not persist enabled state");
                     Assert(commandButton != null && commandButton.IsEnabled, "Command button did not become enabled after the UI toggle");
+                    CheckBox refreshed = Controls<CheckBox>(manager).Find(delegate(CheckBox check) {
+                        return Object.Equals(check.Tag, "PluginEnabled:example.hello");
+                    });
+                    Assert(refreshed != null && refreshed.IsChecked == true && Convert.ToString(refreshed.Content) == "Плагин включён", "Enabled switch did not refresh");
+                    refreshed.ApplyTemplate();
+                    Border onKnob = refreshed.Template.FindName("SwitchKnob", refreshed) as Border;
+                    Assert(onKnob != null && onKnob.HorizontalAlignment == HorizontalAlignment.Right, "Enabled switch appearance missing");
+                    process = Controls<TextBlock>(manager).Find(delegate(TextBlock block) {
+                        return Object.Equals(block.Tag, "PluginState:example.hello");
+                    });
+                    Assert(process != null && process.Text == "Состояние процесса: Остановлен", "Enabled idle process state conflated with switch");
                     MenuItem actionMenu = new MenuItem();
                     Call(w, "PopulatePluginTools", actionMenu, store.List());
                     Assert(actionMenu.Items.Count == 1 && Convert.ToString(((MenuItem)actionMenu.Items[0]).Header) == "Hello",
@@ -1303,7 +1325,26 @@ public static class Package6Tests
                     Assert(actionGroup.Items.Count == 1 && Convert.ToString(((MenuItem)actionGroup.Items[0]).Header) == "Открыть команды…",
                         "Idle plugin action missing");
                     Assert(runtime.State("example.hello").Status == "idle", "Menu discovery started plugin");
-                    store.SetEnabled("example.hello", false);
+                    refreshed.IsChecked = false;
+                    refreshed.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+                    limit.Restart();
+                    do {
+                        Drain();
+                        commandButton = Controls<Button>(manager).Find(delegate(Button button) {
+                            return Object.Equals(button.Tag, "PluginCommands:example.hello");
+                        });
+                        good = Controls<CheckBox>(manager).Find(delegate(CheckBox check) {
+                            return Object.Equals(check.Tag, "PluginEnabled:example.hello");
+                        });
+                        if (good != null && good.IsEnabled && good.IsChecked == false &&
+                            commandButton != null && !commandButton.IsEnabled) break;
+                        System.Threading.Thread.Sleep(10);
+                    } while (limit.ElapsedMilliseconds < 5000);
+                    Assert(good != null && good.IsEnabled && good.IsChecked == false &&
+                        Convert.ToString(good.Content) == "Плагин выключен" &&
+                        commandButton != null && !commandButton.IsEnabled &&
+                        !store.List().Find(delegate(InstalledPlugin p) { return p.Id == "example.hello"; }).Enabled,
+                        "UI switch failed to disable the plugin");
                     Call(w, "PopulatePluginTools", actionMenu, store.List());
                     Assert(actionMenu.Items.Count == 1 && !((MenuItem)actionMenu.Items[0]).IsEnabled,
                         "Disabled plugin still in actions menu");
