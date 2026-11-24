@@ -633,19 +633,6 @@ namespace AppShelf
                 ? config.AutomaticBackupQuotaMb : DefaultQuotaMb;
         }
 
-        internal static ReminderDocument CopyReminders(ReminderDocument reminders)
-        {
-            if (reminders == null) throw new InvalidOperationException("Напоминания не загружены.");
-            using (MemoryStream stream = new MemoryStream())
-            {
-                DataContractJsonSerializer serializer =
-                    new DataContractJsonSerializer(typeof(ReminderDocument));
-                serializer.WriteObject(stream, reminders);
-                stream.Position = 0;
-                return (ReminderDocument)serializer.ReadObject(stream);
-            }
-        }
-
         private static void ReadSavedDocuments(out AppConfig config, out ReminderDocument reminders)
         {
             string settingsWarning, reminderWarning;
@@ -830,7 +817,7 @@ namespace AppShelf
             }
         }
 
-        internal static bool CreateAutomatic(AppConfig config, ReminderDocument reminders)
+        internal static bool CreateAutomatic(AppConfig config)
         {
             if (!AutomaticEnabled(config) || String.IsNullOrWhiteSpace(config.BackupDirectory))
                 return false;
@@ -884,7 +871,7 @@ namespace AppShelf
                 return BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "");
         }
 
-        internal static string CreateBeforeUpdate(AppConfig config, ReminderDocument reminders,
+        internal static string CreateBeforeUpdate(AppConfig config,
             string oldExecutable, string installedVersion, string newVersion)
         {
             lock (Gate)
@@ -952,11 +939,10 @@ namespace AppShelf
             _automaticBackupInProgress = true;
             try
             {
-                // Snapshot the two in-memory documents on the UI thread. ZIP compression
-                // and filesystem reads happen in a background worker.
-                AppConfig snapshot = _config.Copy();
-                ReminderDocument reminders = BackupAutomation.CopyReminders(_reminderDocument);
-                await Task.Run(delegate { BackupAutomation.CreateAutomatic(snapshot, reminders); });
+                // Capture only the policy on the UI thread. Validated persisted
+                // documents are loaded and compressed entirely in the worker.
+                AppConfig policy = _config.Copy();
+                await Task.Run(delegate { BackupAutomation.CreateAutomatic(policy); });
             }
             catch (Exception error)
             {
