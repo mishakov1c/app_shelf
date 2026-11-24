@@ -2061,10 +2061,7 @@ namespace AppShelf
             };
             _collectionsMenuItem.Click += delegate { ShowCollectionsWindow(); };
             tools.Items.Add(_collectionsMenuItem);
-            MenuItem plugins = new MenuItem { Header = "Плагины", Icon = FluentUi.MenuGlyph("settings") };
-            plugins.Click += delegate { ShowPluginManager(this); };
-            tools.Items.Add(plugins);
-            tools.Items.Add(CreatePluginToolsMenu());
+            tools.Items.Add(CreatePluginToolsMenu(tools));
             _newGroupMenuItem = new MenuItem
             {
                 Header = "Создать группу", Icon = FluentUi.MenuGlyph("folder"),
@@ -7323,10 +7320,12 @@ namespace AppShelf
                 windowsItems, sections, arrows, headers, toggleSection);
             AddSettingsSection(accordionRows, "collections", "Подборки",
                 new List<UIElement> { collectionsSetting }, sections, arrows, headers, toggleSection);
-            Button pluginSettings = ActionButton("Управление плагинами…", false);
+            Button pluginSettings = ActionButton("Управление плагинами…", true);
             pluginSettings.Click += delegate { ShowPluginManager(dialog); };
+            TextBlock pluginHint = Text("Установка, обновление, удаление и резервирование данных плагинов.", 12, MutedBrush);
+            pluginHint.TextWrapping = TextWrapping.Wrap;
             AddSettingsSection(accordionRows, "plugins", "Плагины",
-                new List<UIElement> { pluginSettings }, sections, arrows, headers, toggleSection);
+                new List<UIElement> { pluginSettings, pluginHint }, sections, arrows, headers, toggleSection);
             AddSettingsSection(accordionRows, "data", "Резервные копии",
                 new List<UIElement> { backupSettings },
                 sections, arrows, headers, toggleSection);
