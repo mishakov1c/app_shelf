@@ -191,13 +191,8 @@ namespace AppShelf
                         {
                             ConfigStore.Log(backupError);
                             MessageBoxResult answer = MessageBox.Show(dialog,
-                                "Не удалось сохранить резервную копию:
-" +
-                                backupError.Message + "
-
-Да — повторить.
-Нет — установить без копии.
-Отмена — отказаться от установки.",
+                                "Не удалось сохранить резервную копию:\n" +
+                                backupError.Message + "\n\nДа — повторить.\nНет — установить без копии.\nОтмена — отказаться от установки.",
                                 "AppShelf — резервная копия", MessageBoxButton.YesNoCancel,
                                 MessageBoxImage.Warning);
                             if (answer == MessageBoxResult.Yes) continue;
