@@ -1130,7 +1130,8 @@ public static class Package6Tests
                     "Menu icons missing");
                 MenuItem panel = Menu(quick, "Нижняя панель");
                 Assert(panel.Items.Count == 3 && Menu(quick, "Режим плиток").Items.Count == 3 &&
-                    Menu(quick, "Размещение групп").Items.Count == 3,
+                    Menu(quick, "Размещение групп").Items.Count == 4 &&
+                    ((MenuItem)Menu(quick, "Размещение групп").Items[3]).Header.ToString() == "Свободное полотно",
                     "Quick mode choices incomplete");
                 Assert(Menu(quick, "Звук включён").IsCheckable &&
                     Menu(quick, "Группировка приложений").IsCheckable &&
@@ -2581,6 +2582,40 @@ public static class Package6Tests
                 foreach (Border zone in cells)
                     Assert(Grid.GetColumnSpan(zone) == 1,
                         "Wide free placement did not restore three columns");
+            } finally { w.Close(); }
+        });
+        Case("legacy nine-zone geometry migrates to the shared canvas and old layout survives", delegate {
+            Seed("normal", 4);
+            AppConfig c = Load();
+            c.Items[3].Group = "Вторая";
+            c.GroupLayoutMode = "free";
+            c.GroupDefaultZone = "top-left";
+            c.GroupZoneOverrides = new Dictionary<string, string> { { "Вторая", "bottom-right" } };
+            ConfigStore.Save(c);
+            MainWindow w = Open(); try {
+                w.Width = 1100; w.Height = 780; Drain();
+                Call(w, "SetGroupLayoutMode", "canvas"); Drain();
+                AppConfig saved = Load();
+                Assert(saved.GroupLayoutMode == "canvas" && saved.CanvasPositions != null,
+                    "Canvas migration was not persisted");
+                Assert(saved.CanvasPositions.ContainsKey("app:Первая") && saved.CanvasPositions.ContainsKey("app:Вторая"),
+                    "Migrated group missing");
+                Assert(saved.CanvasPositions["app:Вторая"].X > saved.CanvasPositions["app:Первая"].X,
+                    "Legacy horizontal placement not retained");
+                Call(w, "ArrangeCanvas", "vertical"); Drain();
+                saved = Load();
+                foreach (FreeCanvasRect rect in saved.CanvasPositions.Values)
+                    Assert(rect.X == 0, "Vertical arrangement failed to save");
+                Call(w, "SetGroupLayoutMode", "free"); Drain();
+                Assert(Load().GroupZoneOverrides["Вторая"] == "bottom-right" && Get(w, "_freeLayoutGrid") != null,
+                    "Old layout changed during migration");
+                Call(w, "SetGroupLayoutMode", "canvas"); Drain();
+                Assert(Load().CanvasPositions["app:Вторая"].X == 0, "Switching back replaced saved canvas");
+                Call(w, "ArrangeCanvas", "reset"); Drain();
+                Assert(Load().CanvasInitialized && Load().CanvasPositions == null, "Reset did not clear saved geometry");
+                Call(w, "SetGroupLayoutMode", "free"); Drain();
+                Call(w, "SetGroupLayoutMode", "canvas"); Drain();
+                Assert(Load().CanvasPositions == null, "Reset was overwritten by repeated legacy migration");
             } finally { w.Close(); }
         });
         Case("free zones use content heights before scrolling a small viewport", delegate {

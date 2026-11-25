@@ -246,6 +246,9 @@ namespace AppShelf
             };
             measure(BackupComponents.Settings, delegate {
                 AppConfig common = config.Copy(); PluginSettingsDocument.Clear(common);
+                common.CanvasPositions = FreeCanvasLayout.SelectPositions(config.CanvasPositions, false);
+                common.CanvasGridStep = config.CanvasGridStep; common.CanvasViewportMode = config.CanvasViewportMode;
+                common.CanvasInitialized = config.CanvasInitialized;
                 long size = SerializedSize(common);
                 foreach (AppItem item in common.Items)
                     if (item != null && ConfigStore.IsOwnedShortcut(item.Path)) size += Length(item.Path);
@@ -277,7 +280,8 @@ namespace AppShelf
                 return size;
             });
             measure(BackupComponents.WidgetLayout, delegate {
-                return SerializedSize(config.WidgetGroups) + SerializedSize(config.WidgetIndicators);
+                return SerializedSize(config.WidgetGroups) + SerializedSize(config.WidgetIndicators) +
+                    SerializedSize(FreeCanvasLayout.SelectPositions(config.CanvasPositions, true));
             });
             measure(BackupComponents.Executable, delegate { return Length(CurrentExecutable()); });
             PluginPackageStore store = new PluginPackageStore(ConfigStore.DirectoryPath);
@@ -336,7 +340,9 @@ namespace AppShelf
             portable.ArchiveComponents = (int)components;
             portable.PluginSettingsIncluded = Includes(components, BackupComponents.WidgetLayout);
             if (!portable.PluginSettingsIncluded)
-            { portable.WidgetGroups = null; portable.WidgetIndicators = null; }
+            { portable.WidgetGroups = null; portable.WidgetIndicators = null;
+                portable.CanvasPositions = FreeCanvasLayout.SelectPositions(portable.CanvasPositions, false);
+                if (portable.CanvasPositions.Count == 0) portable.CanvasPositions = null; }
             Dictionary<string, string> owned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (AppItem item in portable.Items)
             {
@@ -620,7 +626,8 @@ namespace AppShelf
                     Includes(components, BackupComponents.Collections) != (collections != null) ||
                     Includes(components, BackupComponents.WidgetLayout) != restored.PluginSettingsIncluded ||
                     (!Includes(components, BackupComponents.WidgetLayout) &&
-                        (restored.WidgetGroups != null || restored.WidgetIndicators != null)))
+                        (restored.WidgetGroups != null || restored.WidgetIndicators != null ||
+                            FreeCanvasLayout.SelectPositions(restored.CanvasPositions, true).Count != 0)))
                     throw new InvalidDataException("Состав архива не соответствует описанию.");
                 foreach (string name in entries)
                     if ((!Includes(components, BackupComponents.Backgrounds) && name.StartsWith("Backgrounds/", StringComparison.OrdinalIgnoreCase)) ||
@@ -796,9 +803,22 @@ namespace AppShelf
                     List<PluginWidgetGroupConfig> groups = restored.WidgetGroups;
                     List<PluginWidgetPlacementConfig> indicators = restored.WidgetIndicators;
                     string background = restored.MainBackgroundPreset;
+                    Dictionary<string, FreeCanvasRect> archivePositions = restored.CanvasPositions;
+                    int? archiveGridStep = restored.CanvasGridStep;
+                    bool canvasInitialized = restoreSettings ? restored.CanvasInitialized : current.CanvasInitialized;
+                    int archiveStep = FreeCanvasLayout.NormalizeStep(archiveGridStep);
+                    int currentStep = FreeCanvasLayout.NormalizeStep(current.CanvasGridStep);
+                    int targetStep = restoreSettings ? archiveStep : currentStep;
+                    string viewportMode = restoreSettings ? restored.CanvasViewportMode : current.CanvasViewportMode;
                     if (!restoreSettings) restored = current.Copy();
                     PluginSettingsDocument.Capture(current).Apply(restored);
                     if (restoreWidgets) { restored.WidgetGroups = groups; restored.WidgetIndicators = indicators; }
+                    restored.CanvasPositions = FreeCanvasLayout.MergePositions(
+                        restoreSettings ? archivePositions : current.CanvasPositions, restoreSettings ? archiveStep : currentStep,
+                        restoreWidgets ? archivePositions : current.CanvasPositions, restoreWidgets ? archiveStep : currentStep, targetStep);
+                    restored.CanvasGridStep = restoreSettings ? archiveGridStep : current.CanvasGridStep;
+                    restored.CanvasInitialized = canvasInitialized || restored.CanvasPositions != null;
+                    restored.CanvasViewportMode = viewportMode;
                     restored.MainBackgroundPreset = restoreBackgrounds ? background : current.MainBackgroundPreset;
                 }
                  if (!restoreCovers && collections != null)
@@ -1764,9 +1784,11 @@ namespace AppShelf
                     box.Checked += delegate { Refresh(); }; box.Unchecked += delegate { Refresh(); };
                 }
                 StackPanel commands = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 4) };
-                Button all = new Button { Content = "Выбрать всё", Margin = new Thickness(0, 0, 6, 0) };
+                Button all = ActionButton("Выбрать всё", false);
+                all.Margin = new Thickness(0, 0, 6, 0);
                 all.Click += delegate { Set(available); };
-                Button minimum = new Button { Content = required ? "Минимальный набор" : "Снять выбор" };
+                Button minimum = ActionButton(required ? "Минимальный набор" : "Снять выбор", false);
+                minimum.Margin = new Thickness(0);
                 minimum.Click += delegate { Set(required ? BackupComponents.Settings : (BackupComponents)0); };
                 commands.Children.Add(all); commands.Children.Add(minimum); Panel.Children.Add(commands);
                 total = new TextBlock { Foreground = FluentUi.Secondary, TextWrapping = TextWrapping.Wrap,
