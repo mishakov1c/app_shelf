@@ -9,7 +9,7 @@ $env:APPSHELF_TEST_DATA = $temp
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
@@ -371,6 +371,60 @@ public static class Package6Tests
     {
         Assert(ConfigStore.DirectoryPath == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         Application app = new Application(); app.ShutdownMode = ShutdownMode.OnExplicitShutdown; FluentUi.Install(app);
+        Case("native declarative plugin widget renderer", delegate {
+            PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
+                Elements = new[] {
+                    new PluginWidgetElement { Type = "text", Label = "<Button> literal & _text" },
+                    new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "$200.00" },
+                    new PluginWidgetElement { Type = "progress", Label = "CPU", Percent = 24 },
+                    new PluginWidgetElement { Type = "action", Label = "Открыть _детали", CommandId = "open" },
+                    new PluginWidgetElement { Type = "action", Label = "Обновить", CommandId = "refresh" }
+                } };
+            TaskCompletionSource<bool> pending = new TaskCompletionSource<bool>();
+            string command = null; int calls = 0;
+            Border view = PluginWidgetView.Create(card, delegate(string id) { command = id; calls++; return pending.Task; });
+            Border tile = PluginWidgetView.Create(new PluginWidget { Id = "cpu", Title = "CPU", Kind = "tile",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "Загрузка", Value = "24%" },
+                    new PluginWidgetElement { Type = "progress", Label = "CPU", Percent = 24 } } }, null);
+            Border indicator = PluginWidgetView.Create(new PluginWidget { Id = "vpn", Title = "VPN", Kind = "indicator",
+                Elements = new[] { new PluginWidgetElement { Type = "text", Label = "Подключён" },
+                    new PluginWidgetElement { Type = "action", Label = "Подробнее", CommandId = "open" } } }, null);
+            StackPanel panel = new StackPanel { Width = 320, Margin = new Thickness(12) };
+            panel.Children.Add(view); panel.Children.Add(tile); panel.Children.Add(indicator);
+            Window window = new Window { Width = 400, Height = 620, ShowInTaskbar = false, Content = panel };
+            try {
+                window.Show(); Drain();
+                Assert(Object.Equals(view.Tag, "quotes") && view.MaxWidth > tile.MaxWidth && indicator.MaxWidth < view.MaxWidth,
+                    "Widget identity or size hints missing");
+                Assert(Controls<TextBlock>(view).Exists(delegate(TextBlock t) { return t.Text == "<Button> literal & _text"; }) &&
+                    Controls<TextBlock>(view).Exists(delegate(TextBlock t) { return t.Text == "$200.00"; }),
+                    "Widget content was not rendered literally");
+                List<ProgressBar> bars = Controls<ProgressBar>(view);
+                Assert(bars.Count == 1 && bars[0].Value == 24 && bars[0].Maximum == 100, "Progress data missing");
+                List<Button> buttons = Controls<Button>(view);
+                Assert(buttons.Count == 2 && buttons[0].IsEnabled && !Controls<Button>(indicator)[0].IsEnabled,
+                    "Widget action availability wrong");
+                Click(buttons[0]); Click(buttons[1]);
+                Assert(command == "open" && calls == 1 && !buttons[0].IsEnabled && !buttons[1].IsEnabled,
+                    "Widget action was not routed or overlapping clicks were accepted");
+                pending.SetResult(true); Drain();
+                Stopwatch limit = Stopwatch.StartNew();
+                while (!buttons[0].IsEnabled && limit.ElapsedMilliseconds < 3000) { System.Threading.Thread.Sleep(10); Drain(); }
+                Assert(buttons[0].IsEnabled && buttons[1].IsEnabled, "Widget actions stayed busy after completion");
+                pending = new TaskCompletionSource<bool>();
+                Click(buttons[1]); pending.SetException(new InvalidOperationException("simulated")); Drain();
+                TextBlock error = Controls<TextBlock>(view).Find(delegate(TextBlock t) { return t.Text == "Не удалось выполнить команду."; });
+                limit.Restart();
+                while (error.Visibility != Visibility.Visible && limit.ElapsedMilliseconds < 3000) { System.Threading.Thread.Sleep(10); Drain(); }
+                Assert(calls == 2 && command == "refresh" && error.Visibility == Visibility.Visible &&
+                    buttons[1].IsEnabled, "Widget action failure was not contained");
+                panel.Width = 160; window.UpdateLayout(); Drain();
+                Assert(view.ActualWidth <= 160 && tile.ActualWidth <= 160 && indicator.ActualWidth <= 160,
+                    "Widget renderer overflowed a narrow host");
+                panel.Width = 320; window.UpdateLayout(); Drain();
+                Picture(panel, "plugin-widget-renderer");
+            } finally { window.Close(); }
+        });
         Case("release notes Markdown and safe links", delegate {
             StackPanel panel = new StackPanel { VerticalAlignment = VerticalAlignment.Top };
             string tick = ((char)96).ToString();
