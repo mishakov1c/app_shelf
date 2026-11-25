@@ -36,6 +36,9 @@ try {
             $source = $source.Replace('if (picker.ShowDialog(dialog) != true) return;',
                 'if (!RestoreBackupTests.PickFile(picker)) return;')
             $source = $source.Replace('MessageBox.Show(', 'RestoreBackupTests.Notice(')
+            $anchor = 'return choice.ShowDialog() == true ? (BackupComponents?)picker.Selected : null;'
+            if ($source.Split(@($anchor), [StringSplitOptions]::None).Length -ne 2) { throw 'Backup composition dialog boundary missing.' }
+            $source = $source.Replace($anchor, 'return RestoreBackupTests.ChooseComponents(choice, delegate { return picker.Selected; }, export);')
         }
         $source = $source.Replace('WindowsStartup.Apply(enable, hidden);', '').Replace('WindowsStartup.WriteRaw(previousRunValue);', '')
         $source = $source.Replace('System.Media.SystemSounds.Asterisk.Play();', '').Replace('System.Media.SystemSounds.Exclamation.Play();', '')
@@ -61,6 +64,25 @@ public static class RestoreBackupTests
     private static string pickedFile;
     private static int filePickers;
     private static bool declineConfirmation;
+    private static int compositionDialogs;
+    internal static BackupComponents? ChooseComponents(Window dialog, Func<BackupComponents> selected, bool export)
+    {
+        compositionDialogs++;
+        string caption = export ? "\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c\u2026" :
+            "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u043e\u0435\u2026";
+        Exception error = null;
+        dialog.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(delegate {
+            try
+            {
+                Assert(Controls<CheckBox>(dialog).Count > 1, "Missing backup component controls");
+                Click(dialog, caption);
+            }
+            catch (Exception ex) { error = ex; dialog.Close(); }
+        }));
+        bool? result = dialog.ShowDialog();
+        if (error != null) throw error;
+        return result == true ? (BackupComponents?)selected() : null;
+    }
     private static readonly List<string> notices = new List<string>();
     public static bool PickFile(Microsoft.Win32.FileDialog picker)
     {
@@ -269,8 +291,8 @@ public static class RestoreBackupTests
                     AssertBackupGroups(backup);
                     ToggleBackupGroup(backup, "backup-full");
                     pickedFile = zip;
-                    Click(backup, "\u042d\u043a\u0441\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0432\u0441\u0451 \u0432 ZIP\u2026");
-                    Assert(File.Exists(zip), "ZIP export from settings was blocked");
+                    Click(backup, "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u0440\u0435\u0437\u0435\u0440\u0432\u043d\u0443\u044e \u043a\u043e\u043f\u0438\u044e ZIP\u2026");
+                    Assert(File.Exists(zip) && compositionDialogs == 1, "ZIP export or composition picker was blocked");
                     string configBefore = File.ReadAllText(ConfigStore.FilePath);
                     string remindersBefore = File.ReadAllText(ReminderStore.FilePath);
                     int pickersBefore = filePickers;
@@ -286,7 +308,7 @@ public static class RestoreBackupTests
                         Convert.ToBase64String(File.ReadAllBytes(image)) == stagedBytes,
                         "Cancel modified data or staged wallpaper");
                     Click(backup, "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0438\u0437 ZIP\u2026");
-                    Assert(filePickers == pickersBefore + 2 && !backup.IsVisible && !settings.IsVisible,
+                    Assert(compositionDialogs == 3 && filePickers == pickersBefore + 2 && !backup.IsVisible && !settings.IsVisible,
                         "Confirmed restore did not close nested dialogs");
                     Assert(window.IsVisible && (bool)Get(window, "_canSave") &&
                         File.ReadAllText(ConfigStore.FilePath) == configBefore &&
