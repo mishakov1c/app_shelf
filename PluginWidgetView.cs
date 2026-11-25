@@ -189,10 +189,14 @@ namespace AppShelf
         private Func<bool> canEdit = delegate { return true; };
         private string defaultZone = "top-left";
         private WidgetGroup draggingGroup;
+        private Placement draggingWidget;
+        private Border widgetDropPreview;
+        private Grid widgetDropGrid;
         private bool refreshing;
         private int refreshCursor;
         private Func<string, string, bool, Task<PluginWidgetSnapshot>> automaticRead;
         internal const string GroupDragFormat = "AppShelf.WidgetGroup";
+        internal const string WidgetDragFormat = "AppShelf.Widget";
         internal WrapPanel Surface { get; private set; }
         internal bool HasWidgets { get { return entries.Count != 0; } }
 
@@ -238,22 +242,24 @@ namespace AppShelf
             }
         }
 
-        private bool FindSpace(WidgetGroup group, string size, Placement except, out int row, out int column)
+        private bool CanOccupy(WidgetGroup group, string size, Placement except, int row, int column)
         {
             int height = Rows(size), width = Columns(size);
-            for (row = 0; row <= 2 - height; row++)
-                for (column = 0; column <= 2 - width; column++)
-                {
-                    bool occupied = false;
-                    foreach (Placement p in entries)
-                    {
-                        if (p == except || p.Group != group) continue;
-                        if (row < p.Row + Rows(p.Size) && p.Row < row + height &&
-                            column < p.Column + Columns(p.Size) && p.Column < column + width)
-                        { occupied = true; break; }
-                    }
-                    if (!occupied) return true;
-                }
+            if (row < 0 || column < 0 || row > 2 - height || column > 2 - width) return false;
+            foreach (Placement p in entries)
+            {
+                if (p == except || p.Group != group) continue;
+                if (row < p.Row + Rows(p.Size) && p.Row < row + height &&
+                    column < p.Column + Columns(p.Size) && p.Column < column + width) return false;
+            }
+            return true;
+        }
+
+        private bool FindSpace(WidgetGroup group, string size, Placement except, out int row, out int column)
+        {
+            for (row = 0; row <= 2 - Rows(size); row++)
+                for (column = 0; column <= 2 - Columns(size); column++)
+                    if (CanOccupy(group, size, except, row, column)) return true;
             row = column = 0;
             return false;
         }
@@ -272,6 +278,7 @@ namespace AppShelf
 
         internal void DetachBoard()
         {
+            ClearWidgetDropPreview();
             foreach (WidgetGroup group in groups) DetachCard(group);
             board = null;
         }
@@ -359,6 +366,116 @@ namespace AppShelf
             MoveGroupToZone(draggingGroup, zone); return true;
         }
 
+        private static string DragKey(Placement entry)
+        { return entry.PluginId + "/" + entry.WidgetId; }
+
+        internal bool IsWidgetDrag(IDataObject data)
+        {
+            return draggingWidget != null && entries.Contains(draggingWidget) &&
+                data.GetDataPresent(WidgetDragFormat) && Object.Equals(data.GetData(WidgetDragFormat), DragKey(draggingWidget));
+        }
+
+        private bool WidgetDropTarget(DragEventArgs e, out WidgetGroup group, out int row, out int column)
+        {
+            group = null; row = column = 0;
+            if (board == null || !canEdit() || !IsWidgetDrag(e.Data)) return false;
+            DependencyObject node = e.OriginalSource as DependencyObject;
+            while (node != null)
+            {
+                Grid grid = node as Grid;
+                if (grid != null)
+                {
+                    group = groups.Find(delegate(WidgetGroup candidate) { return candidate.Cells == grid; });
+                    if (group != null) break;
+                }
+                try { node = VisualTreeHelper.GetParent(node); }
+                catch (InvalidOperationException) { node = LogicalTreeHelper.GetParent(node); }
+            }
+            if (group == null || group.Cells.Visibility != Visibility.Visible) return false;
+            Point point = e.GetPosition(group.Cells);
+            if (point.X < 0 || point.Y < 0 || point.X > group.Cells.ActualWidth || point.Y > group.Cells.ActualHeight)
+                return false;
+            // Snap a span to the nearest valid top-left cell inside the 2x2 grid.
+            row = Math.Min(2 - Rows(draggingWidget.Size), point.Y >= group.Cells.ActualHeight / 2 ? 1 : 0);
+            column = Math.Min(2 - Columns(draggingWidget.Size), point.X >= group.Cells.ActualWidth / 2 ? 1 : 0);
+            return CanOccupy(group, draggingWidget.Size, draggingWidget, row, column) &&
+                (draggingWidget.Group != group || draggingWidget.Row != row || draggingWidget.Column != column);
+        }
+
+        internal void ClearWidgetDropPreview()
+        {
+            if (widgetDropGrid != null && widgetDropPreview != null) widgetDropGrid.Children.Remove(widgetDropPreview);
+            widgetDropGrid = null; widgetDropPreview = null;
+        }
+
+        internal bool PreviewWidgetDrop(DragEventArgs e)
+        {
+            WidgetGroup group;
+            int row, column;
+            if (!WidgetDropTarget(e, out group, out row, out column))
+            { ClearWidgetDropPreview(); return false; }
+            if (widgetDropGrid != group.Cells || widgetDropPreview == null ||
+                Grid.GetRow(widgetDropPreview) != row || Grid.GetColumn(widgetDropPreview) != column)
+            {
+                ClearWidgetDropPreview();
+                widgetDropGrid = group.Cells;
+                widgetDropPreview = new Border { BorderBrush = FluentUi.Accent, BorderThickness = new Thickness(2),
+                    CornerRadius = new CornerRadius(8), Margin = new Thickness(3), IsHitTestVisible = false };
+                Grid.SetRow(widgetDropPreview, row); Grid.SetColumn(widgetDropPreview, column);
+                Grid.SetRowSpan(widgetDropPreview, Rows(draggingWidget.Size));
+                Grid.SetColumnSpan(widgetDropPreview, Columns(draggingWidget.Size));
+                Panel.SetZIndex(widgetDropPreview, 100);
+                widgetDropGrid.Children.Add(widgetDropPreview);
+            }
+            return true;
+        }
+
+        internal bool DropWidget(DragEventArgs e)
+        {
+            WidgetGroup group;
+            int row, column;
+            bool accepted = WidgetDropTarget(e, out group, out row, out column);
+            ClearWidgetDropPreview();
+            return accepted && MoveWidget(draggingWidget.PluginId, draggingWidget.WidgetId, group.Number, row, column);
+        }
+
+        internal bool MoveWidget(string pluginId, string widgetId, int groupNumber, int row, int column)
+        {
+            Placement entry = entries.Find(delegate(Placement p) { return p.PluginId == pluginId && p.WidgetId == widgetId; });
+            WidgetGroup group = groups.Find(delegate(WidgetGroup g) { return g.Number == groupNumber; });
+            if (!canEdit() || entry == null || group == null ||
+                !CanOccupy(group, entry.Size, entry, row, column)) return false;
+            if (entry.Group == group && entry.Row == row && entry.Column == column) return true;
+            Position(entry, group, entry.Size, row, column);
+            changed();
+            return true;
+        }
+
+        private void WireWidgetDrag(Placement entry, Border view)
+        {
+            if (zones == null) return;
+            StackPanel body = view.Child as StackPanel;
+            TextBlock heading = body == null || body.Children.Count == 0 ? null : body.Children[0] as TextBlock;
+            if (heading == null) return;
+            heading.ToolTip = "Перетащите виджет за заголовок в свободные ячейки.";
+            Point start = new Point();
+            bool candidate = false;
+            heading.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+            { start = e.GetPosition(heading); candidate = true; };
+            heading.PreviewMouseLeftButtonUp += delegate { candidate = false; };
+            heading.MouseMove += delegate(object sender, MouseEventArgs e)
+            {
+                if (!candidate || e.LeftButton != MouseButtonState.Pressed || !canEdit() || board == null ||
+                    !entries.Contains(entry)) return;
+                Point now = e.GetPosition(heading);
+                if (Math.Abs(now.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                    Math.Abs(now.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+                candidate = false; draggingWidget = entry;
+                try { DragDrop.DoDragDrop(heading, new DataObject(WidgetDragFormat, DragKey(entry)), DragDropEffects.Move); }
+                finally { draggingWidget = null; ClearWidgetDropPreview(); }
+            };
+        }
+
         private void ConfigureGroupMenu(WidgetGroup group)
         {
             if (zones == null) return;
@@ -422,7 +539,7 @@ namespace AppShelf
         {
             WidgetGroup group = new WidgetGroup { Number = ++nextGroupNumber, Zone = defaultZone };
             group.Title = "Виджеты " + group.Number;
-            group.Cells = new Grid { Height = 280, ClipToBounds = true };
+            group.Cells = new Grid { Height = 280, ClipToBounds = true, Background = Brushes.Transparent, AllowDrop = true };
             for (int i = 0; i < 2; i++)
             {
                 group.Cells.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -613,6 +730,7 @@ namespace AppShelf
         private void Display(Placement entry, PluginWidget widget, Func<string, Task> action)
         {
             Border view = PluginWidgetView.Create(widget, action);
+            WireWidgetDrag(entry, view);
             view.MaxWidth = Double.PositiveInfinity;
             view.VerticalAlignment = VerticalAlignment.Stretch;
             // Long lists stay inside their allocated cells rather than increasing group size.

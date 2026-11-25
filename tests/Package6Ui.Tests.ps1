@@ -588,6 +588,35 @@ public static class Package6Tests
                 "Failed plugin restarted or retained live values");
             workspace.Clear();
         });
+        Case("exact widget cell movement preserves spans and rejects collisions", delegate {
+            PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(delegate { return running; },
+                delegate { throw new Exception("Move performed RPC"); },
+                delegate { throw new Exception("Move invoked command"); }, delegate {});
+            List<PluginWidgetGroupConfig> saved = new List<PluginWidgetGroupConfig> {
+                new PluginWidgetGroupConfig { Number = 1, Title = "One", Zone = "top-left", Order = 0,
+                    Widgets = new List<PluginWidgetPlacementConfig> {
+                        new PluginWidgetPlacementConfig { PluginId = "test.widget", WidgetId = "quarter", Version = "1.0.0",
+                            Title = "Quarter", Size = "quarter", Row = 0, Column = 0 } } },
+                new PluginWidgetGroupConfig { Number = 2, Title = "Two", Zone = "top-right", Order = 0,
+                    Widgets = new List<PluginWidgetPlacementConfig> {
+                        new PluginWidgetPlacementConfig { PluginId = "test.widget", WidgetId = "half", Version = "1.0.0",
+                            Title = "Half", Size = "half-horizontal", Row = 0, Column = 0 } } }
+            };
+            workspace.RestoreLayout(saved);
+            Assert(!workspace.MoveWidget("test.widget", "quarter", 2, 0, 1), "Overlapping move accepted");
+            Assert(!workspace.MoveWidget("test.widget", "half", 2, 1, 1), "Out of bounds span accepted");
+            Assert(workspace.MoveWidget("test.widget", "quarter", 1, 1, 1), "In-group move failed");
+            Assert(workspace.CaptureLayout()[0].Widgets[0].Row == 1 && workspace.CaptureLayout()[0].Widgets[0].Column == 1,
+                "In-group move not recorded");
+            Assert(workspace.MoveWidget("test.widget", "quarter", 2, 1, 1), "Cross-group move failed");
+            List<PluginWidgetGroupConfig> moved = workspace.CaptureLayout();
+            Assert(moved.Count == 1 && moved[0].Number == 2 && moved[0].Widgets.Count == 2 &&
+                moved[0].Widgets.Exists(delegate(PluginWidgetPlacementConfig p) {
+                    return p.WidgetId == "quarter" && p.Row == 1 && p.Column == 1 && p.Size == "quarter"; }),
+                "Cross-group move lost position or empty source group");
+            workspace.Clear();
+        });
         Case("native declarative plugin widget renderer", delegate {
             PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
                 Elements = new[] {

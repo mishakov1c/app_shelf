@@ -3770,6 +3770,12 @@ namespace AppShelf
         private void OnDragOver(object sender, DragEventArgs e)
         {
             e.Effects = DragDropEffects.None;
+            if (_pluginWidgets != null && _pluginWidgets.IsWidgetDrag(e.Data))
+            {
+                ClearDropHighlight();
+                if (_canSave && _pluginWidgets.PreviewWidgetDrop(e)) e.Effects = DragDropEffects.Move;
+                e.Handled = true; return;
+            }
             AppItem targetItem;
             Button targetButton;
             string group;
@@ -3810,6 +3816,7 @@ namespace AppShelf
 
         private void OnDragLeave(object sender, DragEventArgs e)
         {
+            if (_pluginWidgets != null) _pluginWidgets.ClearWidgetDropPreview();
             ClearDropHighlight();
         }
 
@@ -3818,6 +3825,11 @@ namespace AppShelf
             ClearDropHighlight();
             e.Effects = DragDropEffects.None;
             if (!_canSave) { ShowSaveDisabled(); e.Handled = true; return; }
+            if (_pluginWidgets != null && _pluginWidgets.IsWidgetDrag(e.Data))
+            {
+                if (_pluginWidgets.DropWidget(e)) e.Effects = DragDropEffects.Move;
+                e.Handled = true; return;
+            }
 
             AppItem targetItem;
             Button targetButton;
