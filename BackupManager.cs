@@ -709,7 +709,8 @@ namespace AppShelf
 
                 string currentWarning; bool currentSafe;
                 AppConfig current = ConfigStore.Load(out currentWarning, out currentSafe);
-                if (!currentSafe && (!restoreSettings || !restoreWidgets || !restoreBackgrounds))
+                if (!currentSafe && restoreConfig && (!restoreSettings || !restoreBackgrounds ||
+                    (!restoreWidgets && File.Exists(ConfigStore.PluginSettingsPath))))
                     throw new InvalidDataException("Для выборочного восстановления нужны читаемые текущие настройки: " + currentWarning);
                 // Keep the backup policy local and preserve every unselected component.
                 if (currentSafe)
@@ -722,9 +723,7 @@ namespace AppShelf
                     if (restoreWidgets) { restored.WidgetGroups = groups; restored.WidgetIndicators = indicators; }
                     restored.MainBackgroundPreset = restoreBackgrounds ? background : current.MainBackgroundPreset;
                 }
-                if (!restoreBackgrounds && !currentSafe)
-                    throw new InvalidDataException("Нельзя сохранить текущее оформление при повреждённых настройках.");
-                if (!restoreCovers && collections != null)
+                 if (!restoreCovers && collections != null)
                 {
                     string collectionWarning; bool canSave;
                     CollectionDocument local = CollectionStore.Load(out collectionWarning, out canSave);
@@ -749,6 +748,19 @@ namespace AppShelf
                 string backupDir = Path.Combine(safetyRoot,
                     "before-restore-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6));
                 Directory.CreateDirectory(backupDir);
+                // Keep the complete valid profile even for a selective restore.
+                // If a damaged document is the reason for restoring, the raw safety
+                // copies below are still made; do not require a valid portable ZIP.
+                if (currentSafe)
+                {
+                    string reminderWarning; bool reminderSafe;
+                    ReminderDocument currentReminders = ReminderStore.Load(out reminderWarning, out reminderSafe);
+                    string collectionWarning; bool collectionSafe;
+                    CollectionStore.Load(out collectionWarning, out collectionSafe);
+                    if (reminderSafe && collectionSafe)
+                        ExportSelected(Path.Combine(backupDir, "AppShelf-before-restore.zip"), current,
+                            currentReminders, CurrentExecutable(), BackupComponents.All);
+                }
                 List<string> documents = new List<string> { "apps.json", "apps.json.bak", "reminders.json",
                     "reminders.json.bak", "Collections/collections.json",
                     "Collections/collections.json.bak", ConfigStore.PluginSettingsName,
@@ -857,8 +869,14 @@ namespace AppShelf
                     // Every component gets a rollback attempt, even if an earlier one failed.
                     List<Exception> rollbackErrors = new List<Exception>();
                     foreach (string name in documents)
-                        RollbackFile(Path.Combine(backupDir, name), Path.Combine(ConfigStore.DirectoryPath, name),
+                    {
+                        bool touched = name.StartsWith("apps.json", StringComparison.OrdinalIgnoreCase) ||
+                            name.StartsWith(ConfigStore.PluginSettingsName, StringComparison.OrdinalIgnoreCase) ? restoreConfig :
+                            name.StartsWith("reminders.json", StringComparison.OrdinalIgnoreCase) ? reminders != null :
+                            name.StartsWith("Collections/", StringComparison.OrdinalIgnoreCase) ? collections != null : recoveredPath != null;
+                        if (touched) RollbackFile(Path.Combine(backupDir, name), Path.Combine(ConfigStore.DirectoryPath, name),
                             savedDocuments.Contains(name), rollbackErrors);
+                    }
                     string oldShortcuts = Path.Combine(backupDir, "Shortcuts");
                     foreach (KeyValuePair<string, string> item in shortcuts)
                     {
@@ -947,13 +965,13 @@ namespace AppShelf
                 ? config.AutomaticBackupQuotaMb : DefaultQuotaMb;
         }
 
-        private static void ReadSavedDocuments(out AppConfig config, out ReminderDocument reminders)
+        private static void ReadSavedDocuments(out AppConfig config, out ReminderDocument reminders, bool full = false)
         {
             string settingsWarning, reminderWarning;
             bool settingsSafe, remindersSafe;
             config = ConfigStore.Load(out settingsWarning, out settingsSafe);
             reminders = ReminderStore.Load(out reminderWarning, out remindersSafe);
-            if (!settingsSafe || !remindersSafe)
+            if (!settingsSafe || (!remindersSafe && (full || config.BackupReminders != false)))
                 throw new InvalidDataException("Нельзя создавать копию из повреждённых данных: " +
                     (settingsWarning ?? "") + " " + (reminderWarning ?? ""));
         }
@@ -971,15 +989,24 @@ namespace AppShelf
         // Include only files exported into ZIP; never scan arbitrary AppData or backup roots.
         internal static string DataSignature()
         {
+            return DataSignatureFor(false);
+        }
+
+        private static string DataSignatureFor(bool full)
+        {
             string root = ConfigStore.DirectoryPath;
+            string warning; bool canSave;
+            AppConfig policy = ConfigStore.Load(out warning, out canSave);
+            if (!canSave) throw new InvalidDataException("Не удалось прочитать настройки копирования.");
+            BackupComponents selected = full ? BackupComponents.All : BackupStore.SelectedComponents(policy);
             List<string> files = new List<string>();
             files.Add(Path.Combine(root, "apps.json"));
             files.Add(ConfigStore.PluginSettingsPath);
-            files.Add(Path.Combine(root, "reminders.json"));
-            files.Add(Path.Combine(root, "Collections", "collections.json"));
+            if (BackupStore.Includes(selected, BackupComponents.Reminders)) files.Add(Path.Combine(root, "reminders.json"));
+            if (BackupStore.Includes(selected, BackupComponents.Collections)) files.Add(Path.Combine(root, "Collections", "collections.json"));
             AddSignatureFiles(files, ConfigStore.ShortcutsDirectory);
-            AddSignatureFiles(files, CollectionStore.ImagesPath);
-            AddSignatureFiles(files, CustomBackgroundStore.DirectoryPath);
+            if (BackupStore.Includes(selected, BackupComponents.Covers)) AddSignatureFiles(files, CollectionStore.ImagesPath);
+            if (BackupStore.Includes(selected, BackupComponents.Backgrounds)) AddSignatureFiles(files, CustomBackgroundStore.DirectoryPath);
             files.Sort(StringComparer.OrdinalIgnoreCase);
             StringBuilder info = new StringBuilder();
             foreach (string file in files)
@@ -1004,13 +1031,11 @@ namespace AppShelf
                 info.Append('\n');
             }
             PluginPackageStore pluginStore = new PluginPackageStore(root);
-            byte[] pluginBackup = pluginStore.CaptureBackup();
-            string warning; bool canSave;
-            AppConfig policy = ConfigStore.Load(out warning, out canSave);
-            if (!canSave) throw new InvalidDataException("Не удалось прочитать настройки копирования.");
-            if (policy.BackupPluginPackages != false) info.Append(pluginStore.PackageSignature());
+            byte[] pluginBackup = BackupStore.Includes(selected, BackupComponents.PluginData) ? pluginStore.CaptureBackup() : null;
+            info.Append("components|").Append((int)selected).Append('\n');
+            if (BackupStore.Includes(selected, BackupComponents.Packages)) info.Append(pluginStore.PackageSignature());
             string executable = BackupStore.CurrentExecutable();
-            if (policy.BackupExecutable != false && executable != null)
+            if (BackupStore.Includes(selected, BackupComponents.Executable) && executable != null)
                 info.Append("program|").Append(Sha256File(executable)).Append('\n');
             if (pluginBackup != null)
                 using (SHA256 hash = SHA256.Create())
@@ -1389,13 +1414,13 @@ namespace AppShelf
                 bool completed = false;
                 try
                 {
-                    string before = DataSignature();
+                    string before = DataSignatureFor(true);
                     string archive = Path.Combine(result, "AppShelf-data.zip");
                     AppConfig savedConfig;
                     ReminderDocument savedReminders;
-                    ReadSavedDocuments(out savedConfig, out savedReminders);
-                    BackupStore.ExportAll(archive, savedConfig, savedReminders);
-                    if (!String.Equals(before, DataSignature(), StringComparison.Ordinal))
+                    ReadSavedDocuments(out savedConfig, out savedReminders, true);
+                    BackupStore.ExportSelected(archive, savedConfig, savedReminders, BackupStore.CurrentExecutable(), BackupComponents.All);
+                    if (!String.Equals(before, DataSignatureFor(true), StringComparison.Ordinal))
                         throw new BackupDataChangedException();
                     string executable = Path.Combine(result, "AppShelf-" + installedVersion + ".exe");
                     File.Copy(oldExecutable, executable, false);
