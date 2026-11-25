@@ -140,3 +140,26 @@ The main Add menu includes “Виджет плагина…”. The picker list
 The runtime captures snapshot/process identity together under its operation gate. Actions revalidate the enabled package, version, live process identity and command under that gate, and never start a replacement process. A removed or replaced view invalidates its callbacks. The existing health check and plugin manager closure invalidate widgets from stopped/replaced processes; no automatic snapshot requests yet. Explicit refresh is non-activating and updates a placed descriptor only if the same ID and kind are available. Failed refresh replaces old content with an unavailable state.
 
 This stage is intentionally session-local: positions, sizing and persistence, automatic snapshot scheduling, indicator placement in the bottom panel, and a dedicated stock demonstration package remain follow-up work. No user layout or settings format migration yet. The isolated WPF tests cover insertion, duplicate rejection, refresh, stale callbacks, invalidation and removal; the real-process tests verify explicit activation and process-bound action dispatch.
+
+
+## Stage 11: widget groups and per-size layouts
+
+This supersedes the standalone strip of independently sized cards. Widget groups have a host-owned 2x2 grid with four rectangular sizes:
+
+| size | columns x rows |
+| --- | --- |
+| full | 2 x 2 |
+| half-horizontal | 2 x 1 |
+| half-vertical | 1 x 2 |
+| quarter | 1 x 1 |
+
+The API 1 snapshot optionally adds `layouts` (1–4 unique objects, each containing `size` and `elements`) and `defaultSize`. With layouts present, only declared sizes are supported and the default must be one of them. Each layout is subject to the same element/command validation, and the complete frame still has the 64 KiB bound. Base `elements` remains required for compatibility. Without layouts, the same base elements may be rendered in any of the four sizes; default is full for card and quarter for tile, unless overridden by a valid defaultSize. Indicators cannot declare group layouts. The selected size is a host preference; changing size does not send a command or require starting the plugin.
+
+Example widget (illustrative data):
+```json
+{"id":"quotes","title":"Курсы акций","kind":"card","elements":[{"type":"metric","label":"AAPL","value":"$200.00"}],"defaultSize":"half-horizontal","layouts":[{"size":"quarter","elements":[{"type":"metric","label":"AAPL","value":"$200.00"}]},{"size":"half-horizontal","elements":[{"type":"metric","label":"AAPL","value":"$200.00"},{"type":"metric","label":"MSFT","value":"$400.00"}]}]}
+```
+
+Adding uses the first free rectangle in existing groups or creates a new group. A widget's right-click menu offers its supported sizes that fit in the current group, moving to a different group with free space, or creating a new group. Resize/move never overlap another widget; the host removes empty groups. Each group's cell area currently measures 280 device-independent units in height and up to 400 in width (adapted to the viewport). Excess content scrolls within its allocated area. Group backgrounds and borders follow the existing AppShelf group appearance settings. Existing app-group rendering and storage are unchanged.
+
+The first implementation keeps widget groups in their own wrapping container above app groups. Unified ordering across app and widget groups, drag/drop, group collapse/rename, user-controlled group dimensions, persistence/backup of placements, automatic refresh and indicator placement are follow-up work. Placements remain session-local. Tests cover all spans, collision prevention, per-size data, moving to a new group, removing empty groups, stale commands and invalid API layouts. The SiteLinks menu regression now expects all four actual Add choices instead of the old three.

@@ -149,23 +149,35 @@ namespace AppShelf
         }
     }
 
-    // A session-local workspace. Only explicit user actions add, refresh or remove
-    // widgets; no timer-driven RPCs and no mutation of the application groups.
+    // Two-by-two widget groups. The host owns all positions and spans.
     internal sealed class PluginWidgetWorkspace
     {
-        private sealed class Placement
+        private sealed class WidgetGroup
         {
-            internal string PluginId, Version, WidgetId, Title, Kind;
-            internal int ProcessId, Revision;
-            internal bool Busy, Stale;
-            internal ContentControl Host;
+            internal int Number;
+            internal Border Card;
+            internal Grid Cells;
         }
 
+        private sealed class Placement
+        {
+            internal string PluginId, Version, WidgetId, Title, Kind, Size;
+            internal int ProcessId, Revision, Row, Column;
+            internal bool Busy, Stale;
+            internal ContentControl Host;
+            internal WidgetGroup Group;
+            internal PluginWidget Snapshot;
+        }
+
+        private static readonly string[] Sizes = { "full", "half-horizontal", "half-vertical", "quarter" };
         private readonly List<Placement> entries = new List<Placement>();
+        private readonly List<WidgetGroup> groups = new List<WidgetGroup>();
         private readonly Func<string, PluginRuntimeState> state;
         private readonly Func<string, string, bool, Task<PluginWidgetSnapshot>> read;
         private readonly Func<string, string, int, string, Task> invoke;
         private readonly Action changed;
+        private Brush groupBackground = FluentUi.Surface, groupBorder = FluentUi.BorderColor;
+        private int nextGroupNumber;
         internal WrapPanel Surface { get; private set; }
         internal bool HasWidgets { get { return entries.Count != 0; } }
 
@@ -176,7 +188,14 @@ namespace AppShelf
             this.state = state; this.read = read; this.invoke = invoke; this.changed = changed;
             Surface = new WrapPanel { Visibility = Visibility.Collapsed,
                 HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 8) };
-            Surface.SizeChanged += delegate { foreach (Placement entry in entries) Resize(entry); };
+            Surface.SizeChanged += delegate { foreach (WidgetGroup group in groups) ResizeGroup(group); };
+        }
+
+        internal void ApplyAppearance(Brush background, Brush border)
+        {
+            groupBackground = background; groupBorder = border;
+            foreach (WidgetGroup group in groups)
+            { group.Card.Background = background; group.Card.BorderBrush = border; }
         }
 
         internal bool Contains(string pluginId, string widgetId)
@@ -190,10 +209,81 @@ namespace AppShelf
                 processId > 0 && state.ProcessId == processId;
         }
 
-        private void Resize(Placement entry)
+        private static int Rows(string size) { return size == "full" || size == "half-vertical" ? 2 : 1; }
+        private static int Columns(string size) { return size == "full" || size == "half-horizontal" ? 2 : 1; }
+
+        private static string SizeLabel(string size)
         {
-            double available = Surface.ActualWidth > 8 ? Surface.ActualWidth - 8 : 320;
-            entry.Host.Width = Math.Max(1, Math.Min(available, entry.Kind == "tile" ? 160 : 320));
+            switch (size)
+            {
+                case "full": return "Целая группа";
+                case "half-horizontal": return "Половина горизонтальная";
+                case "half-vertical": return "Половина вертикальная";
+                default: return "Четверть группы";
+            }
+        }
+
+        private bool FindSpace(WidgetGroup group, string size, Placement except, out int row, out int column)
+        {
+            int height = Rows(size), width = Columns(size);
+            for (row = 0; row <= 2 - height; row++)
+                for (column = 0; column <= 2 - width; column++)
+                {
+                    bool occupied = false;
+                    foreach (Placement p in entries)
+                    {
+                        if (p == except || p.Group != group) continue;
+                        if (row < p.Row + Rows(p.Size) && p.Row < row + height &&
+                            column < p.Column + Columns(p.Size) && p.Column < column + width)
+                        { occupied = true; break; }
+                    }
+                    if (!occupied) return true;
+                }
+            row = column = 0;
+            return false;
+        }
+
+        private void ResizeGroup(WidgetGroup group)
+        {
+            double available = Surface.ActualWidth > 8 ? Surface.ActualWidth - 8 : 400;
+            group.Card.Width = Math.Max(1, Math.Min(available, 400));
+        }
+
+        private WidgetGroup NewGroup()
+        {
+            WidgetGroup group = new WidgetGroup { Number = ++nextGroupNumber };
+            group.Cells = new Grid { Height = 280, ClipToBounds = true };
+            for (int i = 0; i < 2; i++)
+            {
+                group.Cells.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+                group.Cells.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 0 });
+            }
+            StackPanel body = new StackPanel();
+            TextBlock title = new TextBlock { Text = "Виджеты " + group.Number, Foreground = FluentUi.Secondary,
+                FontSize = 13, FontWeight = FontWeights.SemiBold, Margin = new Thickness(4, 0, 4, 6) };
+            body.Children.Add(title); body.Children.Add(group.Cells);
+            group.Card = new Border { Child = body, Padding = new Thickness(6), Margin = new Thickness(0, 0, 8, 8),
+                Background = groupBackground, BorderBrush = groupBorder, BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(13), VerticalAlignment = VerticalAlignment.Top };
+            groups.Add(group); Surface.Children.Add(group.Card); ResizeGroup(group);
+            return group;
+        }
+
+        private void RemoveEmptyGroup(WidgetGroup group)
+        {
+            if (entries.Exists(delegate(Placement p) { return p.Group == group; })) return;
+            groups.Remove(group); Surface.Children.Remove(group.Card);
+        }
+
+        private void Position(Placement entry, WidgetGroup group, string size, int row, int column)
+        {
+            WidgetGroup old = entry.Group;
+            if (old != null && old != group) old.Cells.Children.Remove(entry.Host);
+            entry.Group = group; entry.Size = size; entry.Row = row; entry.Column = column;
+            Grid.SetRow(entry.Host, row); Grid.SetColumn(entry.Host, column);
+            Grid.SetRowSpan(entry.Host, Rows(size)); Grid.SetColumnSpan(entry.Host, Columns(size));
+            if (!group.Cells.Children.Contains(entry.Host)) group.Cells.Children.Add(entry.Host);
+            if (old != null && old != group) RemoveEmptyGroup(old);
         }
 
         internal bool Add(string pluginId, string version, PluginWidgetSnapshot snapshot, string widgetId)
@@ -201,32 +291,109 @@ namespace AppShelf
             if (entries.Count >= 32 || Contains(pluginId, widgetId) ||
                 !Current(state(pluginId), version, snapshot.ProcessId)) return false;
             PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == widgetId; });
-            if (widget == null || (widget.Kind != "card" && widget.Kind != "tile")) return false;
+            if (widget == null || !widget.SupportsSize(widget.PreferredSize)) return false;
             Placement entry = new Placement { PluginId = pluginId, Version = version, WidgetId = widget.Id,
-                Title = widget.Title, Kind = widget.Kind, ProcessId = snapshot.ProcessId };
-            entry.Host = new ContentControl { Margin = new Thickness(0, 0, 8, 8),
-                VerticalAlignment = VerticalAlignment.Top, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                Title = widget.Title, Kind = widget.Kind, ProcessId = snapshot.ProcessId, Snapshot = widget };
+            entry.Host = new ContentControl { Margin = new Thickness(4), ClipToBounds = true,
+                HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
             ContextMenu menu = new ContextMenu();
             MenuItem refresh = new MenuItem { Header = "Обновить виджет" };
             refresh.Click += async delegate { await Refresh(entry); };
             MenuItem remove = new MenuItem { Header = "Убрать виджет" };
             remove.Click += delegate { Remove(entry); };
-            menu.Items.Add(refresh); menu.Items.Add(remove);
+            MenuItem sizeMenu = new MenuItem { Header = "Размер" };
+            MenuItem moveMenu = new MenuItem { Header = "Переместить в группу" };
+            menu.Items.Add(refresh); menu.Items.Add(remove); menu.Items.Add(new Separator());
+            menu.Items.Add(sizeMenu); menu.Items.Add(moveMenu);
+            menu.Opened += delegate
+            {
+                sizeMenu.Items.Clear(); moveMenu.Items.Clear();
+                foreach (string size in Sizes)
+                {
+                    string targetSize = size;
+                    int row, column;
+                    MenuItem item = new MenuItem { Header = SizeLabel(size), IsCheckable = true,
+                        IsChecked = size == entry.Size, IsEnabled = entry.Snapshot.SupportsSize(size) &&
+                        FindSpace(entry.Group, size, entry, out row, out column) };
+                    item.Click += delegate { ChangeSize(entry, targetSize); };
+                    sizeMenu.Items.Add(item);
+                }
+                foreach (WidgetGroup group in groups)
+                {
+                    WidgetGroup target = group;
+                    int row, column;
+                    MenuItem item = new MenuItem { Header = "Виджеты " + group.Number,
+                        IsEnabled = group != entry.Group && FindSpace(group, entry.Size, entry, out row, out column) };
+                    item.Click += delegate { Move(entry, target); };
+                    moveMenu.Items.Add(item);
+                }
+                MenuItem newGroup = new MenuItem { Header = "В новую группу" };
+                newGroup.Click += delegate { if (entries.Contains(entry)) Move(entry, NewGroup()); };
+                moveMenu.Items.Add(new Separator()); moveMenu.Items.Add(newGroup);
+            };
             entry.Host.ContextMenu = menu;
+            WidgetGroup destination = null;
+            int targetRow = 0, targetColumn = 0;
+            foreach (WidgetGroup group in groups)
+                if (FindSpace(group, widget.PreferredSize, null, out targetRow, out targetColumn))
+                { destination = group; break; }
+            if (destination == null)
+            { destination = NewGroup(); targetRow = targetColumn = 0; }
             entries.Add(entry);
+            Position(entry, destination, widget.PreferredSize, targetRow, targetColumn);
             Render(entry, widget);
-            Surface.Children.Add(entry.Host);
-            Resize(entry);
             Surface.Visibility = Visibility.Visible;
             changed();
             return true;
         }
 
+        internal bool Resize(string pluginId, string widgetId, string size)
+        {
+            Placement entry = entries.Find(delegate(Placement p) { return p.PluginId == pluginId && p.WidgetId == widgetId; });
+            return entry != null && ChangeSize(entry, size);
+        }
+
+        private bool ChangeSize(Placement entry, string size)
+        {
+            int row, column;
+            if (!entries.Contains(entry) || !entry.Snapshot.SupportsSize(size) ||
+                !FindSpace(entry.Group, size, entry, out row, out column)) return false;
+            if (size == entry.Size) return true;
+            Position(entry, entry.Group, size, row, column);
+            if (entry.Stale) Unavailable(entry, "Виджет недоступен. Обновите его.");
+            else Render(entry, entry.Snapshot);
+            changed();
+            return true;
+        }
+
+        private void Move(Placement entry, WidgetGroup target)
+        {
+            int row, column;
+            if (!entries.Contains(entry) || target == entry.Group ||
+                !FindSpace(target, entry.Size, entry, out row, out column)) return;
+            Position(entry, target, entry.Size, row, column);
+            changed();
+        }
+
+        private void Display(Placement entry, PluginWidget widget, Func<string, Task> action)
+        {
+            Border view = PluginWidgetView.Create(widget, action);
+            view.MaxWidth = Double.PositiveInfinity;
+            view.VerticalAlignment = VerticalAlignment.Stretch;
+            // Long lists stay inside their allocated cells rather than increasing group size.
+            ScrollViewer scroll = new ScrollViewer { Content = view,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            entry.Host.Content = scroll;
+        }
+
         private void Render(Placement entry, PluginWidget widget)
         {
+            entry.Snapshot = widget;
             entry.Stale = false;
             int revision = ++entry.Revision;
-            entry.Host.Content = PluginWidgetView.Create(widget, delegate(string command)
+            Display(entry, widget.ForSize(entry.Size), delegate(string command)
             {
                 if (!entries.Contains(entry) || entry.Revision != revision ||
                     !Current(state(entry.PluginId), entry.Version, entry.ProcessId))
@@ -239,8 +406,8 @@ namespace AppShelf
         {
             entry.Stale = true;
             entry.Revision++;
-            entry.Host.Content = PluginWidgetView.Create(new PluginWidget { Id = entry.WidgetId,
-                Title = entry.Title, Kind = entry.Kind, Elements = new[] {
+            Display(entry, new PluginWidget { Id = entry.WidgetId,
+                Title = entry.Title, Kind = entry.Size == "quarter" ? "tile" : "card", Elements = new[] {
                     new PluginWidgetElement { Type = "text", Label = message } } }, null);
         }
 
@@ -260,14 +427,19 @@ namespace AppShelf
                 PluginWidgetSnapshot snapshot = await read(entry.PluginId, entry.Version, false);
                 if (!entries.Contains(entry)) return;
                 PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == entry.WidgetId; });
-                if (widget == null || widget.Kind != entry.Kind ||
-                    !Current(state(entry.PluginId), entry.Version, snapshot.ProcessId))
+                if (widget == null || !Current(state(entry.PluginId), entry.Version, snapshot.ProcessId))
                 {
                     Unavailable(entry, "Виджет недоступен в текущем сеансе плагина.");
                     return;
                 }
                 entry.ProcessId = snapshot.ProcessId;
                 entry.Title = widget.Title;
+                entry.Snapshot = widget;
+                if (!widget.SupportsSize(entry.Size))
+                {
+                    Unavailable(entry, "Размер больше не поддерживается. Выберите другой размер и обновите.");
+                    return;
+                }
                 Render(entry, widget);
             }
             catch (Exception error)
@@ -282,14 +454,15 @@ namespace AppShelf
         {
             if (!entries.Remove(entry)) return;
             entry.Revision++;
-            Surface.Children.Remove(entry.Host);
+            entry.Group.Cells.Children.Remove(entry.Host);
+            RemoveEmptyGroup(entry.Group);
             Surface.Visibility = HasWidgets ? Visibility.Visible : Visibility.Collapsed;
             changed();
         }
 
         internal void Clear()
         {
-            entries.Clear(); Surface.Children.Clear(); Surface.Visibility = Visibility.Collapsed;
+            entries.Clear(); groups.Clear(); Surface.Children.Clear(); Surface.Visibility = Visibility.Collapsed;
         }
     }
 

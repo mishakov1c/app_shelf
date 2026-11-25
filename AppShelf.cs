@@ -4633,6 +4633,7 @@ namespace AppShelf
             if (_tileHost == null) return;
             Brush groupBrush = FluentUi.MainGroupBackground(preset, opacity);
             Brush borderBrush = FluentUi.MainGroupBorder(preset);
+            if (_pluginWidgets != null) _pluginWidgets.ApplyAppearance(groupBrush, borderBrush);
             foreach (GroupLayoutCard group in _groupLayoutCards)
             {
                 group.Card.Background = groupBrush;
@@ -4921,6 +4922,9 @@ namespace AppShelf
                 }
             }
             UpdateGroupWidths();
+            if (_pluginWidgets != null) _pluginWidgets.ApplyAppearance(
+                FluentUi.MainGroupBackground(_config.MainBackgroundPreset, FluentUi.NormalizeGroupOpacity(_config.GroupOpacity)),
+                FluentUi.MainGroupBorder(_config.MainBackgroundPreset));
             _empty.Text = _config.Items.Count == 0
                 ? "Пока здесь пусто.\n\nПеретащи EXE или ярлык из Проводника\nили нажми «+ Добавить»."
                 : "Ничего не найдено.";

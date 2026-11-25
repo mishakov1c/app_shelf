@@ -266,10 +266,10 @@ public static class SiteTests
                 Button add = ButtonNamed(w, "AddItemButton"); FrameworkElement contents = (FrameworkElement)add.Content; Point center = contents.TransformToAncestor(add).Transform(new Point(contents.ActualWidth / 2, contents.ActualHeight / 2));
                 Assert(Math.Abs(center.X - add.ActualWidth / 2) < 1 && Math.Abs(center.Y - add.ActualHeight / 2) < 1, "Add content is not centered");
                 Click(add);
-                Assert(AddMenu.IsOpen && AddMenu.Items.Count == 3 &&
+                Assert(AddMenu.IsOpen && AddMenu.Items.Count == 4 &&
                     Menu(AddMenu, "Приложение или ярлык…") != null &&
                     Menu(AddMenu, "Сайт по ссылке…") != null &&
-                    Menu(AddMenu, "Папку…") != null, "Add menu choices missing");
+                    Menu(AddMenu, "Папку…") != null && Menu(AddMenu, "Виджет плагина…") != null, "Add menu choices missing");
                 Picture(w, "header-" + s.ToString(CultureInfo.InvariantCulture)); if (s == 1) Picture(AddMenu, "add-menu");
                 drive = delegate(Window d) {
                     ((FrameworkElement)d.Content).LayoutTransform = new ScaleTransform(s, s); d.Width *= s; d.Height *= s; Drain();

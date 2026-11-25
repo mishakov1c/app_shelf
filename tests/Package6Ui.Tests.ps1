@@ -371,11 +371,19 @@ public static class Package6Tests
     {
         Assert(ConfigStore.DirectoryPath == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         Application app = new Application(); app.ShutdownMode = ShutdownMode.OnExplicitShutdown; FluentUi.Install(app);
-        Case("session widget workspace add, refresh, invalidation and removal", delegate {
+        Case("widget groups use four nonoverlapping sizes and independent lifecycle", delegate {
             PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
             PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
                 Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "200" },
-                    new PluginWidgetElement { Type = "action", Label = "Открыть", CommandId = "open" } } };
+                    new PluginWidgetElement { Type = "action", Label = "Открыть", CommandId = "open" } },
+                DefaultSize = "full" };
+            card.Layouts = new[] {
+                new PluginWidgetLayout { Size = "full", Elements = card.Elements },
+                new PluginWidgetLayout { Size = "half-horizontal", Elements = card.Elements },
+                new PluginWidgetLayout { Size = "half-vertical", Elements = card.Elements },
+                new PluginWidgetLayout { Size = "quarter", Elements = new[] {
+                    new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "compact" } } }
+            };
             PluginWidget tile = new PluginWidget { Id = "cpu", Title = "CPU", Kind = "tile",
                 Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "CPU", Value = "42%" } } };
             PluginWidget indicator = new PluginWidget { Id = "vpn", Title = "VPN", Kind = "indicator",
@@ -395,14 +403,41 @@ public static class Package6Tests
                 }, delegate { changes++; });
             Assert(!workspace.HasWidgets && workspace.Surface.Visibility == Visibility.Collapsed, "Empty widget surface visible");
             Assert(!workspace.Add("test.widget", "1.0.0", snapshot, "vpn"), "Indicator added to main surface");
-            Assert(workspace.Add("test.widget", "1.0.0", snapshot, "quotes") &&
-                workspace.Add("test.widget", "1.0.0", snapshot, "cpu"), "Distinct widgets could not be added");
-            Assert(!workspace.Add("test.widget", "1.0.0", snapshot, "quotes") && changes == 2 &&
-                workspace.HasWidgets && workspace.Surface.Children.Count == 2, "Duplicate placement accepted");
-            Window window = new Window { Width = 460, Height = 400, Content = workspace.Surface, ShowInTaskbar = false };
+            Assert(workspace.Add("test.widget", "1.0.0", snapshot, "quotes"), "Card not added");
+            Border group = (Border)workspace.Surface.Children[0];
+            Grid cells = (Grid)((StackPanel)group.Child).Children[1];
+            ContentControl host = (ContentControl)cells.Children[0];
+            Assert(cells.RowDefinitions.Count == 2 && cells.ColumnDefinitions.Count == 2 &&
+                Grid.GetRowSpan(host) == 2 && Grid.GetColumnSpan(host) == 2, "Full size is not 2x2");
+            Assert(workspace.Resize("test.widget", "quotes", "half-vertical") &&
+                Grid.GetRowSpan(host) == 2 && Grid.GetColumnSpan(host) == 1, "Vertical half is not 1x2");
+            Assert(workspace.Resize("test.widget", "quotes", "quarter") &&
+                Grid.GetRowSpan(host) == 1 && Grid.GetColumnSpan(host) == 1, "Quarter is not 1x1");
+            Assert(Controls<TextBlock>(host).Exists(delegate(TextBlock t) { return t.Text == "compact"; }),
+                "Quarter layout content not selected");
+            Assert(workspace.Resize("test.widget", "quotes", "half-horizontal") &&
+                Grid.GetRowSpan(host) == 1 && Grid.GetColumnSpan(host) == 2, "Horizontal half is not 2x1");
+            Assert(workspace.Add("test.widget", "1.0.0", snapshot, "cpu") &&
+                workspace.Surface.Children.Count == 1 && cells.Children.Count == 2, "Widgets did not share a group");
+            ContentControl remaining = (ContentControl)cells.Children[1];
+            Assert(Grid.GetRow(remaining) == 1 && Grid.GetColumn(remaining) == 0 &&
+                Grid.GetRowSpan(remaining) == 1 && Grid.GetColumnSpan(remaining) == 1, "Quarter overlaps half");
+            Assert(!workspace.Resize("test.widget", "quotes", "full") &&
+                Grid.GetRowSpan(host) == 1 && Grid.GetColumnSpan(host) == 2, "Resize overlapped neighbor");
+            Assert(!workspace.Add("test.widget", "1.0.0", snapshot, "quotes") && changes == 5,
+                "Duplicate placement accepted or failed resize mutated state");
+            Window window = new Window { Width = 460, Height = 430, Content = workspace.Surface, ShowInTaskbar = false };
             try {
                 window.Show(); Drain();
-                ContentControl host = (ContentControl)workspace.Surface.Children[0];
+                remaining.ContextMenu.PlacementTarget = remaining;
+                remaining.ContextMenu.IsOpen = true; Drain();
+                MenuItem move = (MenuItem)remaining.ContextMenu.Items[4];
+                MenuItem toNew = (MenuItem)move.Items[move.Items.Count - 1];
+                Assert(Convert.ToString(toNew.Header) == "В новую группу", "Move command missing");
+                Click(toNew); remaining.ContextMenu.IsOpen = false; Drain();
+                Assert(workspace.Surface.Children.Count == 2 && cells.Children.Count == 1,
+                    "Move to new group failed");
+                Assert(workspace.Resize("test.widget", "quotes", "full"), "Freed cells not reusable");
                 Button old = Controls<Button>(host).Find(delegate(Button button) { return Object.Equals(button.Tag, "open"); });
                 Assert(old != null, "Widget action missing");
                 Click(old);
@@ -420,9 +455,9 @@ public static class Package6Tests
                     "Stopped plugin retained live content");
                 Assert(!workspace.Add("test.other", "1.0.0", snapshot, "quotes"), "Stopped process accepted");
                 Click((MenuItem)host.ContextMenu.Items[1]);
-                ContentControl remaining = (ContentControl)workspace.Surface.Children[0];
+                Assert(workspace.Surface.Children.Count == 1, "Empty group was not removed");
                 Click((MenuItem)remaining.ContextMenu.Items[1]);
-                Assert(changes == 4 && !workspace.HasWidgets && workspace.Surface.Visibility == Visibility.Collapsed,
+                Assert(changes == 9 && !workspace.HasWidgets && workspace.Surface.Visibility == Visibility.Collapsed,
                     "Removing widgets did not collapse the surface");
             } finally { window.Close(); }
         });

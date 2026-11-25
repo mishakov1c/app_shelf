@@ -34,6 +34,34 @@ namespace AppShelf
         [DataMember(Name = "title", IsRequired = true)] public string Title { get; set; }
         [DataMember(Name = "kind", IsRequired = true)] public string Kind { get; set; }
         [DataMember(Name = "elements", IsRequired = true)] public PluginWidgetElement[] Elements { get; set; }
+        [DataMember(Name = "layouts", EmitDefaultValue = false)] public PluginWidgetLayout[] Layouts { get; set; }
+        [DataMember(Name = "defaultSize", EmitDefaultValue = false)] public string DefaultSize { get; set; }
+
+        internal string PreferredSize { get { return DefaultSize ?? (Kind == "tile" ? "quarter" : "full"); } }
+        internal bool SupportsSize(string size)
+        {
+            return Kind != "indicator" && IsGroupSize(size) &&
+                (Layouts == null || Array.Exists(Layouts, delegate(PluginWidgetLayout layout) { return layout.Size == size; }));
+        }
+        internal static bool IsGroupSize(string size)
+        {
+            return size == "full" || size == "half-horizontal" || size == "half-vertical" || size == "quarter";
+        }
+        internal PluginWidget ForSize(string size)
+        {
+            if (!SupportsSize(size)) throw new ArgumentException("Unsupported widget size.", "size");
+            PluginWidgetLayout layout = Layouts == null ? null : Array.Find(Layouts,
+                delegate(PluginWidgetLayout item) { return item.Size == size; });
+            return new PluginWidget { Id = Id, Title = Title, Kind = size == "quarter" ? "tile" : "card",
+                Elements = layout == null ? Elements : layout.Elements };
+        }
+    }
+
+    [DataContract]
+    internal sealed class PluginWidgetLayout
+    {
+        [DataMember(Name = "size", IsRequired = true)] public string Size { get; set; }
+        [DataMember(Name = "elements", IsRequired = true)] public PluginWidgetElement[] Elements { get; set; }
     }
 
     [DataContract]
@@ -200,32 +228,61 @@ namespace AppShelf
                     throw new InvalidDataException("Invalid widget descriptor.");
                 if (widget.Kind == "indicator" && widget.Elements.Length > 2)
                     throw new InvalidDataException("Too many indicator elements.");
-                foreach (PluginWidgetElement element in widget.Elements)
+                ValidateWidgetElements(widget.Elements);
+                if (widget.Kind == "indicator")
                 {
-                    if (element == null || !TextWithin(element.Label, 240))
-                        throw new InvalidDataException("Invalid widget element.");
-                    bool hasValue = element.Value != null, hasPercent = element.Percent.HasValue,
-                        hasCommand = element.CommandId != null;
-                    switch (element.Type)
+                    if (widget.Layouts != null || widget.DefaultSize != null)
+                        throw new InvalidDataException("Indicators cannot declare group layouts.");
+                    continue;
+                }
+                if (widget.Layouts != null)
+                {
+                    if (widget.Layouts.Length == 0 || widget.Layouts.Length > 4)
+                        throw new InvalidDataException("Invalid widget layout count.");
+                    HashSet<string> sizes = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (PluginWidgetLayout layout in widget.Layouts)
                     {
-                        case "text":
-                            if (hasValue || hasPercent || hasCommand) throw new InvalidDataException("Invalid text element.");
-                            break;
-                        case "metric":
-                            if (!TextWithin(element.Value, 100) || hasPercent || hasCommand)
-                                throw new InvalidDataException("Invalid metric element.");
-                            break;
-                        case "progress":
-                            if (hasValue || hasCommand || !hasPercent || Double.IsNaN(element.Percent.Value) ||
-                                Double.IsInfinity(element.Percent.Value) || element.Percent.Value < 0 || element.Percent.Value > 100)
-                                throw new InvalidDataException("Invalid progress element.");
-                            break;
-                        case "action":
-                            if (hasValue || hasPercent || !hasCommand || !commands.Contains(element.CommandId))
-                                throw new InvalidDataException("Unknown widget action.");
-                            break;
-                        default: throw new InvalidDataException("Unknown widget element type.");
+                        if (layout == null || !PluginWidget.IsGroupSize(layout.Size) || !sizes.Add(layout.Size))
+                            throw new InvalidDataException("Invalid or duplicate widget size.");
+                        ValidateWidgetElements(layout.Elements);
                     }
+                    if (widget.DefaultSize == null || !sizes.Contains(widget.DefaultSize))
+                        throw new InvalidDataException("Widget default size is not declared.");
+                }
+                else if (widget.DefaultSize != null && !PluginWidget.IsGroupSize(widget.DefaultSize))
+                    throw new InvalidDataException("Invalid widget default size.");
+            }
+        }
+
+        private void ValidateWidgetElements(PluginWidgetElement[] elements)
+        {
+            if (elements == null || elements.Length == 0 || elements.Length > 12)
+                throw new InvalidDataException("Invalid widget elements.");
+            foreach (PluginWidgetElement element in elements)
+            {
+                if (element == null || !TextWithin(element.Label, 240))
+                    throw new InvalidDataException("Invalid widget element.");
+                bool hasValue = element.Value != null, hasPercent = element.Percent.HasValue,
+                    hasCommand = element.CommandId != null;
+                switch (element.Type)
+                {
+                    case "text":
+                        if (hasValue || hasPercent || hasCommand) throw new InvalidDataException("Invalid text element.");
+                        break;
+                    case "metric":
+                        if (!TextWithin(element.Value, 100) || hasPercent || hasCommand)
+                            throw new InvalidDataException("Invalid metric element.");
+                        break;
+                    case "progress":
+                        if (hasValue || hasCommand || !hasPercent || Double.IsNaN(element.Percent.Value) ||
+                            Double.IsInfinity(element.Percent.Value) || element.Percent.Value < 0 || element.Percent.Value > 100)
+                            throw new InvalidDataException("Invalid progress element.");
+                        break;
+                    case "action":
+                        if (hasValue || hasPercent || !hasCommand || !commands.Contains(element.CommandId))
+                            throw new InvalidDataException("Unknown widget action.");
+                        break;
+                    default: throw new InvalidDataException("Unknown widget element type.");
                 }
             }
         }

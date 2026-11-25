@@ -68,12 +68,28 @@ public static class PluginProtocolTests {
             Assert(PluginFrame.Read<PluginRequest>(send).Method=="getWidgets","widget request");
             Assert(PluginFrame.Read<PluginRequest>(send).CommandId=="open","widget action uses invoke");
         }
+        PluginResponse sized=Ok(2); sized.Widgets=Widgets();
+        PluginWidget sizedWidget=sized.Widgets[0];
+        sizedWidget.DefaultSize="half-horizontal";
+        sizedWidget.Layouts=new[] {
+            new PluginWidgetLayout { Size="half-horizontal", Elements=sizedWidget.Elements },
+            new PluginWidgetLayout { Size="quarter", Elements=new[] {
+                new PluginWidgetElement { Type="metric", Label="AAPL", Value="compact" } } }
+        };
+        PluginProtocolSession sizedSession=Session(new MemoryStream(),Frames(Hello(),sized),delegate {},"window","widget");
+        sizedSession.HelloAsync("ru-RU","data",1000,none).GetAwaiter().GetResult();
+        PluginWidget parsed=sizedSession.GetWidgetsAsync(1000,none).GetAwaiter().GetResult().Widgets[0];
+        Assert(parsed.PreferredSize=="half-horizontal" && parsed.SupportsSize("quarter") &&
+            !parsed.SupportsSize("full") && parsed.ForSize("quarter").Elements[0].Value=="compact",
+            "per-size widget layouts roundtrip");
+        Assert(Widgets()[0].PreferredSize=="full" && Widgets()[0].SupportsSize("quarter"),
+            "legacy card supports default group sizes");
         PluginProtocolSession old=Session(new MemoryStream(),Frames(Hello(),Ok(2)),delegate {}, "window");
         old.HelloAsync("ru-RU","data",1000,none).GetAwaiter().GetResult();
         Reject<InvalidOperationException>(delegate { old.GetWidgetsAsync(1000,none).GetAwaiter().GetResult(); },"undeclared widgets");
         old.PingAsync(1000,none).GetAwaiter().GetResult();
         Assert(!old.Failed,"old session unaffected");
-        foreach (string reason in new[] {"missing","duplicate","kind","type","label","percent","action","fields","count","indicator","unexpected","error"}) {
+        foreach (string reason in new[] {"missing","duplicate","kind","type","label","percent","action","fields","count","indicator","unexpected","error","size","size-duplicate","size-default","size-empty","size-action","indicator-layout"}) {
             PluginResponse bad=Ok(2); bad.Widgets=Widgets();
             if(reason=="missing") bad.Widgets=null;
             if(reason=="duplicate") bad.Widgets=new[]{bad.Widgets[0],bad.Widgets[0]};
@@ -86,6 +102,18 @@ public static class PluginProtocolTests {
             if(reason=="count") bad.Widgets[0].Elements=new PluginWidgetElement[13];
             if(reason=="indicator") bad.Widgets[0].Kind="indicator";
             if(reason=="error") { bad.Ok=false; bad.Error="declined"; }
+            if(reason.StartsWith("size") || reason=="indicator-layout") {
+                PluginWidget w=bad.Widgets[0];
+                w.DefaultSize="quarter";
+                w.Layouts=new[] { new PluginWidgetLayout { Size="quarter", Elements=w.Elements } };
+                if(reason=="size") w.Layouts[0].Size="unknown";
+                if(reason=="size-duplicate") w.Layouts=new[]{w.Layouts[0],w.Layouts[0]};
+                if(reason=="size-default") w.DefaultSize="full";
+                if(reason=="size-empty") w.Layouts[0].Elements=new PluginWidgetElement[0];
+                if(reason=="size-action") w.Layouts[0].Elements=new[]{
+                    new PluginWidgetElement { Type="action", Label="Bad", CommandId="unknown" } };
+                if(reason=="indicator-layout") { w.Kind="indicator"; w.Elements=new[]{w.Elements[0]}; }
+            }
             int abort=0;
             PluginProtocolSession p=Session(new MemoryStream(),Frames(Hello(),bad),delegate { abort++; },"window","widget");
             p.HelloAsync("ru-RU","data",1000,none).GetAwaiter().GetResult();
