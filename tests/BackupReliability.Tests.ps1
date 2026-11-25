@@ -1060,7 +1060,7 @@ public static class BackupTests
         config.BackupReminders = false;
         config.WidgetIndicators = new List<PluginWidgetPlacementConfig> {
             new PluginWidgetPlacementConfig { PluginId = "test.backup", Version = "1.0.0", WidgetId = "status",
-                Title = "Status", Kind = "indicator", Size = "indicator" }
+                Title = "Status", Size = "indicator" }
         };
         ConfigStore.Save(config);
         string shared = File.ReadAllText(ConfigStore.FilePath);
