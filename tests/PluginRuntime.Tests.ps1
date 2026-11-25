@@ -40,6 +40,11 @@ public static class FakePlugin {
             } else if(method=="invoke") {
                 if(request.CommandId=="decline") { reply.Ok=false; reply.Error="declined"; }
                 else File.WriteAllText(Path.Combine(data,"invoked"),request.CommandId);
+            } else if(method=="getWidgets") {
+                string mode=File.Exists(Path.Combine(data,"mode")) ? File.ReadAllText(Path.Combine(data,"mode")) : "";
+                reply.Widgets=new[] { new PluginWidget { Id="quotes", Title="Stocks", Kind="card",
+                    Elements=new[] { new PluginWidgetElement { Type="metric", Label="AAPL", Value="200.00" },
+                        new PluginWidgetElement { Type="action", Label="Open", CommandId=mode=="invalid-widget" ? "unknown" : "open" } } } };
             } else if(method=="settings") {
                 File.WriteAllText(Path.Combine(data,"settings"),"opened");
             } else if(method=="poll") {
@@ -85,7 +90,7 @@ public static class PluginRuntimeTests {
         using(ZipArchive zip=new ZipArchive(s,ZipArchiveMode.Create)) {
             using(StreamWriter w=new StreamWriter(zip.CreateEntry("plugin.json").Open()))
                 w.Write("{\"schemaVersion\":1,\"apiVersion\":1,\"id\":\""+id+"\",\"name\":\"Test\",\"version\":\""+version+
-                    "\",\"entryPoint\":\"bin/FakePlugin.exe\",\"capabilities\":["+(background?"\"background\",\"notification\"":"\"window\",\"settings\"")+"]}");
+                    "\",\"entryPoint\":\"bin/FakePlugin.exe\",\"capabilities\":["+(background?"\"background\",\"notification\"":"\"window\",\"settings\",\"widget\"")+"]}");
             using(Stream target=zip.CreateEntry("bin/FakePlugin.exe").Open())
             using(FileStream source=File.OpenRead(exe)) source.CopyTo(target);
         }
@@ -119,6 +124,11 @@ public static class PluginRuntimeTests {
             State(runtime,bg,"running"); State(runtime,fg,"idle");
             Assert(File.Exists(Path.Combine(data,"started")),"background starts");
             Assert(!File.Exists(Path.Combine(fgData,"pid")),"foreground remains idle");
+            try { runtime.GetWidgetsAsync(fg,"1.0.0").GetAwaiter().GetResult(); throw new Exception("idle widget read accepted"); }
+            catch(InvalidOperationException) { count++; }
+            Assert(!File.Exists(Path.Combine(fgData,"pid")),"widget refresh did not start foreground");
+            try { runtime.GetWidgetsAsync(bg,"1.0.0").GetAwaiter().GetResult(); throw new Exception("legacy plugin widgets accepted"); }
+            catch(InvalidOperationException) { count++; }
             int first=Pid(data);
             runtime.StartAsync(bg).GetAwaiter().GetResult();
             Assert(Pid(data)==first,"idempotent start");
@@ -169,7 +179,11 @@ public static class PluginRuntimeTests {
             PluginCommand[] commands=runtime.GetCommandsAsync(fg,"1.0.0").GetAwaiter().GetResult();
             Assert(commands.Length==2 && commands[0].Id=="open","commands discovered on demand");
             State(runtime,fg,"running");
-            runtime.InvokeAsync(fg,"1.0.0","open").GetAwaiter().GetResult();
+            PluginWidget[] widgets=runtime.GetWidgetsAsync(fg,"1.0.0").GetAwaiter().GetResult();
+            Assert(widgets.Length==1 && widgets[0].Id=="quotes" && widgets[0].Elements[0].Value=="200.00","real widget snapshot");
+            try { runtime.GetWidgetsAsync(fg,"9.0.0").GetAwaiter().GetResult(); throw new Exception("stale widget version accepted"); }
+            catch(InvalidOperationException) { count++; }
+            runtime.InvokeAsync(fg,"1.0.0",widgets[0].Elements[1].CommandId).GetAwaiter().GetResult();
             Assert(File.ReadAllText(Path.Combine(fgData,"invoked"))=="open","command invoked");
             runtime.OpenSettingsAsync(fg,"1.0.0").GetAwaiter().GetResult();
             Assert(File.ReadAllText(Path.Combine(fgData,"settings"))=="opened","settings invoked");
@@ -180,6 +194,15 @@ public static class PluginRuntimeTests {
             catch(InvalidOperationException) { count++; }
             Assert(File.ReadAllText(Path.Combine(fgData,"invoked"))=="open","unknown command not invoked");
             foreground=Pid(fgData);
+            File.WriteAllText(Path.Combine(fgData,"mode"),"invalid-widget");
+            try { runtime.GetWidgetsAsync(fg,"1.0.0").GetAwaiter().GetResult(); throw new Exception("invalid widget accepted"); }
+            catch(InvalidDataException) { count++; }
+            State(runtime,fg,"error"); Assert(Exited(foreground),"invalid widget stopped child");
+            try { runtime.GetWidgetsAsync(fg,"1.0.0").GetAwaiter().GetResult(); throw new Exception("failed widget restarted"); }
+            catch(InvalidOperationException) { count++; }
+            Assert(Pid(fgData)==foreground,"widget refresh did not restart failed child");
+            File.Delete(Path.Combine(fgData,"mode"));
+            runtime.StartAsync(fg,true).GetAwaiter().GetResult(); foreground=Pid(fgData);
             runtime.RemoveAsync(fg).GetAwaiter().GetResult();
             Assert(Exited(foreground) && File.Exists(Path.Combine(fgData,"hello")),"remove stopped process and kept data");
             store.Install(fg1,delegate {return true;},null,runtime.BeforePackageCommit);
