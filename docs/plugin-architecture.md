@@ -170,3 +170,12 @@ The first implementation keeps widget groups in their own wrapping container abo
 Widget groups are visible only when grouping is enabled and the selected layout is free. The Add menu keeps its widget entry disabled in other modes; direct activation is guarded too. Switching layouts detaches widget cards from the free board without destroying their content or changing plugin enabled state. Returning to free layout attaches the existing groups to the nine ordinary zone stacks, with widget group width constrained to the same zone limit. No separate strip remains. Right-click the group heading to rename, collapse/expand, move above/below adjacent groups (including application groups), or choose a zone. Drag the group heading to a different free-board zone. Group order is currently a slot index in the zone; application-group ordering remains unchanged. The usual group appearance applies.
 
 This is still session-local; persistence and automatic widget refresh will follow. Dragging individual widgets between cells and lower-panel indicators are not yet included. WPF tests cover attachment, relative order, rename, collapse, zone change and mode switching.
+
+
+## Stage 13: persistent widget placement
+
+Optional `widgetGroups` in apps.json stores group number, title, zone, order, collapse state, and each widget's plugin ID, widget ID, last known version/title, size and cell coordinates. It contains no executable data, live values, commands, enabled state or trust. Configuration copy is deep for these fields. Config load/save and full ZIP validation reject invalid group identities, out-of-range positions, duplicate widgets and overlaps rather than silently rewriting a malformed layout. Older configurations without the field remain valid.
+
+Placement changes use the ordinary configuration save path; a failed save reloads the last valid placement metadata. Full ZIP export includes the field through apps.json. Restored settings construct inactive placeholders even if plugins are missing/disabled; loading the layout alone performs no RPC or plugin start. The user can explicitly refresh an unavailable widget to activate the currently installed, enabled, trusted version. Refresh revalidates the version and process; no old command callbacks survive replacement. Saved layout is independent of the selected app-group mode.
+
+Automatic widget refresh, dragging individual widgets and bottom-panel indicators are follow-up work.

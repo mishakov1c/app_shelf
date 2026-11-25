@@ -504,6 +504,40 @@ public static class Package6Tests
                     heading.Text == "Renamed" && cells.Visibility == Visibility.Collapsed, "Free layout was not restored");
             } finally { window.Close(); }
         });
+        Case("widget layout persists, restores without executing and rejects overlap", delegate {
+            PluginWidgetGroupConfig group = new PluginWidgetGroupConfig { Number = 7, Title = "Финансы",
+                Zone = "middle-right", Order = 2, Collapsed = true, Widgets = new List<PluginWidgetPlacementConfig> {
+                    new PluginWidgetPlacementConfig { PluginId = "example.stocks", WidgetId = "quotes", Version = "1.0.0",
+                        Title = "Курсы акций", Size = "half-horizontal", Row = 0, Column = 0 },
+                    new PluginWidgetPlacementConfig { PluginId = "example.stocks", WidgetId = "price", Version = "1.0.0",
+                        Title = "Цена", Size = "quarter", Row = 1, Column = 1 } } };
+            AppConfig config = new AppConfig { GroupingEnabled = true, GroupLayoutMode = "free",
+                WidgetGroups = new List<PluginWidgetGroupConfig> { group } };
+            AppConfig copy = config.Copy(); copy.WidgetGroups[0].Widgets[0].Row = 1;
+            Assert(group.Widgets[0].Row == 0, "Widget layout copy was shallow");
+            bool rejected = false;
+            try { PluginWidgetGroupConfig.Validate(copy.WidgetGroups); } catch (InvalidDataException) { rejected = true; }
+            Assert(rejected, "Overlapping stored placements accepted");
+            ConfigStore.Save(config);
+            string warning; bool safe;
+            AppConfig loaded = ConfigStore.Load(out warning, out safe);
+            Assert(safe && warning == null && loaded.WidgetGroups.Count == 1 &&
+                loaded.WidgetGroups[0].Widgets[1].Column == 1, "Widget layout did not roundtrip");
+            int reads = 0, actions = 0, changes = 0;
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(
+                delegate { return new PluginRuntimeState { Status = "idle" }; },
+                delegate { reads++; throw new Exception("Restore must not execute a plugin"); },
+                delegate { actions++; throw new Exception("Restore must not execute a command"); },
+                delegate { changes++; });
+            workspace.RestoreLayout(loaded.WidgetGroups);
+            List<PluginWidgetGroupConfig> captured = workspace.CaptureLayout();
+            Assert(reads == 0 && actions == 0 && changes == 0 && workspace.HasWidgets &&
+                captured[0].Number == 7 && captured[0].Title == "Финансы" && captured[0].Zone == "middle-right" &&
+                captured[0].Collapsed && captured[0].Order == 2 &&
+                captured[0].Widgets[0].Size == "half-horizontal" && captured[0].Widgets[1].Column == 1,
+                "Restore lost placement metadata or executed plugin");
+            workspace.Clear();
+        });
         Case("native declarative plugin widget renderer", delegate {
             PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
                 Elements = new[] {

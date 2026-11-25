@@ -166,7 +166,7 @@ namespace AppShelf
         {
             internal string PluginId, Version, WidgetId, Title, Kind, Size;
             internal int ProcessId, Revision, Row, Column;
-            internal bool Busy, Stale;
+            internal bool Busy, Stale, RestorePending;
             internal ContentControl Host;
             internal WidgetGroup Group;
             internal PluginWidget Snapshot;
@@ -465,6 +465,24 @@ namespace AppShelf
             if (widget == null || !widget.SupportsSize(widget.PreferredSize)) return false;
             Placement entry = new Placement { PluginId = pluginId, Version = version, WidgetId = widget.Id,
                 Title = widget.Title, Kind = widget.Kind, ProcessId = snapshot.ProcessId, Snapshot = widget };
+            WirePlacement(entry);
+            WidgetGroup destination = null;
+            int targetRow = 0, targetColumn = 0;
+            foreach (WidgetGroup group in groups)
+                if (FindSpace(group, widget.PreferredSize, null, out targetRow, out targetColumn))
+                { destination = group; break; }
+            if (destination == null)
+            { destination = NewGroup(); targetRow = targetColumn = 0; }
+            entries.Add(entry);
+            Position(entry, destination, widget.PreferredSize, targetRow, targetColumn);
+            Render(entry, widget);
+            Surface.Visibility = Visibility.Visible;
+            changed();
+            return Contains(pluginId, widgetId);
+        }
+
+        private void WirePlacement(Placement entry)
+        {
             entry.Host = new ContentControl { Margin = new Thickness(4), ClipToBounds = true,
                 HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
@@ -504,19 +522,60 @@ namespace AppShelf
                 moveMenu.Items.Add(new Separator()); moveMenu.Items.Add(newGroup);
             };
             entry.Host.ContextMenu = menu;
-            WidgetGroup destination = null;
-            int targetRow = 0, targetColumn = 0;
+        }
+
+        internal List<PluginWidgetGroupConfig> CaptureLayout()
+        {
+            if (groups.Count == 0) return null;
+            List<PluginWidgetGroupConfig> result = new List<PluginWidgetGroupConfig>();
             foreach (WidgetGroup group in groups)
-                if (FindSpace(group, widget.PreferredSize, null, out targetRow, out targetColumn))
-                { destination = group; break; }
-            if (destination == null)
-            { destination = NewGroup(); targetRow = targetColumn = 0; }
-            entries.Add(entry);
-            Position(entry, destination, widget.PreferredSize, targetRow, targetColumn);
-            Render(entry, widget);
-            Surface.Visibility = Visibility.Visible;
-            changed();
-            return true;
+            {
+                PluginWidgetGroupConfig saved = new PluginWidgetGroupConfig { Number = group.Number,
+                    Title = group.Title, Zone = group.Zone ?? defaultZone, Order = group.Order,
+                    Collapsed = group.Cells.Visibility == Visibility.Collapsed,
+                    Widgets = new List<PluginWidgetPlacementConfig>() };
+                foreach (Placement p in entries)
+                    if (p.Group == group)
+                        saved.Widgets.Add(new PluginWidgetPlacementConfig { PluginId = p.PluginId,
+                            WidgetId = p.WidgetId, Version = p.Version, Title = p.Title, Size = p.Size,
+                            Row = p.Row, Column = p.Column });
+                result.Add(saved);
+            }
+            PluginWidgetGroupConfig.Validate(result);
+            return result;
+        }
+
+        internal void RestoreLayout(List<PluginWidgetGroupConfig> saved)
+        {
+            PluginWidgetGroupConfig.Validate(saved);
+            Clear();
+            nextGroupNumber = 0;
+            if (saved == null) return;
+            foreach (PluginWidgetGroupConfig item in saved)
+            {
+                WidgetGroup group = NewGroup();
+                group.Number = item.Number;
+                group.Title = item.Title; group.Heading.Text = item.Title;
+                group.Zone = item.Zone; group.Order = item.Order;
+                group.Cells.Visibility = item.Collapsed ? Visibility.Collapsed : Visibility.Visible;
+                foreach (PluginWidgetPlacementConfig p in item.Widgets)
+                {
+                    PluginWidgetElement[] message = new[] { new PluginWidgetElement { Type = "text",
+                        Label = "Загрузите виджет для получения данных." } };
+                    PluginWidget placeholder = new PluginWidget { Id = p.WidgetId, Title = p.Title,
+                        Kind = p.Size == "quarter" ? "tile" : "card", Elements = message,
+                        DefaultSize = p.Size, Layouts = new[] { new PluginWidgetLayout { Size = p.Size, Elements = message } } };
+                    Placement entry = new Placement { PluginId = p.PluginId, Version = p.Version,
+                        WidgetId = p.WidgetId, Title = p.Title, Kind = placeholder.Kind, Snapshot = placeholder,
+                        RestorePending = true };
+                    WirePlacement(entry);
+                    entries.Add(entry);
+                    Position(entry, group, p.Size, p.Row, p.Column);
+                    Unavailable(entry, "Загрузите виджет для получения данных.");
+                }
+            }
+            foreach (WidgetGroup group in groups) nextGroupNumber = Math.Max(nextGroupNumber, group.Number);
+            Surface.Visibility = HasWidgets ? Visibility.Visible : Visibility.Collapsed;
         }
 
         internal bool Resize(string pluginId, string widgetId, string size)
@@ -595,15 +654,19 @@ namespace AppShelf
             entry.Busy = true;
             try
             {
-                PluginWidgetSnapshot snapshot = await read(entry.PluginId, entry.Version, false);
+                bool explicitActivation = zones != null && entry.Stale;
+                PluginWidgetSnapshot snapshot = await read(entry.PluginId, explicitActivation ? null : entry.Version, explicitActivation);
                 if (!entries.Contains(entry)) return;
                 PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == entry.WidgetId; });
-                if (widget == null || !Current(state(entry.PluginId), entry.Version, snapshot.ProcessId))
+                string version = snapshot.Version ?? entry.Version;
+                if (widget == null || !Current(state(entry.PluginId), version, snapshot.ProcessId))
                 {
                     Unavailable(entry, "Виджет недоступен в текущем сеансе плагина.");
                     return;
                 }
                 entry.ProcessId = snapshot.ProcessId;
+                entry.Version = version;
+                entry.RestorePending = false;
                 entry.Title = widget.Title;
                 entry.Snapshot = widget;
                 if (!widget.SupportsSize(entry.Size))
@@ -648,11 +711,21 @@ namespace AppShelf
                 delegate(string id) { return GetPluginRuntime().State(id); },
                 delegate(string id, string version, bool activate) { return GetPluginRuntime().ReadWidgetSnapshotAsync(id, version, activate); },
                 delegate(string id, string version, int process, string command) { return GetPluginRuntime().InvokeWidgetAsync(id, version, process, command); },
-                delegate { RenderTiles(); });
+                delegate { SavePluginWidgetLayout(); });
             _pluginWidgets.ConfigureBoard(FreeGroupZones, FreeGroupZoneLabel,
                 delegate(string title) { return InputDialog("Переименовать группу", "Новое название:", title); },
                 delegate { return _canSave && WidgetsInFreeLayout(); });
+            _pluginWidgets.RestoreLayout(_config.WidgetGroups);
             return _pluginWidgets.Surface;
+        }
+
+        private void SavePluginWidgetLayout()
+        {
+            AppConfig pending = _config.Copy();
+            pending.WidgetGroups = _pluginWidgets.CaptureLayout();
+            if (!SaveConfigChanges(pending))
+                _pluginWidgets.RestoreLayout(_config.WidgetGroups);
+            RenderTiles();
         }
 
         private bool WidgetsInFreeLayout()

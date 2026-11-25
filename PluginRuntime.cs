@@ -381,6 +381,7 @@ namespace AppShelf
     internal sealed class PluginWidgetSnapshot
     {
         internal int ProcessId { get; set; }
+        internal string Version { get; set; }
         internal PluginWidget[] Widgets { get; set; }
     }
 
@@ -608,18 +609,21 @@ namespace AppShelf
             PluginWidgetSnapshot result = null;
             await Run(delegate
             {
-                PluginManifest manifest = CheckActionVersion(id, version);
+                string executable;
+                // Only an explicit activation may select the current installed version.
+                PluginManifest manifest = activate && version == null
+                    ? store.ReadEnabled(id, out executable) : CheckActionVersion(id, version);
                 if (Array.IndexOf(manifest.Capabilities, "widget") < 0)
                     throw new InvalidOperationException("Плагин не предоставляет виджеты.");
                 if (activate) StartCore(id, false, false);
                 Slot slot = GetSlot(id);
                 PluginChild child = slot.Child;
                 if (slot.Status != "running" || child == null || child.HasExited ||
-                    child.Manifest.Version != version)
+                    child.Manifest.Version != manifest.Version)
                     throw new InvalidOperationException("Плагин виджетов не запущен.");
                 try
                 {
-                    result = new PluginWidgetSnapshot { ProcessId = child.ProcessId,
+                    result = new PluginWidgetSnapshot { ProcessId = child.ProcessId, Version = manifest.Version,
                         Widgets = child.GetWidgets(lifetime.Token) };
                 }
                 catch (Exception error)

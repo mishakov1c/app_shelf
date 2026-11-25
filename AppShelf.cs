@@ -76,6 +76,81 @@ namespace AppShelf
         public string Kind;
     }
 
+    // Only placement metadata is persisted: no snapshots, commands or trust flags.
+    [DataContract]
+    public sealed class PluginWidgetPlacementConfig
+    {
+        [DataMember(Name = "pluginId")] public string PluginId;
+        [DataMember(Name = "widgetId")] public string WidgetId;
+        [DataMember(Name = "version")] public string Version;
+        [DataMember(Name = "title")] public string Title;
+        [DataMember(Name = "size")] public string Size;
+        [DataMember(Name = "row")] public int Row;
+        [DataMember(Name = "column")] public int Column;
+        internal PluginWidgetPlacementConfig Copy() { return (PluginWidgetPlacementConfig)MemberwiseClone(); }
+    }
+
+    [DataContract]
+    public sealed class PluginWidgetGroupConfig
+    {
+        [DataMember(Name = "number")] public int Number;
+        [DataMember(Name = "title")] public string Title;
+        [DataMember(Name = "zone")] public string Zone;
+        [DataMember(Name = "order")] public int Order;
+        [DataMember(Name = "collapsed", EmitDefaultValue = false)] public bool Collapsed;
+        [DataMember(Name = "widgets")] public List<PluginWidgetPlacementConfig> Widgets;
+        internal PluginWidgetGroupConfig Copy()
+        {
+            PluginWidgetGroupConfig copy = (PluginWidgetGroupConfig)MemberwiseClone();
+            copy.Widgets = Widgets == null ? null : Widgets.ConvertAll(delegate(PluginWidgetPlacementConfig p) { return p == null ? null : p.Copy(); });
+            return copy;
+        }
+        private static bool Valid(string text, int max)
+        {
+            return !String.IsNullOrWhiteSpace(text) && text.Length <= max && text.IndexOf('\0') < 0;
+        }
+        private static bool Match(string text, string pattern)
+        {
+            return text != null && System.Text.RegularExpressions.Regex.IsMatch(text, pattern,
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        }
+        internal static void Validate(List<PluginWidgetGroupConfig> groups)
+        {
+            if (groups == null) return;
+            if (groups.Count > 32) throw new InvalidDataException("Слишком много групп виджетов.");
+            HashSet<int> numbers = new HashSet<int>();
+            HashSet<string> keys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (PluginWidgetGroupConfig group in groups)
+            {
+                if (group == null || group.Number <= 0 || group.Number > 1000000000 || !numbers.Add(group.Number) ||
+                    !Valid(group.Title, 100) || !Match(group.Zone, @"\A(top|middle|bottom)-(left|center|right)\z") ||
+                    group.Order < 0 || group.Widgets == null || group.Widgets.Count < 1 || group.Widgets.Count > 4)
+                    throw new InvalidDataException("Некорректная группа виджетов.");
+                bool[,] cells = new bool[2, 2];
+                foreach (PluginWidgetPlacementConfig p in group.Widgets)
+                {
+                    if (p == null || !Valid(p.PluginId, 100) ||
+                        !Match(p.PluginId, @"\A[a-z][a-z0-9-]{0,31}(?:\.[a-z][a-z0-9-]{0,31}){1,3}\z") ||
+                        !Match(p.WidgetId, @"\A[a-z][a-z0-9_.-]{0,63}\z") ||
+                        !Match(p.Version, @"\A(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\z") ||
+                        !Valid(p.Title, 100) || !keys.Add(p.PluginId + "\n" + p.WidgetId) || keys.Count > 32 ||
+                        (p.Size != "full" && p.Size != "half-horizontal" && p.Size != "half-vertical" && p.Size != "quarter"))
+                        throw new InvalidDataException("Некорректное размещение виджета.");
+                    int rows = p.Size == "full" || p.Size == "half-vertical" ? 2 : 1;
+                    int columns = p.Size == "full" || p.Size == "half-horizontal" ? 2 : 1;
+                    if (p.Row < 0 || p.Row > 2 - rows || p.Column < 0 || p.Column > 2 - columns)
+                        throw new InvalidDataException("Виджет выходит за границы группы.");
+                    for (int row = p.Row; row < p.Row + rows; row++)
+                        for (int col = p.Column; col < p.Column + columns; col++)
+                        {
+                            if (cells[row, col]) throw new InvalidDataException("Виджеты пересекаются.");
+                            cells[row, col] = true;
+                        }
+                }
+            }
+        }
+    }
+
     [DataContract]
     public sealed class AppConfig
     {
@@ -87,6 +162,7 @@ namespace AppShelf
                 new Dictionary<string, string>(GroupAlignmentOverrides, StringComparer.OrdinalIgnoreCase);
             copy.GroupZoneOverrides = GroupZoneOverrides == null ? null :
                 new Dictionary<string, string>(GroupZoneOverrides, StringComparer.OrdinalIgnoreCase);
+            copy.WidgetGroups = WidgetGroups == null ? null : WidgetGroups.ConvertAll(delegate(PluginWidgetGroupConfig g) { return g == null ? null : g.Copy(); });
             copy.SnoozeQuickMinutes = SnoozeQuickMinutes == null ? null : (int[])SnoozeQuickMinutes.Clone();
             copy.BottomPanelFavorites = BottomPanelFavorites == null ? null : new List<string>(BottomPanelFavorites);
             copy.BottomPanelCategories = BottomPanelCategories == null ? null : new List<string>(BottomPanelCategories);
@@ -144,6 +220,9 @@ namespace AppShelf
 
         [DataMember(Name = "groups")]
         public List<string> Groups = new List<string>();
+
+        [DataMember(Name = "widgetGroups", EmitDefaultValue = false)]
+        public List<PluginWidgetGroupConfig> WidgetGroups;
 
         [DataMember(Name = "showNetwork")]
         public bool ShowNetwork = true;
@@ -370,6 +449,7 @@ namespace AppShelf
                 if (data == null) throw new InvalidDataException("Пустой файл настроек.");
                 if (data.Items == null) data.Items = new List<AppItem>();
                 if (data.Groups == null) data.Groups = new List<string>();
+                PluginWidgetGroupConfig.Validate(data.WidgetGroups);
                 if (data.Version < 3)
                 {
                     // Features introduced in 1.2 should be enabled for existing users.
@@ -536,6 +616,7 @@ namespace AppShelf
 
         internal static void Save(AppConfig config, bool cleanupShortcuts)
         {
+            PluginWidgetGroupConfig.Validate(config.WidgetGroups);
             List<string> retired = cleanupShortcuts ? RetiredShortcutCandidates() : null;
             System.IO.Directory.CreateDirectory(DirectoryPath);
             config.Version = 5;
