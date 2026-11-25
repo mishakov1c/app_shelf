@@ -600,7 +600,14 @@ namespace AppShelf
         {
             int count = entries.FindAll(delegate(Placement p) { return p.Group == group; }).Count;
             group.Heading.Text = group.Title + "  ·  " + count;
-            group.Collapse.Content = group.Cells.Visibility == Visibility.Visible ? "⌃" : "⌄";
+            bool expanded = group.Cells.Visibility == Visibility.Visible;
+            group.Collapse.Content = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse(expanded ? "M 1,5 L 5,1 L 9,5" : "M 1,1 L 5,5 L 9,1"),
+                Stroke = FluentUi.Background, StrokeThickness = 1.8, StrokeLineJoin = PenLineJoin.Round,
+                StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
+                Width = 10, Height = 6, Stretch = Stretch.Uniform
+            };
             group.Collapse.ToolTip = group.Cells.Visibility == Visibility.Visible ? "Свернуть группу" : "Развернуть группу";
         }
 
@@ -626,9 +633,8 @@ namespace AppShelf
                 FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(5, 0, 0, 4),
                 TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
             group.Header = new DockPanel { LastChildFill = true, Margin = new Thickness(4, 0, 4, 4) };
-            group.Collapse = new Button { Width = 20, Height = 20, MinHeight = 0, Padding = new Thickness(0),
-                Background = FluentUi.Foreground, Foreground = FluentUi.Background, BorderThickness = new Thickness(0),
-                FontSize = 14, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center };
+            group.Collapse = new Button { Style = FluentUi.GroupCollapseButtonStyle(),
+                VerticalAlignment = VerticalAlignment.Center };
             group.Collapse.Click += delegate { ToggleGroup(group); };
             group.Grip = DragGrip();
             DockPanel.SetDock(group.Collapse, Dock.Left); DockPanel.SetDock(group.Grip, Dock.Right);

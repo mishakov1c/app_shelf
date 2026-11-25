@@ -1119,6 +1119,29 @@ namespace AppShelf
             return style;
         }
 
+        internal static Style GroupCollapseButtonStyle()
+        {
+            return (Style)XamlReader.Parse(@"
+<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+ xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='Button'>
+ <Setter Property='Width' Value='20'/><Setter Property='Height' Value='20'/>
+ <Setter Property='MinHeight' Value='0'/><Setter Property='Padding' Value='0'/>
+ <Setter Property='Cursor' Value='Hand'/><Setter Property='Foreground' Value='#192334'/>
+ <Setter Property='Background' Value='#F4F7FD'/>
+ <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='Button'>
+  <Grid><Ellipse x:Name='Circle' Fill='{TemplateBinding Background}' Stroke='Transparent' StrokeThickness='1'/>
+   <ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/>
+  </Grid>
+  <ControlTemplate.Triggers>
+   <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Circle' Property='Fill' Value='#B7D3FF'/></Trigger>
+   <Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Circle' Property='Stroke' Value='#6094D4'/></Trigger>
+   <Trigger Property='IsPressed' Value='True'><Setter TargetName='Circle' Property='Fill' Value='#88B8FF'/></Trigger>
+   <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.45'/></Trigger>
+  </ControlTemplate.Triggers>
+ </ControlTemplate></Setter.Value></Setter>
+</Style>");
+        }
+
         public static Style BottomCategoryButtonStyle()
         {
             Style style = new Style(typeof(Button), ButtonStyle());

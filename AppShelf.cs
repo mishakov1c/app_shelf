@@ -4642,11 +4642,8 @@ namespace AppShelf
                 hint.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         }
 
-        // Nine independent drop targets. In a vertically scrolling host, star
-        // rows may be measured with unbounded height and cannot reliably absorb
-        // the remaining viewport. Keep all rows Auto and explicitly reserve only
-        // the space left between the measured top and bottom rows.
-        // A common column width, but independent vertical tracks. A tall group
+        // Nine independent drop targets with a common column width and
+        // independent vertical tracks. A tall group
         // in one column must not push down groups in the other columns.
         internal sealed class FreeZoneBoard : Grid
         {
