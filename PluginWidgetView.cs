@@ -303,6 +303,8 @@ namespace AppShelf
             foreach (WidgetGroup group in groups)
             {
                 DetachCard(group);
+                group.Heading.TextWrapping = TextWrapping.Wrap;
+                group.Heading.TextTrimming = TextTrimming.None;
                 cards.Add(new KeyValuePair<string, Border>("widget:" + group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture), group.Card));
             }
             return cards;
@@ -324,6 +326,8 @@ namespace AppShelf
             foreach (WidgetGroup group in ordered)
             {
                 DetachCard(group);
+                group.Heading.TextWrapping = TextWrapping.NoWrap;
+                group.Heading.TextTrimming = TextTrimming.CharacterEllipsis;
                 StackPanel host;
                 if (!hosts.TryGetValue(group.Zone ?? defaultZone, out host)) host = hosts[defaultZone];
                 host.Children.Insert(Math.Min(group.Order, host.Children.Count), group.Card);
@@ -608,9 +612,11 @@ namespace AppShelf
                     Math.Abs(now.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
                 candidate = false; group.Grip.ReleaseMouseCapture();
                 draggingGroup = group;
+                FreeCanvasBoard canvas = group.Card.Parent as FreeCanvasBoard;
+                if (canvas != null) canvas.BeginGroupDrag("widget:" + group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture), Mouse.GetPosition(canvas));
                 try { DragDrop.DoDragDrop(group.Grip,
                     new DataObject(GroupDragFormat, group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)), DragDropEffects.Move); }
-                finally { draggingGroup = null; FreeCanvasBoard canvas = group.Card.Parent as FreeCanvasBoard; if (canvas != null) canvas.ShowGrid(false); }
+                finally { draggingGroup = null; if (canvas != null) canvas.EndGroupDrag(); }
             };
         }
 

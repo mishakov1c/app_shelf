@@ -93,3 +93,23 @@ $copy = $copyMethod.Invoke($config,$null)
 $copy.CanvasPositions['app:other'].X = 10
 Assert ($config.CanvasPositions['app:other'].X -eq 2) 'staged settings mutate original geometry'
 Write-Host 'PASS shared WPF canvas layout and staged configuration'
+
+# Explicit resize, collision, grid conversion and drag offset.
+$resize = $type.GetMethod('ResizeCandidate', $flags)
+$wide = $resize.Invoke($board,[object[]]@('app:other', 600.0, 240.0))
+Assert ($null -ne $wide -and $wide.Width -eq 30 -and $wide.ManualHeight -eq 12) 'free resize rejected'
+[void]$set.Invoke($board,[object[]]@('app:other',$wide))
+Layout
+$actual = $capture.Invoke($board,$null)
+Assert ($actual['app:other'].Width -eq 30 -and $actual['app:other'].Height -ge 12) 'resize not applied'
+$collision = $resize.Invoke($board,[object[]]@('app:work', 600.0, 100.0))
+Assert ($null -eq $collision) 'resize into neighboring card accepted'
+$converted = [AppShelf.FreeCanvasLayout]::ConvertStep($wide,20,10)
+Assert ($converted.X -eq 4 -and $converted.Width -eq 60 -and $converted.ManualHeight -eq 24) 'grid conversion changed DIP geometry'
+$begin = $type.GetMethod('BeginGroupDrag',$flags)
+$finish = $type.GetMethod('EndGroupDrag',$flags)
+[void]$begin.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 60,320)))
+$moved = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 100,360)))
+Assert ($null -ne $moved -and $moved.X -eq 4 -and $moved.Y -eq 17) 'drag anchor offset lost'
+[void]$finish.Invoke($board,$null)
+Write-Host 'PASS resize, grid conversion and drag anchor'
