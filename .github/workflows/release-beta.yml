@@ -103,13 +103,21 @@ jobs:
             throw "EXE product version is $actualVersion, expected $env:APP_RELEASE_VERSION"
           }
 
-      - name: Publish verified GitHub Release with EXE
+      - name: Build and verify demonstration packages
+        shell: cmd
+        run: Build-Plugins.cmd --no-open --no-pause
+
+      - name: Publish verified GitHub Release with EXE and demo packages
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = $env:APP_RELEASE_VERSION
-          gh release create "$version" "AppShelf.exe" `
+          $assets = @("AppShelf.exe", "artifacts/plugins/NotesPlugin-1.0.0.asplugin", "artifacts/plugins/StocksPlugin-1.0.0.asplugin")
+          foreach ($asset in $assets) {
+            if ((Get-Item -LiteralPath $asset -ErrorAction Stop).Length -le 0) { throw "Empty release asset: $asset" }
+          }
+          gh release create "$version" @assets `
             --prerelease --latest=false `
             --title "AppShelf $version" `
             --notes-file "release-notes.md" `
