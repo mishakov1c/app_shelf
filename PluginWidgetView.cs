@@ -287,6 +287,8 @@ namespace AppShelf
         {
             Panel parent = group.Card.Parent as Panel;
             if (parent != null) parent.Children.Remove(group.Card);
+            group.Card.Visibility = Visibility.Visible;
+            group.Card.RenderTransform = Transform.Identity;
         }
 
         internal void DetachBoard()
@@ -294,6 +296,14 @@ namespace AppShelf
             ClearWidgetDropPreview();
             foreach (WidgetGroup group in groups) DetachCard(group);
             board = null; canvasAttached = false;
+        }
+
+        internal List<KeyValuePair<string, Border>> CanvasCards()
+        {
+            List<KeyValuePair<string, Border>> result = new List<KeyValuePair<string, Border>>();
+            foreach (WidgetGroup group in groups)
+                result.Add(new KeyValuePair<string, Border>("widget:" + group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture), group.Card));
+            return result;
         }
 
         internal List<KeyValuePair<string, Border>> AttachCanvas()

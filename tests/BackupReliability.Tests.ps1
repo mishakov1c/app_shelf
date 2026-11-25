@@ -1110,6 +1110,43 @@ public static class BackupTests
             "Reminder-only restore changed settings");
     }
 
+    private static void CanvasBackupRoundtrip()
+    {
+        AppConfig source = Loaded();
+        source.CanvasGridStep = 20; source.CanvasViewportMode = "adaptive";
+        source.CanvasPositions = new Dictionary<string, FreeCanvasRect> {
+            { "app:Work", new FreeCanvasRect(2, 3, 12, 8) },
+            { "widget:1", new FreeCanvasRect(20, 3, 20, 10) }
+        };
+        ConfigStore.Save(source);
+        Assert(!File.ReadAllText(ConfigStore.FilePath).Contains("canvasPositions"), "Canvas positions leaked into shared file");
+        Assert(Loaded().CanvasPositions["widget:1"].X == 20, "Sidecar lost canvas position");
+        string archive = Path.Combine(Root, "canvas.zip");
+        BackupStore.ExportSelected(archive, source, Reminders("A"), null, BackupComponents.Settings | BackupComponents.WidgetLayout);
+        AppConfig current = Loaded();
+        current.CanvasGridStep = 10;
+        current.CanvasPositions = new Dictionary<string, FreeCanvasRect> {
+            { "app:Work", new FreeCanvasRect(7, 9, 24, 16) },
+            { "widget:1", new FreeCanvasRect(50, 9, 40, 20) }
+        };
+        ConfigStore.Save(current);
+        BackupStore.RestoreSelected(archive, null, BackupComponents.WidgetLayout);
+        AppConfig after = Loaded();
+        Assert(after.CanvasGridStep == 10 && after.CanvasPositions["app:Work"].X == 7 &&
+            after.CanvasPositions["widget:1"].X == 40, "Widget-only restore did not preserve app positions or convert grid");
+        current = Loaded();
+        current.CanvasPositions["widget:1"].X = 60; ConfigStore.Save(current);
+        BackupStore.RestoreSelected(archive, null, BackupComponents.Settings);
+        after = Loaded();
+        Assert(after.CanvasGridStep == 20 && after.CanvasPositions["app:Work"].X == 2 &&
+            after.CanvasPositions["widget:1"].X == 30, "Settings-only restore did not preserve widget coordinates");
+        string settingsOnly = Path.Combine(Root, "canvas-settings-only.zip");
+        BackupStore.ExportSelected(settingsOnly, source, Reminders("A"), null, BackupComponents.Settings);
+        using (ZipArchive zip = ZipFile.OpenRead(settingsOnly))
+        using (StreamReader reader = new StreamReader(zip.GetEntry("apps.json").Open()))
+            Assert(!reader.ReadToEnd().Contains("widget:1"), "Excluded widget geometry exported");
+    }
+
     private static void Case(string name, Action action)
     {
         try { Reset(); action(); passes++; Console.WriteLine("PASS: " + name); }
@@ -1125,6 +1162,7 @@ public static class BackupTests
         }
         Case("downgrade preserves beta extension settings", DowngradePreservesExtensions);
         Case("partial archives and selective restoration", PartialBackupRoundtrip);
+        Case("canvas sidecar and selective ZIP geometry restoration", CanvasBackupRoundtrip);
         Case("plugin ZIP inventory, privacy, signature and staged restore", PluginBackupRoundtrip);
         if (!String.IsNullOrEmpty(samplePackage)) Case("real sample plugin install, IPC and ZIP recovery", delegate { SamplePluginRoundtrip(samplePackage); });
         Case("chosen backup directory isolation", InvalidBackupDirectory);
