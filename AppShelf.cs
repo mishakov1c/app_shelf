@@ -4646,6 +4646,67 @@ namespace AppShelf
         // rows may be measured with unbounded height and cannot reliably absorb
         // the remaining viewport. Keep all rows Auto and explicitly reserve only
         // the space left between the measured top and bottom rows.
+        // A common column width, but independent vertical tracks. A tall group
+        // in one column must not push down groups in the other columns.
+        internal sealed class FreeZoneBoard : Grid
+        {
+            private bool narrow;
+            private double viewport;
+            private readonly double[] heights = new double[9];
+
+            internal void SetViewport(bool stack, double height)
+            {
+                if (narrow == stack && Math.Abs(viewport - height) < 0.1) return;
+                narrow = stack; viewport = height;
+                InvalidateMeasure();
+            }
+
+            protected override Size MeasureOverride(Size constraint)
+            {
+                double width = Double.IsInfinity(constraint.Width) ? 600 : Math.Max(0, constraint.Width);
+                double columnWidth = narrow ? width : width / 3;
+                double desiredHeight = 0;
+                for (int i = 0; i < InternalChildren.Count; i++)
+                {
+                    UIElement cell = InternalChildren[i];
+                    cell.Measure(new Size(columnWidth, Double.PositiveInfinity));
+                    heights[i] = Math.Max(i / 3 == 1 || narrow ? 26 : 0, cell.DesiredSize.Height);
+                    if (narrow) desiredHeight += heights[i];
+                }
+                if (!narrow)
+                    for (int col = 0; col < 3; col++)
+                        desiredHeight = Math.Max(desiredHeight, heights[col] + heights[3 + col] + heights[6 + col]);
+                return new Size(width, Math.Max(viewport, desiredHeight));
+            }
+
+            protected override Size ArrangeOverride(Size finalSize)
+            {
+                if (narrow)
+                {
+                    double y = 0;
+                    for (int i = 0; i < InternalChildren.Count; i++)
+                    {
+                        InternalChildren[i].Arrange(new Rect(0, y, finalSize.Width, heights[i]));
+                        y += heights[i];
+                    }
+                }
+                else
+                {
+                    double width = finalSize.Width / 3;
+                    for (int col = 0; col < 3; col++)
+                    {
+                        double top = heights[col], bottom = heights[6 + col];
+                        double total = Math.Max(viewport, top + heights[3 + col] + bottom);
+                        double middle = Math.Max(0, total - top - bottom);
+                        InternalChildren[col].Arrange(new Rect(col * width, 0, width, top));
+                        InternalChildren[3 + col].Arrange(new Rect(col * width, top, width, middle));
+                        InternalChildren[6 + col].Arrange(new Rect(col * width, top + middle, width, bottom));
+                    }
+                }
+                return finalSize;
+            }
+        }
+
         private void UpdateFreeBoardLayout(double available)
         {
             if (_freeLayoutGrid == null) return;
@@ -4653,7 +4714,7 @@ namespace AppShelf
             double viewportHeight = _tilesScroller.ActualHeight -
                 _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
             if (Double.IsNaN(viewportHeight) || viewportHeight < 0) viewportHeight = 0;
-            _freeLayoutGrid.MinHeight = Math.Max(0, viewportHeight);
+            ((FreeZoneBoard)_freeLayoutGrid).SetViewport(narrow, viewportHeight);
             for (int i = 0; i < FreeGroupZones.Length; i++)
             {
                 int row = i / 3;
@@ -4668,36 +4729,7 @@ namespace AppShelf
                     col == 1 ? HorizontalAlignment.Center : HorizontalAlignment.Right;
                 stack.VerticalAlignment = narrow || row == 0 ? VerticalAlignment.Top :
                     row == 1 ? VerticalAlignment.Center : VerticalAlignment.Bottom;
-                RowDefinition definition = _freeLayoutGrid.RowDefinitions[i];
-                definition.Height = GridLength.Auto;
-                definition.MinHeight = narrow ? (stack.Children.Count == 0 ? 26 : 70) :
-                    i == 1 ? 26 : 0;
             }
-        }
-
-        private void FitFreeBoardToViewport(double available)
-        {
-            if (_freeLayoutGrid == null || available < 600) return;
-            double viewportHeight = _tilesScroller.ActualHeight -
-                _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
-            if (Double.IsNaN(viewportHeight) || viewportHeight <= 0) return;
-            double topHeight = 0;
-            double bottomHeight = 0;
-            double columnWidth = Math.Max(1, available / 3);
-            // All card widths have already been updated. Measure unconstrained
-            // card heights at the real zone width so wrapped rows are included.
-            for (int i = 0; i < FreeGroupZones.Length; i++)
-            {
-                if (i >= 3 && i < 6) continue;
-                Border cell = _freeZoneCells[i];
-                cell.Measure(new Size(columnWidth, Double.PositiveInfinity));
-                if (i < 3) topHeight = Math.Max(topHeight, cell.DesiredSize.Height);
-                else bottomHeight = Math.Max(bottomHeight, cell.DesiredSize.Height);
-            }
-            // An Auto middle row may grow beyond this minimum when it contains
-            // taller cards; ScrollViewer can then scroll to the entire content.
-            _freeLayoutGrid.RowDefinitions[1].MinHeight =
-                Math.Max(26, viewportHeight - topHeight - bottomHeight);
         }
 
         private void UpdateGroupWidths()
@@ -4755,7 +4787,7 @@ namespace AppShelf
                 if (free)
                 {
                     if (_pluginWidgets != null) _pluginWidgets.FitBoard(available < 600 ? available - 12 : available / 3 - 16);
-                    FitFreeBoardToViewport(available);
+                    _freeLayoutGrid.InvalidateMeasure();
                 }
             }
             finally { _updatingGroupWidths = false; }
@@ -4813,7 +4845,7 @@ namespace AppShelf
                 }
                 if (freeMode)
                 {
-                    _freeLayoutGrid = new Grid
+                    _freeLayoutGrid = new FreeZoneBoard
                     {
                         HorizontalAlignment = HorizontalAlignment.Stretch,
                         VerticalAlignment = VerticalAlignment.Top

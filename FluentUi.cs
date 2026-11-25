@@ -930,6 +930,8 @@ namespace AppShelf
             app.Resources[typeof(CheckBox)] = CheckBoxStyle();
             app.Resources[typeof(Expander)] = ExpanderStyle();
             app.Resources.MergedDictionaries.Add(ContextMenuResources());
+            app.Resources.MergedDictionaries.Add(SelectionResources());
+            app.Resources[typeof(ScrollBar)] = (Style)SettingsScrollResources()[typeof(ScrollBar)];
         }
 
         private static ResourceDictionary ContextMenuResources()
@@ -1411,33 +1413,12 @@ namespace AppShelf
             return resources;
         }
 
-        public static void StyleBottomPanelInputs(ComboBox mode, ListBox favorites)
+        private static ResourceDictionary SelectionResources()
         {
             ResourceDictionary resources = (ResourceDictionary)XamlReader.Parse(@"
 <ResourceDictionary xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
  xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
  xmlns:p='clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework'>
- <Style TargetType='RepeatButton' x:Key='ScrollPart'>
-  <Setter Property='Focusable' Value='False'/>
-  <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='RepeatButton'>
-   <Border Background='#192334'><ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/></Border>
-  </ControlTemplate></Setter.Value></Setter>
- </Style>
- <Style TargetType='ScrollBar'>
-  <Setter Property='Width' Value='14'/><Setter Property='Foreground' Value='#AABAD0'/>
-  <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='ScrollBar'>
-   <Grid Background='#192334'>
-    <p:Track x:Name='PART_Track' IsDirectionReversed='True'>
-     <p:Track.DecreaseRepeatButton><RepeatButton Style='{StaticResource ScrollPart}' Command='ScrollBar.PageUpCommand'/></p:Track.DecreaseRepeatButton>
-     <p:Track.Thumb><Thumb><Thumb.Template><ControlTemplate TargetType='Thumb'>
-      <Border x:Name='Grip' Background='#607590' CornerRadius='5' Margin='3,1'/>
-      <ControlTemplate.Triggers><Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Grip' Property='Background' Value='#88B8FF'/></Trigger></ControlTemplate.Triggers>
-     </ControlTemplate></Thumb.Template></Thumb></p:Track.Thumb>
-     <p:Track.IncreaseRepeatButton><RepeatButton Style='{StaticResource ScrollPart}' Command='ScrollBar.PageDownCommand'/></p:Track.IncreaseRepeatButton>
-    </p:Track>
-   </Grid>
-  </ControlTemplate></Setter.Value></Setter>
- </Style>
  <Style TargetType='ComboBoxItem'>
   <Setter Property='Foreground' Value='#F4F7FD'/><Setter Property='Background' Value='#192334'/>
   <Setter Property='Padding' Value='10,7'/><Setter Property='VerticalContentAlignment' Value='Center'/>
@@ -1447,6 +1428,7 @@ namespace AppShelf
    </Border><ControlTemplate.Triggers>
     <Trigger Property='IsSelected' Value='True'><Setter TargetName='Chrome' Property='Background' Value='#30415C'/></Trigger>
     <Trigger Property='IsHighlighted' Value='True'><Setter TargetName='Chrome' Property='Background' Value='#30415C'/></Trigger>
+    <Trigger Property='IsEnabled' Value='False'><Setter TargetName='Chrome' Property='Opacity' Value='0.55'/></Trigger>
    </ControlTemplate.Triggers>
   </ControlTemplate></Setter.Value></Setter>
  </Style>
@@ -1474,6 +1456,7 @@ namespace AppShelf
     </Popup>
    </Grid><ControlTemplate.Triggers>
     <Trigger Property='IsKeyboardFocusWithin' Value='True'><Setter Property='BorderBrush' Value='#88B8FF'/></Trigger>
+    <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.55'/></Trigger>
    </ControlTemplate.Triggers>
   </ControlTemplate></Setter.Value></Setter>
  </Style>
@@ -1493,14 +1476,25 @@ namespace AppShelf
  </Style>
  <Style TargetType='ListBox'>
   <Setter Property='Background' Value='#192334'/><Setter Property='Foreground' Value='#F4F7FD'/>
+  <Setter Property='BorderBrush' Value='#34445B'/><Setter Property='BorderThickness' Value='1'/>
   <Setter Property='ScrollViewer.HorizontalScrollBarVisibility' Value='Disabled'/>
   <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='ListBox'>
-   <Border Background='{TemplateBinding Background}' BorderBrush='#34445B' BorderThickness='1' CornerRadius='6' Padding='3'>
+   <Border x:Name='ListChrome' Background='{TemplateBinding Background}' BorderBrush='{TemplateBinding BorderBrush}' BorderThickness='{TemplateBinding BorderThickness}' CornerRadius='6' Padding='3'>
     <ScrollViewer Focusable='False' CanContentScroll='True' HorizontalScrollBarVisibility='Disabled' VerticalScrollBarVisibility='Auto'><ItemsPresenter/></ScrollViewer>
    </Border>
+   <ControlTemplate.Triggers>
+    <Trigger Property='IsKeyboardFocusWithin' Value='True'><Setter TargetName='ListChrome' Property='BorderBrush' Value='#88B8FF'/></Trigger>
+    <Trigger Property='IsEnabled' Value='False'><Setter TargetName='ListChrome' Property='Opacity' Value='0.55'/></Trigger>
+   </ControlTemplate.Triggers>
   </ControlTemplate></Setter.Value></Setter>
  </Style>
 </ResourceDictionary>");
+            return resources;
+        }
+
+        public static void StyleBottomPanelInputs(ComboBox mode, ListBox favorites)
+        {
+            ResourceDictionary resources = SelectionResources();
             mode.Resources.MergedDictionaries.Add(resources);
             mode.Style = (Style)resources[typeof(ComboBox)];
             favorites.Resources.MergedDictionaries.Add(resources);

@@ -159,7 +159,9 @@ namespace AppShelf
             internal string Zone, Title;
             internal Border Card;
             internal Grid Cells;
-            internal TextBlock Heading;
+            internal TextBlock Heading, Grip;
+            internal Button Collapse;
+            internal DockPanel Header;
         }
 
         private sealed class Placement
@@ -193,6 +195,7 @@ namespace AppShelf
         private Placement draggingWidget;
         private Border widgetDropPreview;
         private Grid widgetDropGrid;
+        private readonly List<Border> widgetDropHints = new List<Border>();
         private bool refreshing;
         private int refreshCursor;
         private Func<string, string, bool, Task<PluginWidgetSnapshot>> automaticRead;
@@ -460,28 +463,78 @@ namespace AppShelf
             return true;
         }
 
+        private static TextBlock DragGrip()
+        {
+            return new TextBlock { Text = "⋮⋮", FontSize = 19, Foreground = FluentUi.Secondary,
+                Margin = new Thickness(8, 0, 4, 0), Cursor = Cursors.SizeAll, VerticalAlignment = VerticalAlignment.Center };
+        }
+
+        private void UpdateGroupHeight(WidgetGroup group)
+        {
+            int used = 1;
+            foreach (Placement p in entries)
+                if (p.Group == group) used = Math.Max(used, p.Row + Rows(p.Size));
+            if (draggingWidget != null) used = 2;
+            group.Cells.Height = 140 * used;
+            group.Cells.RowDefinitions[0].Height = new GridLength(140);
+            group.Cells.RowDefinitions[1].Height = new GridLength(used == 2 ? 140 : 0);
+        }
+
+        private void SetDropHints(bool visible)
+        {
+            foreach (Border hint in widgetDropHints)
+            {
+                Grid parent = hint.Parent as Grid;
+                if (parent != null) parent.Children.Remove(hint);
+            }
+            widgetDropHints.Clear();
+            foreach (WidgetGroup group in groups)
+            {
+                UpdateGroupHeight(group);
+                if (!visible || draggingWidget == null || group.Cells.Visibility != Visibility.Visible) continue;
+                for (int row = 0; row <= 2 - Rows(draggingWidget.Size); row++)
+                    for (int col = 0; col <= 2 - Columns(draggingWidget.Size); col++)
+                    {
+                        if (!CanOccupy(group, draggingWidget.Size, draggingWidget, row, col) ||
+                            (group == draggingWidget.Group && row == draggingWidget.Row && col == draggingWidget.Column)) continue;
+                        Border hint = new Border { BorderBrush = FluentUi.Secondary, BorderThickness = new Thickness(1),
+                            CornerRadius = new CornerRadius(8), Margin = new Thickness(4), IsHitTestVisible = false,
+                            Opacity = 0.7 };
+                        Grid.SetRow(hint, row); Grid.SetColumn(hint, col);
+                        Grid.SetRowSpan(hint, Rows(draggingWidget.Size)); Grid.SetColumnSpan(hint, Columns(draggingWidget.Size));
+                        group.Cells.Children.Add(hint); widgetDropHints.Add(hint);
+                    }
+            }
+        }
+
         private void WireWidgetDrag(Placement entry, Border view)
         {
             if (zones == null) return;
             StackPanel body = view.Child as StackPanel;
             TextBlock heading = body == null || body.Children.Count == 0 ? null : body.Children[0] as TextBlock;
             if (heading == null) return;
-            heading.ToolTip = "Перетащите виджет за заголовок в свободные ячейки.";
+            DockPanel header = new DockPanel { LastChildFill = true };
+            TextBlock grip = DragGrip();
+            grip.ToolTip = "Перетащите виджет в свободные ячейки.";
+            DockPanel.SetDock(grip, Dock.Right);
+            body.Children.RemoveAt(0);
+            header.Children.Add(grip); header.Children.Add(heading);
+            body.Children.Insert(0, header);
             Point start = new Point();
             bool candidate = false;
-            heading.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
-            { start = e.GetPosition(heading); candidate = true; };
-            heading.PreviewMouseLeftButtonUp += delegate { candidate = false; };
-            heading.MouseMove += delegate(object sender, MouseEventArgs e)
+            grip.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+            { start = e.GetPosition(grip); candidate = true; grip.CaptureMouse(); };
+            grip.PreviewMouseLeftButtonUp += delegate { candidate = false; grip.ReleaseMouseCapture(); };
+            grip.MouseMove += delegate(object sender, MouseEventArgs e)
             {
                 if (!candidate || e.LeftButton != MouseButtonState.Pressed || !canEdit() || board == null ||
                     !entries.Contains(entry)) return;
-                Point now = e.GetPosition(heading);
+                Point now = e.GetPosition(grip);
                 if (Math.Abs(now.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
                     Math.Abs(now.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
-                candidate = false; draggingWidget = entry;
-                try { DragDrop.DoDragDrop(heading, new DataObject(WidgetDragFormat, DragKey(entry)), DragDropEffects.Move); }
-                finally { draggingWidget = null; ClearWidgetDropPreview(); }
+                candidate = false; grip.ReleaseMouseCapture(); draggingWidget = entry;
+                try { SetDropHints(true); DragDrop.DoDragDrop(grip, new DataObject(WidgetDragFormat, DragKey(entry)), DragDropEffects.Move); }
+                finally { draggingWidget = null; ClearWidgetDropPreview(); SetDropHints(false); }
             };
         }
 
@@ -496,14 +549,12 @@ namespace AppShelf
                 rename.Click += delegate {
                     string value = renameGroup(group.Title);
                     if (!String.IsNullOrWhiteSpace(value) && value.Trim().Length <= 100 && canEdit())
-                    { group.Title = value.Trim(); group.Heading.Text = group.Title; changed(); }
+                    { group.Title = value.Trim(); UpdateGroupHeader(group); changed(); }
                 };
                 menu.Items.Add(rename);
                 MenuItem collapse = new MenuItem { Header = group.Cells.Visibility == Visibility.Visible ? "Свернуть группу" : "Развернуть группу", IsEnabled = canEdit() };
                 collapse.Click += delegate {
-                    if (!canEdit()) return;
-                    group.Cells.Visibility = group.Cells.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-                    changed();
+                    ToggleGroup(group);
                 };
                 menu.Items.Add(collapse);
                 StackPanel host = group.Card.Parent as StackPanel;
@@ -523,25 +574,41 @@ namespace AppShelf
                 }
                 menu.Items.Add(location);
             };
+            group.Header.ContextMenu = menu;
             group.Heading.ContextMenu = menu;
-            group.Heading.ToolTip = "Перетащите группу в другую зону или откройте меню правой кнопкой.";
+            group.Grip.ToolTip = "Перетащите группу в другую зону.";
             Point start = new Point();
             bool candidate = false;
-            group.Heading.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
-            { start = e.GetPosition(group.Heading); candidate = true; };
-            group.Heading.PreviewMouseLeftButtonUp += delegate { candidate = false; };
-            group.Heading.MouseMove += delegate(object sender, MouseEventArgs e)
+            group.Grip.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+            { start = e.GetPosition(group.Grip); candidate = true; group.Grip.CaptureMouse(); };
+            group.Grip.PreviewMouseLeftButtonUp += delegate { candidate = false; group.Grip.ReleaseMouseCapture(); };
+            group.Grip.MouseMove += delegate(object sender, MouseEventArgs e)
             {
                 if (!candidate || e.LeftButton != MouseButtonState.Pressed || !canEdit() || board == null) return;
-                Point now = e.GetPosition(group.Heading);
+                Point now = e.GetPosition(group.Grip);
                 if (Math.Abs(now.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
                     Math.Abs(now.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
-                candidate = false;
+                candidate = false; group.Grip.ReleaseMouseCapture();
                 draggingGroup = group;
-                try { DragDrop.DoDragDrop(group.Heading,
+                try { DragDrop.DoDragDrop(group.Grip,
                     new DataObject(GroupDragFormat, group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)), DragDropEffects.Move); }
                 finally { draggingGroup = null; }
             };
+        }
+
+        private void UpdateGroupHeader(WidgetGroup group)
+        {
+            int count = entries.FindAll(delegate(Placement p) { return p.Group == group; }).Count;
+            group.Heading.Text = group.Title + "  ·  " + count;
+            group.Collapse.Content = group.Cells.Visibility == Visibility.Visible ? "⌃" : "⌄";
+            group.Collapse.ToolTip = group.Cells.Visibility == Visibility.Visible ? "Свернуть группу" : "Развернуть группу";
+        }
+
+        private void ToggleGroup(WidgetGroup group)
+        {
+            if (!canEdit()) return;
+            group.Cells.Visibility = group.Cells.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+            UpdateGroupHeader(group); changed();
         }
 
         private WidgetGroup NewGroup()
@@ -555,13 +622,23 @@ namespace AppShelf
                 group.Cells.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 0 });
             }
             StackPanel body = new StackPanel();
-            TextBlock title = new TextBlock { Text = group.Title, Foreground = FluentUi.Secondary,
-                FontSize = 13, FontWeight = FontWeights.SemiBold, Margin = new Thickness(4, 0, 4, 6) };
-            body.Children.Add(title); body.Children.Add(group.Cells);
+            TextBlock title = new TextBlock { Text = group.Title, Foreground = FluentUi.Foreground,
+                FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(5, 0, 0, 4),
+                TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+            group.Header = new DockPanel { LastChildFill = true, Margin = new Thickness(4, 0, 4, 4) };
+            group.Collapse = new Button { Width = 20, Height = 20, MinHeight = 0, Padding = new Thickness(0),
+                Background = FluentUi.Foreground, Foreground = FluentUi.Background, BorderThickness = new Thickness(0),
+                FontSize = 14, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center };
+            group.Collapse.Click += delegate { ToggleGroup(group); };
+            group.Grip = DragGrip();
+            DockPanel.SetDock(group.Collapse, Dock.Left); DockPanel.SetDock(group.Grip, Dock.Right);
+            group.Header.Children.Add(group.Collapse); group.Header.Children.Add(group.Grip); group.Header.Children.Add(title);
+            body.Children.Add(group.Header); body.Children.Add(group.Cells);
             group.Card = new Border { Child = body, Padding = new Thickness(6), Margin = new Thickness(0, 0, 8, 8),
                 Background = groupBackground, BorderBrush = groupBorder, BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(13), VerticalAlignment = VerticalAlignment.Top };
             group.Heading = title;
+            UpdateGroupHeader(group); UpdateGroupHeight(group);
             ConfigureGroupMenu(group);
             groups.Add(group);
             if (zones == null) Surface.Children.Add(group.Card);
@@ -571,7 +648,8 @@ namespace AppShelf
 
         private void RemoveEmptyGroup(WidgetGroup group)
         {
-            if (entries.Exists(delegate(Placement p) { return p.Group == group; })) return;
+            if (entries.Exists(delegate(Placement p) { return p.Group == group; }))
+            { UpdateGroupHeight(group); UpdateGroupHeader(group); return; }
             StackPanel parent = group.Card.Parent as StackPanel;
             groups.Remove(group); DetachCard(group); RememberZoneOrder(parent);
         }
@@ -584,6 +662,7 @@ namespace AppShelf
             Grid.SetRow(entry.Host, row); Grid.SetColumn(entry.Host, column);
             Grid.SetRowSpan(entry.Host, Rows(size)); Grid.SetColumnSpan(entry.Host, Columns(size));
             if (!group.Cells.Children.Contains(entry.Host)) group.Cells.Children.Add(entry.Host);
+            UpdateGroupHeight(group); UpdateGroupHeader(group);
             if (old != null && old != group) RemoveEmptyGroup(old);
         }
 
@@ -725,9 +804,10 @@ namespace AppShelf
             {
                 WidgetGroup group = NewGroup();
                 group.Number = item.Number;
-                group.Title = item.Title; group.Heading.Text = item.Title;
+                group.Title = item.Title; UpdateGroupHeader(group);
                 group.Zone = item.Zone; group.Order = item.Order;
                 group.Cells.Visibility = item.Collapsed ? Visibility.Collapsed : Visibility.Visible;
+                UpdateGroupHeader(group);
                 foreach (PluginWidgetPlacementConfig p in item.Widgets)
                 {
                     PluginWidgetElement[] message = new[] { new PluginWidgetElement { Type = "text",
@@ -915,7 +995,7 @@ namespace AppShelf
         {
             Func<Placement, bool> eligible = delegate(Placement p) {
                 return p.Group == null ? indicatorsVisible != null && indicatorsVisible() : board != null && active(); };
-            if (refreshing || automaticRead == null || !entries.Exists(delegate(Placement p) { return eligible(p); })) return;
+            if (refreshing || draggingWidget != null || draggingGroup != null || automaticRead == null || !entries.Exists(delegate(Placement p) { return eligible(p); })) return;
             refreshing = true;
             try
             {

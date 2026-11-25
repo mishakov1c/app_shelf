@@ -412,7 +412,8 @@ public static class Package6Tests
             Assert(workspace.Resize("test.widget", "quotes", "half-vertical") &&
                 Grid.GetRowSpan(host) == 2 && Grid.GetColumnSpan(host) == 1, "Vertical half is not 1x2");
             Assert(workspace.Resize("test.widget", "quotes", "quarter") &&
-                Grid.GetRowSpan(host) == 1 && Grid.GetColumnSpan(host) == 1, "Quarter is not 1x1");
+                Grid.GetRowSpan(host) == 1 && Grid.GetColumnSpan(host) == 1 && cells.Height == 140,
+                "Quarter is not 1x1 or empty bottom row did not collapse");
             Assert(Controls<TextBlock>(host).Exists(delegate(TextBlock t) { return t.Text == "compact"; }),
                 "Quarter layout content not selected");
             Assert(workspace.Resize("test.widget", "quotes", "half-horizontal") &&
@@ -421,7 +422,8 @@ public static class Package6Tests
                 workspace.Surface.Children.Count == 1 && cells.Children.Count == 2, "Widgets did not share a group");
             ContentControl remaining = (ContentControl)cells.Children[1];
             Assert(Grid.GetRow(remaining) == 1 && Grid.GetColumn(remaining) == 0 &&
-                Grid.GetRowSpan(remaining) == 1 && Grid.GetColumnSpan(remaining) == 1, "Quarter overlaps half");
+                Grid.GetRowSpan(remaining) == 1 && Grid.GetColumnSpan(remaining) == 1 && cells.Height == 280,
+                "Quarter overlaps half or bottom row did not expand");
             Assert(!workspace.Resize("test.widget", "quotes", "full") &&
                 Grid.GetRowSpan(host) == 1 && Grid.GetColumnSpan(host) == 2, "Resize overlapped neighbor");
             Assert(!workspace.Add("test.widget", "1.0.0", snapshot, "quotes") && changes == 5,
@@ -480,7 +482,9 @@ public static class Package6Tests
             workspace.AttachBoard(zones, "top-left"); workspace.FitBoard(220);
             Assert(left.Children.Count == 2 && Object.ReferenceEquals(left.Children[0], ordinary), "Widget did not share app zone");
             Border group = (Border)left.Children[1];
-            TextBlock heading = (TextBlock)((StackPanel)group.Child).Children[0];
+            DockPanel header = (DockPanel)((StackPanel)group.Child).Children[0];
+            TextBlock heading = (TextBlock)header.Children[2];
+            Button collapseButton = (Button)header.Children[0];
             Grid cells = (Grid)((StackPanel)group.Child).Children[1];
             StackPanel root = new StackPanel(); root.Children.Add(left); root.Children.Add(right);
             Window window = new Window { Width = 360, Height = 500, Content = root, ShowInTaskbar = false };
@@ -489,9 +493,13 @@ public static class Package6Tests
                 ContextMenu menu = heading.ContextMenu;
                 menu.PlacementTarget = heading; menu.IsOpen = true; Drain();
                 Click((MenuItem)menu.Items[0]); menu.IsOpen = false; Drain();
-                Assert(heading.Text == "Renamed", "Rename failed");
+                Assert(heading.Text == "Renamed  ·  1", "Rename failed");
+                Click(collapseButton);
+                Assert(cells.Visibility == Visibility.Collapsed, "Collapse button failed");
+                Click(collapseButton);
+                Assert(cells.Visibility == Visibility.Visible, "Expand button failed");
                 menu.IsOpen = true; Drain(); Click((MenuItem)menu.Items[1]); menu.IsOpen = false;
-                Assert(cells.Visibility == Visibility.Collapsed, "Collapse failed");
+                Assert(cells.Visibility == Visibility.Collapsed, "Collapse menu failed");
                 menu.IsOpen = true; Drain(); Click((MenuItem)menu.Items[2]); menu.IsOpen = false;
                 Assert(Object.ReferenceEquals(left.Children[0], group), "Widget could not move before app group");
                 menu.IsOpen = true; Drain(); Click((MenuItem)((MenuItem)menu.Items[4]).Items[1]); menu.IsOpen = false;
@@ -501,7 +509,7 @@ public static class Package6Tests
                     !workspace.Resize("test.widget", "quotes", "quarter"), "Hidden mode changed placement");
                 editable = true; workspace.AttachBoard(zones, "top-left");
                 Assert(right.Children.Count == 1 && Object.ReferenceEquals(right.Children[0], group) &&
-                    heading.Text == "Renamed" && cells.Visibility == Visibility.Collapsed, "Free layout was not restored");
+                    heading.Text == "Renamed  ·  1" && cells.Visibility == Visibility.Collapsed, "Free layout was not restored");
             } finally { window.Close(); }
         });
         Case("widget layout persists, restores without executing and rejects overlap", delegate {
@@ -654,6 +662,28 @@ public static class Package6Tests
             Click((MenuItem)item.ContextMenu.Items[1]);
             Assert(workspace.IndicatorHost.Visibility == Visibility.Collapsed && workspace.CaptureIndicators() == null &&
                 changes == 2, "Indicator removal did not collapse bottom strip");
+        });
+        Case("shared dark selection controls apply to unstyled dialogs", delegate {
+            ComboBox combo = new ComboBox { MinHeight = 32 };
+            combo.Items.Add("First"); combo.Items.Add("Second"); combo.SelectedIndex = 0;
+            ListBox list = new ListBox { Height = 100 };
+            list.Items.Add("One"); list.Items.Add("Two"); list.SelectedIndex = 0;
+            StackPanel content = new StackPanel(); content.Children.Add(combo); content.Children.Add(list);
+            Window window = new Window { Width = 380, Height = 260, Content = content, ShowInTaskbar = false };
+            FluentUi.PrepareWindow(window);
+            try {
+                window.Show(); Drain();
+                Assert(combo.Template != null && combo.Template.FindName("PART_Popup", combo) != null,
+                    "Shared combo template missing popup");
+                Assert(list.Template.FindName("ListChrome", list) != null &&
+                    Object.Equals(((SolidColorBrush)list.Background).Color, ((SolidColorBrush)FluentUi.Brush("#192334")).Color),
+                    "Shared dark list style missing");
+                combo.IsDropDownOpen = true; Drain();
+                Assert(combo.IsDropDownOpen, "Shared combo cannot open");
+                combo.SelectedIndex = 1; combo.IsDropDownOpen = false;
+                list.SelectedIndex = 1; list.IsEnabled = false; Drain();
+                Assert(combo.SelectedIndex == 1 && list.SelectedIndex == 1, "Shared selection behavior changed");
+            } finally { window.Close(); }
         });
         Case("native declarative plugin widget renderer", delegate {
             PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
@@ -2569,21 +2599,16 @@ public static class Package6Tests
                     (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
                 Border upper = (Border)zones["top-left"].Children[0];
                 Border lower = (Border)zones["bottom-left"].Children[0];
-                Assert(board.RowDefinitions[0].Height.IsAuto &&
-                    board.RowDefinitions[1].Height.IsAuto &&
-                    board.RowDefinitions[2].Height.IsAuto,
-                    "Free board rows must measure natural group heights under ScrollViewer");
-                double viewportHeight = viewport.ActualHeight -
-                    viewport.Padding.Top - viewport.Padding.Bottom;
                 List<Border> cells = (List<Border>)Get(w, "_freeZoneCells");
-                double topHeight = 0, bottomHeight = 0;
-                for (int i = 0; i < cells.Count; i++) {
-                    if (i < 3) topHeight = Math.Max(topHeight, cells[i].DesiredSize.Height);
-                    if (i >= 6) bottomHeight = Math.Max(bottomHeight, cells[i].DesiredSize.Height);
-                }
-                double expectedMiddle = Math.Max(26, viewportHeight - topHeight - bottomHeight);
-                Assert(Math.Abs(board.RowDefinitions[1].MinHeight - expectedMiddle) < 2,
-                    "Middle row did not reserve the actual remaining viewport height");
+                double oldBottom = lower.TranslatePoint(new Point(0, lower.ActualHeight), board).Y;
+                Border tall = new Border { Height = viewport.ViewportHeight + 200 };
+                zones["middle-center"].Children.Add(tall);
+                board.InvalidateMeasure(); Drain();
+                Assert(Math.Abs(lower.TranslatePoint(new Point(0, lower.ActualHeight), board).Y - oldBottom) < 2,
+                    "Tall center group displaced bottom-left group");
+                Assert(viewport.ScrollableHeight > 1, "Tall center group was clipped");
+                zones["middle-center"].Children.Remove(tall);
+                board.InvalidateMeasure(); Drain();
                 Assert(lower.ActualHeight > viewport.ViewportHeight / 3.0 &&
                     upper.ActualHeight + lower.ActualHeight + 42 < viewport.ViewportHeight,
                     "Free board test fixture must fit overall but overflow a fixed third: " +
@@ -2606,11 +2631,10 @@ public static class Package6Tests
                 Assert(viewport.ScrollableHeight <= 1.5,
                     "Free layout did not relinquish its scrollbar after growing the window");
                 w.Width = w.MinWidth; Drain();
-                Assert(board.RowDefinitions[1].Height.IsAuto,
-                    "Narrow nine-zone layout must restore content-sized list rows");
+                Assert(Grid.GetColumnSpan(cells[4]) == 3,
+                    "Narrow nine-zone layout must restore stacked zones");
                 w.Width = 1500; Drain();
-                Assert(board.RowDefinitions[1].Height.IsAuto &&
-                    board.RowDefinitions[1].MinHeight > 26 &&
+                Assert(Grid.GetColumnSpan(cells[4]) == 1 &&
                     viewport.ScrollableHeight <= 1.5,
                     "Wide free layout did not restore adaptive middle space");
             } finally { w.Close(); }
