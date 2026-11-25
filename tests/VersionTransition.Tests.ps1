@@ -10,6 +10,14 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
 if ($PSVersionTable.PSEdition -eq 'Core' -or [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') { throw 'Use Windows PowerShell 5.1 -STA.' }
 $profileRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)) 'AppShelf'
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+function Get-Sha256([string]$path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($path)
+        try { return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+        finally { $stream.Dispose() }
+    } finally { $sha.Dispose() }
+}
 
 if ($Worker) {
     Assert ($profileRoot -eq $ExpectedProfile) 'Worker profile mismatch'
@@ -129,17 +137,17 @@ try {
     $asset = @($release.assets | Where-Object { $_.name -eq 'AppShelf.exe' })
     Assert ($asset.Count -eq 1 -and $asset[0].digest -match '^sha256:[0-9a-fA-F]{64}$') 'Stable EXE or published digest missing'
     Invoke-WebRequest -UseBasicParsing -Uri $asset[0].browser_download_url -OutFile $stable
-    Assert ((Get-FileHash -LiteralPath $stable -Algorithm SHA256).Hash -eq $asset[0].digest.Substring(7)) 'Stable executable SHA-256 mismatch'
+    Assert ((Get-Sha256 $stable) -eq $asset[0].digest.Substring(7)) 'Stable executable SHA-256 mismatch'
     Assert ((Get-Item -LiteralPath $stable).VersionInfo.ProductVersion -eq '2.23.0') 'Stable executable version mismatch'
     Run-Worker 'stable-seed' $stable
     Run-RealApp $stable
     Run-Worker 'beta-seed' $beta
     Run-RealApp $beta
     $sidecar = Join-Path $profileRoot 'plugins-settings.json'
-    $before = (Get-FileHash -LiteralPath $sidecar).Hash
+    $before = (Get-Sha256 $sidecar)
     Run-Worker 'stable-edit' $stable
     Run-RealApp $stable
-    Assert ((Get-FileHash -LiteralPath $sidecar).Hash -eq $before) 'Stable changed beta-only settings file'
+    Assert ((Get-Sha256 $sidecar) -eq $before) 'Stable changed beta-only settings file'
     Run-Worker 'beta-verify' $beta
     Run-RealApp $beta
     Run-Worker 'beta-verify' $beta
