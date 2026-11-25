@@ -40,7 +40,7 @@ public static class StocksPluginTests
                 quotes.ForSize("full").Elements.Length == 6 && quotes.ForSize("quarter").Elements.Length == 1 &&
                 quotes.ForSize("half-horizontal").Elements.Length == 3 &&
                 quotes.ForSize("half-vertical").Elements.Length == 4, "Incorrect size variants");
-            Assert(quotes.Title.Contains("демо"), "Simulated values not labeled");
+            Assert(quotes.Title.Contains("\u0434\u0435\u043c\u043e"), "Simulated values not labeled");
             string before = quotes.ForSize("quarter").Elements[0].Value;
             runtime.InvokeWidgetAsync(id, version, pid, "next").GetAwaiter().GetResult();
             PluginWidgetSnapshot second = runtime.ReadWidgetSnapshotAsync(id, version, false).GetAwaiter().GetResult();
