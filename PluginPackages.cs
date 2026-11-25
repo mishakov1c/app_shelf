@@ -609,6 +609,23 @@ namespace AppShelf
             }
         }
 
+        internal long EstimatePackageBytes()
+        {
+            lock (CommitGate)
+            {
+                long total = 0;
+                if (!HasInstalledDirectory) return total;
+                foreach (InstalledPlugin item in List())
+                {
+                    if (item.Error != null || item.Manifest == null) Reject("Нельзя оценить пакет: " + item.Id);
+                    string folder = Child(InstalledRoot, item.Id);
+                    foreach (string name in PackageFiles(folder))
+                        total += new FileInfo(Child(folder, name)).Length;
+                }
+                return total;
+            }
+        }
+
         internal string PackageSignature()
         {
             lock (CommitGate)
