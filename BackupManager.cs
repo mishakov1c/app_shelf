@@ -210,6 +210,7 @@ namespace AppShelf
             // Backup root is machine-specific and can contain a personal cloud path.
             // Keep it local rather than exporting it to a portable archive.
             portable.BackupDirectory = null;
+            portable.PluginSettingsIncluded = true;
             Dictionary<string, string> owned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (AppItem item in portable.Items)
             {
@@ -595,7 +596,8 @@ namespace AppShelf
                 Directory.CreateDirectory(backupDir);
                 List<string> documents = new List<string> { "apps.json", "apps.json.bak", "reminders.json",
                     "reminders.json.bak", "Collections/collections.json",
-                    "Collections/collections.json.bak" };
+                    "Collections/collections.json.bak", ConfigStore.PluginSettingsName,
+                    ConfigStore.PluginSettingsName + ".bak" };
                 string recovered = Path.Combine(stage, "plugin-recovery.json");
                 string recoveredPath = null;
                 if (File.Exists(recovered))
@@ -686,6 +688,18 @@ namespace AppShelf
                     // Restoring data must not change where backups are stored on this PC.
                     if (!String.IsNullOrWhiteSpace(selectedBackupRoot))
                         restored.BackupDirectory = BackupAutomation.ValidateRoot(selectedBackupRoot);
+                    // A stable-version archive never knew about the separate settings.
+                    // Preserve them rather than treating missing fields as an empty layout.
+                    if (!restored.PluginSettingsIncluded && restored.WidgetGroups == null &&
+                        restored.WidgetIndicators == null && restored.BackupExecutable == null &&
+                        restored.BackupPluginPackages == null)
+                    {
+                        string warning; bool safe;
+                        AppConfig current = ConfigStore.Load(out warning, out safe);
+                        if (safe) PluginSettingsDocument.Capture(current).Apply(restored);
+                        else if (File.Exists(ConfigStore.PluginSettingsPath))
+                            throw new InvalidDataException(warning);
+                    }
                     ConfigStore.Save(restored, false);
                     ReminderStore.Save(reminders);
                     if (collections != null) CollectionStore.Save(collections);
@@ -817,6 +831,7 @@ namespace AppShelf
             string root = ConfigStore.DirectoryPath;
             List<string> files = new List<string>();
             files.Add(Path.Combine(root, "apps.json"));
+            files.Add(ConfigStore.PluginSettingsPath);
             files.Add(Path.Combine(root, "reminders.json"));
             files.Add(Path.Combine(root, "Collections", "collections.json"));
             AddSignatureFiles(files, ConfigStore.ShortcutsDirectory);

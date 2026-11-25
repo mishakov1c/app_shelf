@@ -335,6 +335,24 @@ namespace AppShelf
         [DataMember(Name = "backupPluginPackages", EmitDefaultValue = false)]
         public bool? BackupPluginPackages = true;
 
+        [DataMember(Name = "backupReminders", EmitDefaultValue = false)]
+        public bool? BackupReminders;
+        [DataMember(Name = "backupCollections", EmitDefaultValue = false)]
+        public bool? BackupCollections;
+        [DataMember(Name = "backupCovers", EmitDefaultValue = false)]
+        public bool? BackupCovers;
+        [DataMember(Name = "backupBackgrounds", EmitDefaultValue = false)]
+        public bool? BackupBackgrounds;
+        [DataMember(Name = "backupWidgetLayout", EmitDefaultValue = false)]
+        public bool? BackupWidgetLayout;
+        [DataMember(Name = "backupPluginData", EmitDefaultValue = false)]
+        public bool? BackupPluginData;
+
+        // Portable archives use an explicit marker so empty widget layouts can
+        // be distinguished from backups made by releases without plugins.
+        [DataMember(Name = "pluginSettingsIncluded", EmitDefaultValue = false)]
+        public bool PluginSettingsIncluded;
+
         // Nullable fields retain legacy defaults when absent from older apps.json.
         [DataMember(Name = "soundsEnabled", EmitDefaultValue = false)]
         public bool? SoundsEnabled = true;
@@ -404,11 +422,68 @@ namespace AppShelf
         public List<AppItem> Items = new List<AppItem>();
     }
 
+    [DataContract]
+    internal sealed class PluginSettingsDocument
+    {
+        [DataMember(Name = "version", IsRequired = true)]
+        public int Version = 1;
+        [DataMember(Name = "widgetGroups", EmitDefaultValue = false)]
+        public List<PluginWidgetGroupConfig> WidgetGroups;
+        [DataMember(Name = "widgetIndicators", EmitDefaultValue = false)]
+        public List<PluginWidgetPlacementConfig> WidgetIndicators;
+        [DataMember(Name = "backupExecutable", EmitDefaultValue = false)]
+        public bool? BackupExecutable;
+        [DataMember(Name = "backupPluginPackages", EmitDefaultValue = false)]
+        public bool? BackupPluginPackages;
+        [DataMember(Name = "backupReminders", EmitDefaultValue = false)]
+        public bool? BackupReminders;
+        [DataMember(Name = "backupCollections", EmitDefaultValue = false)]
+        public bool? BackupCollections;
+        [DataMember(Name = "backupCovers", EmitDefaultValue = false)]
+        public bool? BackupCovers;
+        [DataMember(Name = "backupBackgrounds", EmitDefaultValue = false)]
+        public bool? BackupBackgrounds;
+        [DataMember(Name = "backupWidgetLayout", EmitDefaultValue = false)]
+        public bool? BackupWidgetLayout;
+        [DataMember(Name = "backupPluginData", EmitDefaultValue = false)]
+        public bool? BackupPluginData;
+
+        internal static PluginSettingsDocument Capture(AppConfig c)
+        {
+            return new PluginSettingsDocument {
+                WidgetGroups = c.WidgetGroups, WidgetIndicators = c.WidgetIndicators,
+                BackupExecutable = c.BackupExecutable, BackupPluginPackages = c.BackupPluginPackages,
+                BackupReminders = c.BackupReminders, BackupCollections = c.BackupCollections,
+                BackupCovers = c.BackupCovers, BackupBackgrounds = c.BackupBackgrounds,
+                BackupWidgetLayout = c.BackupWidgetLayout, BackupPluginData = c.BackupPluginData
+            };
+        }
+
+        internal void Apply(AppConfig c)
+        {
+            if (Version != 1) throw new InvalidDataException("Неподдерживаемая версия настроек плагинов.");
+            PluginWidgetGroupConfig.Validate(WidgetGroups, WidgetIndicators);
+            c.WidgetGroups = WidgetGroups; c.WidgetIndicators = WidgetIndicators;
+            c.BackupExecutable = BackupExecutable; c.BackupPluginPackages = BackupPluginPackages;
+            c.BackupReminders = BackupReminders; c.BackupCollections = BackupCollections;
+            c.BackupCovers = BackupCovers; c.BackupBackgrounds = BackupBackgrounds;
+            c.BackupWidgetLayout = BackupWidgetLayout; c.BackupPluginData = BackupPluginData;
+        }
+
+        internal static void Clear(AppConfig c)
+        {
+            new PluginSettingsDocument().Apply(c);
+            c.PluginSettingsIncluded = false;
+        }
+    }
+
     public static class ConfigStore
     {
         public static readonly string DirectoryPath = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf");
         public static readonly string FilePath = System.IO.Path.Combine(DirectoryPath, "apps.json");
+        internal const string PluginSettingsName = "plugins-settings.json";
+        internal static readonly string PluginSettingsPath = System.IO.Path.Combine(DirectoryPath, PluginSettingsName);
         public static readonly string LogPath = System.IO.Path.Combine(DirectoryPath, "error.log");
         public static readonly string ShortcutsDirectory = System.IO.Path.Combine(DirectoryPath, "Shortcuts");
 
@@ -532,7 +607,63 @@ namespace AppShelf
                 width >= 300 && width <= 20000 && height >= 250 && height <= 20000;
         }
 
+        private static byte[] EncodePluginSettings(AppConfig config)
+        {
+            PluginWidgetGroupConfig.Validate(config.WidgetGroups, config.WidgetIndicators);
+            using (MemoryStream stream = new MemoryStream())
+            {
+                new DataContractJsonSerializer(typeof(PluginSettingsDocument)).WriteObject(stream, PluginSettingsDocument.Capture(config));
+                return stream.ToArray();
+            }
+        }
+
+        private static void WritePluginSettings(byte[] bytes)
+        {
+            Directory.CreateDirectory(DirectoryPath);
+            string temp = PluginSettingsPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using (FileStream output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                { output.Write(bytes, 0, bytes.Length); output.Flush(true); }
+                if (File.Exists(PluginSettingsPath)) File.Replace(temp, PluginSettingsPath, PluginSettingsPath + ".bak", true);
+                else File.Move(temp, PluginSettingsPath);
+            }
+            finally { if (File.Exists(temp)) File.Delete(temp); }
+        }
+
         public static AppConfig Load(out string warning, out bool safeToSave)
+        {
+            AppConfig config = LoadShared(out warning, out safeToSave);
+            if (!safeToSave) return config;
+            try
+            {
+                if (File.Exists(PluginSettingsPath))
+                {
+                    using (FileStream input = File.OpenRead(PluginSettingsPath))
+                    {
+                        if (input.Length > 16L * 1024 * 1024) throw new InvalidDataException("Слишком большой файл настроек плагинов.");
+                        PluginSettingsDocument extension = (PluginSettingsDocument)new DataContractJsonSerializer(typeof(PluginSettingsDocument)).ReadObject(input);
+                        if (extension == null) throw new InvalidDataException("Пустой файл настроек плагинов.");
+                        extension.Apply(config);
+                    }
+                }
+                else if (File.Exists(FilePath) && (config.WidgetGroups != null || config.WidgetIndicators != null ||
+                    config.BackupExecutable.HasValue || config.BackupPluginPackages.HasValue))
+                {
+                    // Migrate early development builds without rewriting their original apps.json.
+                    WritePluginSettings(EncodePluginSettings(config));
+                }
+            }
+            catch (Exception ex)
+            {
+                Log(ex); safeToSave = false;
+                warning = "Не удалось прочитать или перенести настройки плагинов. Сохранение отключено.\n" +
+                    PluginSettingsPath + "\n" + ex.Message;
+            }
+            return config;
+        }
+
+        private static AppConfig LoadShared(out string warning, out bool safeToSave)
         {
             warning = null;
             safeToSave = true;
@@ -642,12 +773,23 @@ namespace AppShelf
             System.IO.Directory.CreateDirectory(DirectoryPath);
             config.Version = 5;
             string tempPath = FilePath + ".tmp";
+            byte[] extension = EncodePluginSettings(config);
+            byte[] oldExtension = File.Exists(PluginSettingsPath) ? File.ReadAllBytes(PluginSettingsPath) : null;
+            bool changedExtension = oldExtension == null || !System.Linq.Enumerable.SequenceEqual(oldExtension, extension);
+            bool extensionWritten = false;
+            AppConfig shared = config.Copy();
+            PluginSettingsDocument.Clear(shared);
             try
             {
                 using (FileStream output = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 {
-                    NewSerializer().WriteObject(output, config);
+                    NewSerializer().WriteObject(output, shared);
                     output.Flush(true);
+                }
+                if (changedExtension)
+                {
+                    WritePluginSettings(extension);
+                    extensionWritten = true;
                 }
                 if (File.Exists(FilePath))
                 {
@@ -657,6 +799,19 @@ namespace AppShelf
                 {
                     File.Move(tempPath, FilePath);
                 }
+            }
+            catch
+            {
+                if (extensionWritten)
+                {
+                    try
+                    {
+                        if (oldExtension == null) File.Delete(PluginSettingsPath);
+                        else WritePluginSettings(oldExtension);
+                    }
+                    catch (Exception error) { Log(error); }
+                }
+                throw;
             }
             finally
             {
