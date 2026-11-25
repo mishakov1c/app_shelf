@@ -200,3 +200,10 @@ Double-click `Build-Plugins.cmd` to build Notes and Stocks packages into artifac
 ## Stage 16: direct widget drag and drop
 
 Drag an individual widget by its title onto a free rectangle inside any expanded widget group, including the source group. The pointer snaps to the valid span origin inside the 2x2 grid. An accent outline previews an accepted destination; occupied/out-of-bounds rectangles reject the drop. The existing host drag routing distinguishes widget drags, group drags, application tiles and external files. Moves preserve widget size, save through the existing layout path and remove emptied source groups. The context menu remains an alternative for moving to a new group. The test verifies exact coordinates, span preservation, collision rejection and source-group cleanup; manual drag gestures still need Windows acceptance.
+
+
+## Stage 17: plugin indicators in the bottom panel
+
+Right-click the bottom panel and choose “Добавить индикатор плагина…”. The picker filters for the existing indicator kind, separately from the free-layout card/tile picker. The indicator strip is collapsed when empty and otherwise appears in all three footer presentation modes, regardless of whether the application groups are in free layout. It uses a horizontally scrolling bounded row (up to six explicitly selected indicators). Right-click an indicator to refresh or remove it.
+
+The optional apps.json `widgetIndicators` list stores the same identity/version/title metadata with size indicator and zero row/column. It participates in validation, deep configuration copy and full ZIP backup/restore. Indicators and group widgets cannot share a duplicate plugin/widget identity. Restored indicators show placeholders until a trusted enabled plugin supplies a live snapshot. They share the existing periodic refresh batch with group widgets; hidden group placements are not refreshed just because an indicator is present, but one plugin snapshot can serve both visible surfaces. No new plugin capability or API version is required. The offline Stocks demo advertises an indicator for testing this path.

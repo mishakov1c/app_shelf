@@ -500,7 +500,8 @@ namespace AppShelf
                     if (_pluginWidgets != null)
                     {
                         _pluginWidgets.InvalidateStopped();
-                        await _pluginWidgets.RefreshVisibleAsync(delegate { return !_pluginRuntimeStopping && WidgetsInFreeLayout() && IsVisible && WindowState != WindowState.Minimized; });
+                        await _pluginWidgets.RefreshVisibleAsync(delegate { return !_pluginRuntimeStopping && WidgetsInFreeLayout() && IsVisible && WindowState != WindowState.Minimized; },
+                            delegate { return !_pluginRuntimeStopping && IsVisible && WindowState != WindowState.Minimized; });
                         if (_pluginRuntimeStopping) return;
                     }
                     foreach (PluginDelivery delivery in deliveries)
@@ -520,7 +521,8 @@ namespace AppShelf
             {
                 await runtime.StartBackgroundsAsync();
                 if (!_pluginRuntimeStopping && _pluginWidgets != null)
-                    await _pluginWidgets.RefreshVisibleAsync(delegate { return !_pluginRuntimeStopping && WidgetsInFreeLayout() && IsVisible && WindowState != WindowState.Minimized; });
+                    await _pluginWidgets.RefreshVisibleAsync(delegate { return !_pluginRuntimeStopping && WidgetsInFreeLayout() && IsVisible && WindowState != WindowState.Minimized; },
+                            delegate { return !_pluginRuntimeStopping && IsVisible && WindowState != WindowState.Minimized; });
             }
             catch (Exception error) { ConfigStore.Log(error); }
         }

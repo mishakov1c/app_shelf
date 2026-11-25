@@ -114,8 +114,28 @@ namespace AppShelf
             return text != null && System.Text.RegularExpressions.Regex.IsMatch(text, pattern,
                 System.Text.RegularExpressions.RegexOptions.CultureInvariant);
         }
-        internal static void Validate(List<PluginWidgetGroupConfig> groups)
+        private static bool ValidPlacementIdentity(PluginWidgetPlacementConfig p)
         {
+            return p != null && Valid(p.PluginId, 100) &&
+                Match(p.PluginId, @"\A[a-z][a-z0-9-]{0,31}(?:\.[a-z][a-z0-9-]{0,31}){1,3}\z") &&
+                Match(p.WidgetId, @"\A[a-z][a-z0-9_.-]{0,63}\z") &&
+                Match(p.Version, @"\A(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\z") &&
+                Valid(p.Title, 100);
+        }
+
+        internal static void Validate(List<PluginWidgetGroupConfig> groups, List<PluginWidgetPlacementConfig> indicators = null)
+        {
+            HashSet<string> indicatorKeys = new HashSet<string>(StringComparer.Ordinal);
+            if (indicators != null)
+            {
+                if (indicators.Count > 6) throw new InvalidDataException("Слишком много индикаторов плагинов.");
+                foreach (PluginWidgetPlacementConfig p in indicators)
+                {
+                    if (!ValidPlacementIdentity(p) || p.Size != "indicator" || p.Row != 0 || p.Column != 0 ||
+                        !indicatorKeys.Add(p.PluginId + "\n" + p.WidgetId))
+                        throw new InvalidDataException("Некорректный индикатор плагина.");
+                }
+            }
             if (groups == null) return;
             if (groups.Count > 32) throw new InvalidDataException("Слишком много групп виджетов.");
             HashSet<int> numbers = new HashSet<int>();
@@ -129,11 +149,8 @@ namespace AppShelf
                 bool[,] cells = new bool[2, 2];
                 foreach (PluginWidgetPlacementConfig p in group.Widgets)
                 {
-                    if (p == null || !Valid(p.PluginId, 100) ||
-                        !Match(p.PluginId, @"\A[a-z][a-z0-9-]{0,31}(?:\.[a-z][a-z0-9-]{0,31}){1,3}\z") ||
-                        !Match(p.WidgetId, @"\A[a-z][a-z0-9_.-]{0,63}\z") ||
-                        !Match(p.Version, @"\A(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\z") ||
-                        !Valid(p.Title, 100) || !keys.Add(p.PluginId + "\n" + p.WidgetId) || keys.Count > 32 ||
+                    if (!ValidPlacementIdentity(p) || !keys.Add(p.PluginId + "\n" + p.WidgetId) ||
+                        keys.Count > 32 || indicatorKeys.Contains(p.PluginId + "\n" + p.WidgetId) ||
                         (p.Size != "full" && p.Size != "half-horizontal" && p.Size != "half-vertical" && p.Size != "quarter"))
                         throw new InvalidDataException("Некорректное размещение виджета.");
                     int rows = p.Size == "full" || p.Size == "half-vertical" ? 2 : 1;
@@ -163,6 +180,7 @@ namespace AppShelf
             copy.GroupZoneOverrides = GroupZoneOverrides == null ? null :
                 new Dictionary<string, string>(GroupZoneOverrides, StringComparer.OrdinalIgnoreCase);
             copy.WidgetGroups = WidgetGroups == null ? null : WidgetGroups.ConvertAll(delegate(PluginWidgetGroupConfig g) { return g == null ? null : g.Copy(); });
+            copy.WidgetIndicators = WidgetIndicators == null ? null : WidgetIndicators.ConvertAll(delegate(PluginWidgetPlacementConfig p) { return p == null ? null : p.Copy(); });
             copy.SnoozeQuickMinutes = SnoozeQuickMinutes == null ? null : (int[])SnoozeQuickMinutes.Clone();
             copy.BottomPanelFavorites = BottomPanelFavorites == null ? null : new List<string>(BottomPanelFavorites);
             copy.BottomPanelCategories = BottomPanelCategories == null ? null : new List<string>(BottomPanelCategories);
@@ -223,6 +241,9 @@ namespace AppShelf
 
         [DataMember(Name = "widgetGroups", EmitDefaultValue = false)]
         public List<PluginWidgetGroupConfig> WidgetGroups;
+
+        [DataMember(Name = "widgetIndicators", EmitDefaultValue = false)]
+        public List<PluginWidgetPlacementConfig> WidgetIndicators;
 
         [DataMember(Name = "showNetwork")]
         public bool ShowNetwork = true;
@@ -449,7 +470,7 @@ namespace AppShelf
                 if (data == null) throw new InvalidDataException("Пустой файл настроек.");
                 if (data.Items == null) data.Items = new List<AppItem>();
                 if (data.Groups == null) data.Groups = new List<string>();
-                PluginWidgetGroupConfig.Validate(data.WidgetGroups);
+                PluginWidgetGroupConfig.Validate(data.WidgetGroups, data.WidgetIndicators);
                 if (data.Version < 3)
                 {
                     // Features introduced in 1.2 should be enabled for existing users.
@@ -616,7 +637,7 @@ namespace AppShelf
 
         internal static void Save(AppConfig config, bool cleanupShortcuts)
         {
-            PluginWidgetGroupConfig.Validate(config.WidgetGroups);
+            PluginWidgetGroupConfig.Validate(config.WidgetGroups, config.WidgetIndicators);
             List<string> retired = cleanupShortcuts ? RetiredShortcutCandidates() : null;
             System.IO.Directory.CreateDirectory(DirectoryPath);
             config.Version = 5;
@@ -2370,6 +2391,8 @@ namespace AppShelf
             monitors.Children.Add(_remindersChip);
             _bottomFullMonitors = monitors;
             InitializeBottomPanelLayouts();
+            CreatePluginWidgetSurface();
+            _bottomPanelLayout.Children.Add(_pluginWidgets.IndicatorHost);
             _status = Text("", 11.5, WhiteBrush);
             _status.TextTrimming = TextTrimming.CharacterEllipsis;
             _status.ToolTip = "Ctrl+O — добавить · Ctrl+F — поиск · Перетащи плитки, чтобы изменить порядок или группу";
@@ -2417,7 +2440,6 @@ namespace AppShelf
             scroller.AllowDrop = true;
             contentGrid.AllowDrop = true;
             StackPanel workspace = new StackPanel();
-            CreatePluginWidgetSurface();
             workspace.Children.Add(_tileHost);
             scroller.Content = workspace;
             contentGrid.Children.Add(scroller);
@@ -2981,6 +3003,10 @@ namespace AppShelf
             MenuItem configure = new MenuItem { Header = "Настроить нижнюю панель…" };
             configure.Click += delegate { ShowSettingsSection("appearance-panel"); };
             menu.Items.Add(configure);
+            MenuItem indicator = new MenuItem { Header = "Добавить индикатор плагина…" };
+            indicator.Click += delegate { ShowAddPluginIndicator(); };
+            menu.Items.Add(indicator);
+            menu.Opened += delegate { indicator.IsEnabled = _canSave; };
             _monitorBorder.ContextMenu = menu;
         }
 

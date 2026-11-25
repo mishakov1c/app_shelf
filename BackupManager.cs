@@ -153,7 +153,7 @@ namespace AppShelf
                 throw new InvalidDataException("Файл apps.json повреждён.");
             if (config.Items.Count > 10000 || config.Groups.Count > 1000)
                 throw new InvalidDataException("Слишком большой список программ или групп.");
-            PluginWidgetGroupConfig.Validate(config.WidgetGroups);
+            PluginWidgetGroupConfig.Validate(config.WidgetGroups, config.WidgetIndicators);
             return config;
         }
 

@@ -617,6 +617,44 @@ public static class Package6Tests
                 "Cross-group move lost position or empty source group");
             workspace.Clear();
         });
+        Case("plugin indicators persist and refresh independently of free layout", delegate {
+            PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+            PluginWidget indicator = new PluginWidget { Id = "market", Kind = "indicator", Title = "Market demo",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "200" } } };
+            PluginWidgetSnapshot snapshot = new PluginWidgetSnapshot { Version = "1.0.0", ProcessId = 42, Widgets = new[] { indicator } };
+            int changes = 0, reads = 0;
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(delegate { return running; },
+                delegate { return Task.FromResult(snapshot); }, delegate { return Task.FromResult(true); }, delegate { changes++; });
+            workspace.ConfigureBoard(new[] { "top-left" }, delegate(string key) { return key; }, delegate { return null; }, delegate { return false; });
+            workspace.ConfigureIndicatorEditing(delegate { return true; });
+            Assert(workspace.AddIndicator("example.stocks", "1.0.0", snapshot, "market") &&
+                !workspace.HasWidgets && workspace.IndicatorHost.Visibility == Visibility.Visible,
+                "Indicator is not independent of group mode");
+            Assert(!workspace.AddIndicator("example.stocks", "1.0.0", snapshot, "market"), "Duplicate indicator accepted");
+            List<PluginWidgetPlacementConfig> saved = workspace.CaptureIndicators();
+            AppConfig cfg = new AppConfig { WidgetIndicators = saved, GroupingEnabled = false };
+            ConfigStore.Save(cfg);
+            string warning; bool safe;
+            AppConfig loaded = ConfigStore.Load(out warning, out safe);
+            Assert(safe && warning == null && loaded.WidgetIndicators[0].Size == "indicator", "Indicator layout did not persist");
+            workspace.RestoreLayout(null, loaded.WidgetIndicators);
+            Assert(!workspace.HasWidgets && workspace.IndicatorHost.Visibility == Visibility.Visible && changes == 1,
+                "Indicator restore changed group state");
+            workspace.ConfigureAutomaticRefresh(delegate(string id, string version, bool activate) {
+                Assert(id == "example.stocks" && version == "1.0.0" && !activate, "Incorrect indicator refresh"); reads++;
+                return Task.FromResult(snapshot);
+            });
+            workspace.RefreshVisibleAsync(delegate { return false; }, delegate { return false; }).GetAwaiter().GetResult();
+            Assert(reads == 0, "Hidden indicator refreshed");
+            workspace.RefreshVisibleAsync(delegate { return false; }, delegate { return true; }).GetAwaiter().GetResult();
+            StackPanel panel = (StackPanel)workspace.IndicatorHost.Content;
+            Assert(reads == 1 && Controls<TextBlock>(panel).Exists(delegate(TextBlock t) { return t.Text == "200"; }),
+                "Indicator did not refresh outside free layout");
+            ContentControl item = (ContentControl)panel.Children[0];
+            Click((MenuItem)item.ContextMenu.Items[1]);
+            Assert(workspace.IndicatorHost.Visibility == Visibility.Collapsed && workspace.CaptureIndicators() == null &&
+                changes == 2, "Indicator removal did not collapse bottom strip");
+        });
         Case("native declarative plugin widget renderer", delegate {
             PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
                 Elements = new[] {

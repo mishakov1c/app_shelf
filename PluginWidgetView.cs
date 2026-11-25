@@ -187,6 +187,7 @@ namespace AppShelf
         private Func<string, string> zoneLabel;
         private Func<string, string> renameGroup;
         private Func<bool> canEdit = delegate { return true; };
+        private Func<bool> canEditIndicators = delegate { return true; };
         private string defaultZone = "top-left";
         private WidgetGroup draggingGroup;
         private Placement draggingWidget;
@@ -198,7 +199,9 @@ namespace AppShelf
         internal const string GroupDragFormat = "AppShelf.WidgetGroup";
         internal const string WidgetDragFormat = "AppShelf.Widget";
         internal WrapPanel Surface { get; private set; }
-        internal bool HasWidgets { get { return entries.Count != 0; } }
+        internal bool HasWidgets { get { return groups.Count != 0; } }
+        internal ScrollViewer IndicatorHost { get; private set; }
+        private StackPanel indicatorPanel;
 
         internal PluginWidgetWorkspace(Func<string, PluginRuntimeState> state,
             Func<string, string, bool, Task<PluginWidgetSnapshot>> read,
@@ -208,7 +211,13 @@ namespace AppShelf
             Surface = new WrapPanel { Visibility = Visibility.Collapsed,
                 HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 8) };
             Surface.SizeChanged += delegate { foreach (WidgetGroup group in groups) ResizeGroup(group); };
+            indicatorPanel = new StackPanel { Orientation = Orientation.Horizontal };
+            IndicatorHost = new ScrollViewer { Content = indicatorPanel, Visibility = Visibility.Collapsed,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                MaxHeight = 90, Margin = new Thickness(0, 4, 0, 0) };
         }
+
+        internal void ConfigureIndicatorEditing(Func<bool> editable) { canEditIndicators = editable; }
 
         internal void ApplyAppearance(Brush background, Brush border)
         {
@@ -443,7 +452,7 @@ namespace AppShelf
         {
             Placement entry = entries.Find(delegate(Placement p) { return p.PluginId == pluginId && p.WidgetId == widgetId; });
             WidgetGroup group = groups.Find(delegate(WidgetGroup g) { return g.Number == groupNumber; });
-            if (!canEdit() || entry == null || group == null ||
+            if (!canEdit() || entry == null || entry.Group == null || group == null ||
                 !CanOccupy(group, entry.Size, entry, row, column)) return false;
             if (entry.Group == group && entry.Row == row && entry.Column == column) return true;
             Position(entry, group, entry.Size, row, column);
@@ -580,7 +589,7 @@ namespace AppShelf
 
         internal bool Add(string pluginId, string version, PluginWidgetSnapshot snapshot, string widgetId)
         {
-            if (!canEdit() || entries.Count >= 32 || Contains(pluginId, widgetId) ||
+            if (!canEdit() || entries.FindAll(delegate(Placement p) { return p.Group != null; }).Count >= 32 || Contains(pluginId, widgetId) ||
                 !Current(state(pluginId), version, snapshot.ProcessId)) return false;
             PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == widgetId; });
             if (widget == null || !widget.SupportsSize(widget.PreferredSize)) return false;
@@ -600,6 +609,37 @@ namespace AppShelf
             Surface.Visibility = Visibility.Visible;
             changed();
             return Contains(pluginId, widgetId);
+        }
+
+        internal bool AddIndicator(string pluginId, string version, PluginWidgetSnapshot snapshot, string widgetId)
+        {
+            if (!canEditIndicators() || indicatorPanel.Children.Count >= 6 || Contains(pluginId, widgetId) ||
+                !Current(state(pluginId), version, snapshot.ProcessId)) return false;
+            PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == widgetId; });
+            if (widget == null || widget.Kind != "indicator") return false;
+            Placement entry = new Placement { PluginId = pluginId, Version = version, WidgetId = widget.Id,
+                Title = widget.Title, Kind = widget.Kind, ProcessId = snapshot.ProcessId, Snapshot = widget, Size = "indicator" };
+            WireIndicator(entry);
+            entries.Add(entry);
+            indicatorPanel.Children.Add(entry.Host);
+            IndicatorHost.Visibility = Visibility.Visible;
+            Render(entry, widget);
+            changed();
+            return Contains(pluginId, widgetId);
+        }
+
+        private void WireIndicator(Placement entry)
+        {
+            entry.Host = new ContentControl { Margin = new Thickness(0, 0, 6, 3), MaxWidth = 360, MaxHeight = 70,
+                VerticalAlignment = VerticalAlignment.Top, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            ContextMenu menu = new ContextMenu();
+            MenuItem refresh = new MenuItem { Header = "Обновить индикатор" };
+            refresh.Click += async delegate { await Refresh(entry); };
+            MenuItem remove = new MenuItem { Header = "Убрать индикатор" };
+            remove.Click += delegate { Remove(entry); };
+            menu.Items.Add(refresh); menu.Items.Add(remove);
+            menu.Opened += delegate { remove.IsEnabled = canEditIndicators(); };
+            entry.Host.ContextMenu = menu;
         }
 
         private void WirePlacement(Placement entry)
@@ -666,13 +706,22 @@ namespace AppShelf
             return result;
         }
 
-        internal void RestoreLayout(List<PluginWidgetGroupConfig> saved)
+        internal List<PluginWidgetPlacementConfig> CaptureIndicators()
         {
-            PluginWidgetGroupConfig.Validate(saved);
+            List<PluginWidgetPlacementConfig> result = new List<PluginWidgetPlacementConfig>();
+            foreach (Placement p in entries)
+                if (p.Group == null)
+                    result.Add(new PluginWidgetPlacementConfig { PluginId = p.PluginId, WidgetId = p.WidgetId,
+                        Version = p.Version, Title = p.Title, Size = "indicator" });
+            return result.Count == 0 ? null : result;
+        }
+
+        internal void RestoreLayout(List<PluginWidgetGroupConfig> saved, List<PluginWidgetPlacementConfig> indicators = null)
+        {
+            PluginWidgetGroupConfig.Validate(saved, indicators);
             Clear();
             nextGroupNumber = 0;
-            if (saved == null) return;
-            foreach (PluginWidgetGroupConfig item in saved)
+            foreach (PluginWidgetGroupConfig item in saved ?? new List<PluginWidgetGroupConfig>())
             {
                 WidgetGroup group = NewGroup();
                 group.Number = item.Number;
@@ -696,6 +745,18 @@ namespace AppShelf
                 }
             }
             foreach (WidgetGroup group in groups) nextGroupNumber = Math.Max(nextGroupNumber, group.Number);
+            if (indicators != null)
+                foreach (PluginWidgetPlacementConfig p in indicators)
+                {
+                    PluginWidget placeholder = new PluginWidget { Id = p.WidgetId, Title = p.Title, Kind = "indicator",
+                        Elements = new[] { new PluginWidgetElement { Type = "text", Label = "Нет данных" } } };
+                    Placement entry = new Placement { PluginId = p.PluginId, Version = p.Version, WidgetId = p.WidgetId,
+                        Title = p.Title, Kind = "indicator", Size = "indicator", Snapshot = placeholder, RestorePending = true };
+                    WireIndicator(entry);
+                    entries.Add(entry); indicatorPanel.Children.Add(entry.Host);
+                    Unavailable(entry, "Нет данных");
+                }
+            IndicatorHost.Visibility = indicatorPanel.Children.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             Surface.Visibility = HasWidgets ? Visibility.Visible : Visibility.Collapsed;
         }
 
@@ -708,7 +769,7 @@ namespace AppShelf
         private bool ChangeSize(Placement entry, string size)
         {
             int row, column;
-            if (!canEdit() || !entries.Contains(entry) || !entry.Snapshot.SupportsSize(size) ||
+            if (!canEdit() || entry.Group == null || !entries.Contains(entry) || !entry.Snapshot.SupportsSize(size) ||
                 !FindSpace(entry.Group, size, entry, out row, out column)) return false;
             if (size == entry.Size) return true;
             Position(entry, entry.Group, size, row, column);
@@ -730,6 +791,12 @@ namespace AppShelf
         private void Display(Placement entry, PluginWidget widget, Func<string, Task> action)
         {
             Border view = PluginWidgetView.Create(widget, action);
+            if (entry.Group == null)
+            {
+                entry.Host.Content = new ScrollViewer { Content = view, MaxHeight = 70,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+                return;
+            }
             WireWidgetDrag(entry, view);
             view.MaxWidth = Double.PositiveInfinity;
             view.VerticalAlignment = VerticalAlignment.Stretch;
@@ -755,16 +822,22 @@ namespace AppShelf
             automaticRead = reader;
         }
 
+        private static bool Compatible(Placement entry, PluginWidget widget)
+        { return entry.Group == null ? widget.Kind == "indicator" : widget.SupportsSize(entry.Size); }
+
+        private static PluginWidget SelectedLayout(Placement entry, PluginWidget widget)
+        { return entry.Group == null ? widget : widget.ForSize(entry.Size); }
+
         private void Render(Placement entry, PluginWidget widget)
         {
             entry.Snapshot = widget;
             entry.Stale = false;
             entry.UnavailableMessage = null;
             int revision = ++entry.Revision;
-            Display(entry, widget.ForSize(entry.Size), async delegate(string command)
+            Display(entry, SelectedLayout(entry, widget), async delegate(string command)
             {
                 if (!entries.Contains(entry) || entry.Revision != revision || entry.ActionBusy || entry.Busy ||
-                    (zones != null && board == null) ||
+                    (entry.Group != null && zones != null && board == null) ||
                     !Current(state(entry.PluginId), entry.Version, entry.ProcessId))
                     throw new InvalidOperationException("Виджет устарел или обновляется.");
                 entry.ActionBusy = true;
@@ -780,7 +853,7 @@ namespace AppShelf
             entry.UnavailableMessage = message;
             entry.Revision++;
             Display(entry, new PluginWidget { Id = entry.WidgetId,
-                Title = entry.Title, Kind = entry.Size == "quarter" ? "tile" : "card", Elements = new[] {
+                Title = entry.Title, Kind = entry.Group == null ? "indicator" : entry.Size == "quarter" ? "tile" : "card", Elements = new[] {
                     new PluginWidgetElement { Type = "text", Label = message } } }, null);
         }
 
@@ -802,16 +875,16 @@ namespace AppShelf
                 return;
             }
             bool same = !entry.Stale && entry.ProcessId == snapshot.ProcessId && entry.Version == version &&
-                entry.Title == widget.Title && widget.SupportsSize(entry.Size) && entry.Snapshot.SupportsSize(entry.Size) &&
-                SameElements(entry.Snapshot.ForSize(entry.Size).Elements, widget.ForSize(entry.Size).Elements);
+                entry.Title == widget.Title && Compatible(entry, widget) && Compatible(entry, entry.Snapshot) &&
+                SameElements(SelectedLayout(entry, entry.Snapshot).Elements, SelectedLayout(entry, widget).Elements);
             entry.ProcessId = snapshot.ProcessId;
             entry.Version = version;
             entry.RestorePending = false;
             entry.Title = widget.Title;
             entry.Snapshot = widget;
-            if (!widget.SupportsSize(entry.Size))
+            if (!Compatible(entry, widget))
             {
-                Unavailable(entry, "Размер больше не поддерживается. Выберите другой размер и обновите.");
+                Unavailable(entry, entry.Group == null ? "Индикатор больше не поддерживается." : "Размер больше не поддерживается. Выберите другой размер и обновите.");
                 return;
             }
             if (!same) Render(entry, widget);
@@ -838,25 +911,26 @@ namespace AppShelf
 
         // One bounded batch per timer tick. Read each plugin at most once, share its
         // snapshot among placements and never queue overlapping periodic batches.
-        internal async Task RefreshVisibleAsync(Func<bool> active)
+        internal async Task RefreshVisibleAsync(Func<bool> active, Func<bool> indicatorsVisible = null)
         {
-            if (refreshing || automaticRead == null || board == null || !active()) return;
+            Func<Placement, bool> eligible = delegate(Placement p) {
+                return p.Group == null ? indicatorsVisible != null && indicatorsVisible() : board != null && active(); };
+            if (refreshing || automaticRead == null || !entries.Exists(delegate(Placement p) { return eligible(p); })) return;
             refreshing = true;
             try
             {
                 List<string> ids = new List<string>();
                 foreach (Placement entry in entries)
-                    if (!ids.Contains(entry.PluginId)) ids.Add(entry.PluginId);
+                    if (eligible(entry) && !ids.Contains(entry.PluginId)) ids.Add(entry.PluginId);
                 if (ids.Count == 0) { refreshCursor = 0; return; }
                 int start = refreshCursor % ids.Count;
                 int count = Math.Min(4, ids.Count);
                 refreshCursor = (start + count) % ids.Count;
                 for (int n = 0; n < count; n++)
                 {
-                    if (board == null || !active()) break;
                     string id = ids[(start + n) % ids.Count];
-                    List<Placement> batch = entries.FindAll(delegate(Placement p) { return p.PluginId == id; });
-                    if (batch.Count == 0 || batch.Exists(delegate(Placement p) { return p.Busy || p.ActionBusy; })) continue;
+                    List<Placement> batch = entries.FindAll(delegate(Placement p) { return p.PluginId == id && eligible(p); });
+                    if (batch.Count == 0 || entries.Exists(delegate(Placement p) { return p.PluginId == id && (p.Busy || p.ActionBusy); })) continue;
                     PluginRuntimeState current = state(id);
                     bool running = current != null && current.Status == "running";
                     bool activate = !running && current != null && current.Status == "idle" &&
@@ -876,8 +950,7 @@ namespace AppShelf
                     try
                     {
                         PluginWidgetSnapshot snapshot = await automaticRead(id, running ? current.Version : null, activate);
-                        if (board != null && active())
-                            foreach (Placement p in batch) ApplySnapshot(p, snapshot);
+                        foreach (Placement p in batch) if (eligible(p)) ApplySnapshot(p, snapshot);
                     }
                     catch (Exception error)
                     {
@@ -894,10 +967,18 @@ namespace AppShelf
 
         private void Remove(Placement entry)
         {
-            if (!canEdit() || !entries.Remove(entry)) return;
+            if (!(entry.Group == null ? canEditIndicators() : canEdit()) || !entries.Remove(entry)) return;
             entry.Revision++;
-            entry.Group.Cells.Children.Remove(entry.Host);
-            RemoveEmptyGroup(entry.Group);
+            if (entry.Group == null)
+            {
+                indicatorPanel.Children.Remove(entry.Host);
+                IndicatorHost.Visibility = indicatorPanel.Children.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+            }
+            else
+            {
+                entry.Group.Cells.Children.Remove(entry.Host);
+                RemoveEmptyGroup(entry.Group);
+            }
             Surface.Visibility = HasWidgets ? Visibility.Visible : Visibility.Collapsed;
             changed();
         }
@@ -905,6 +986,7 @@ namespace AppShelf
         internal void Clear()
         {
             DetachBoard(); entries.Clear(); groups.Clear(); Surface.Children.Clear(); Surface.Visibility = Visibility.Collapsed;
+            indicatorPanel.Children.Clear(); IndicatorHost.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -925,7 +1007,8 @@ namespace AppShelf
                 delegate { return _canSave && WidgetsInFreeLayout(); });
             _pluginWidgets.ConfigureAutomaticRefresh(delegate(string id, string version, bool activate)
             { return GetPluginRuntime().ReadWidgetSnapshotAsync(id, version, activate, true); });
-            _pluginWidgets.RestoreLayout(_config.WidgetGroups);
+            _pluginWidgets.ConfigureIndicatorEditing(delegate { return _canSave; });
+            _pluginWidgets.RestoreLayout(_config.WidgetGroups, _config.WidgetIndicators);
             return _pluginWidgets.Surface;
         }
 
@@ -936,10 +1019,11 @@ namespace AppShelf
             {
                 AppConfig pending = _config.Copy();
                 pending.WidgetGroups = _pluginWidgets.CaptureLayout();
+                pending.WidgetIndicators = _pluginWidgets.CaptureIndicators();
                 saved = SaveConfigChanges(pending);
             }
             catch (Exception error) { ShowError("Не удалось сохранить раскладку виджетов.", error); }
-            if (!saved) _pluginWidgets.RestoreLayout(_config.WidgetGroups);
+            if (!saved) _pluginWidgets.RestoreLayout(_config.WidgetGroups, _config.WidgetIndicators);
             RenderTiles();
         }
 
@@ -948,13 +1032,16 @@ namespace AppShelf
             return _config.GroupingEnabled && NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "free";
         }
 
-        private void ShowAddPluginWidget()
+        private void ShowAddPluginWidget() { ShowPluginWidgetPicker(false); }
+        private void ShowAddPluginIndicator() { ShowPluginWidgetPicker(true); }
+
+        private void ShowPluginWidgetPicker(bool indicator)
         {
-            if (!WidgetsInFreeLayout() || !_canSave || _pluginWidgetPickerOpen || _pluginRuntimeStopping || _pluginWidgets == null) return;
+            if ((!indicator && !WidgetsInFreeLayout()) || !_canSave || _pluginWidgetPickerOpen || _pluginRuntimeStopping || _pluginWidgets == null) return;
             _pluginWidgetPickerOpen = true;
             try
             {
-                Window dialog = new Window { Owner = this, Title = "AppShelf — Добавить виджет",
+                Window dialog = new Window { Owner = this, Title = indicator ? "AppShelf — Добавить индикатор" : "AppShelf — Добавить виджет",
                     Width = 480, Height = 410, MinWidth = 360, MinHeight = 330,
                     WindowStartupLocation = WindowStartupLocation.CenterOwner };
                 FluentUi.PrepareWindow(dialog);
@@ -962,13 +1049,13 @@ namespace AppShelf
                 dialog.Content = layout;
                 StackPanel top = new StackPanel();
                 DockPanel.SetDock(top, Dock.Top); layout.Children.Add(top);
-                top.Children.Add(Text("Виджеты плагинов", 20, WhiteBrush));
-                TextBlock hint = Text("Выберите включённый плагин и загрузите список его виджетов.", 12, MutedBrush);
+                top.Children.Add(Text(indicator ? "Индикаторы плагинов" : "Виджеты плагинов", 20, WhiteBrush));
+                TextBlock hint = Text(indicator ? "Выберите включённый плагин и загрузите его индикаторы." : "Выберите включённый плагин и загрузите список его виджетов.", 12, MutedBrush);
                 hint.TextWrapping = TextWrapping.Wrap;
                 hint.Margin = new Thickness(0, 6, 0, 10); top.Children.Add(hint);
                 ComboBox packages = new ComboBox { MinHeight = 32, IsEnabled = false };
                 top.Children.Add(packages);
-                Button load = ActionButton("Загрузить виджеты", false);
+                Button load = ActionButton(indicator ? "Загрузить индикаторы" : "Загрузить виджеты", false);
                 load.Margin = new Thickness(0, 8, 0, 8); load.IsEnabled = false;
                 top.Children.Add(load);
                 TextBlock status = Text("Поиск установленных плагинов…", 12, MutedBrush);
@@ -1028,10 +1115,10 @@ namespace AppShelf
                         if (closed || _pluginRuntimeStopping) return;
                         snapshot = result;
                         foreach (PluginWidget widget in result.Widgets)
-                            if ((widget.Kind == "card" || widget.Kind == "tile") && !_pluginWidgets.Contains(selected.Id, widget.Id))
+                            if ((indicator ? widget.Kind == "indicator" : widget.Kind == "card" || widget.Kind == "tile") && !_pluginWidgets.Contains(selected.Id, widget.Id))
                                 widgets.Items.Add(new ListBoxItem { Content = Text(widget.Title, 13, WhiteBrush), Tag = widget.Id });
-                        status.Text = widgets.Items.Count == 0 ? "Нет доступных новых карточек или плиток." :
-                            "Выберите виджет для рабочего пространства.";
+                        status.Text = widgets.Items.Count == 0 ? (indicator ? "Нет доступных новых индикаторов." : "Нет доступных новых карточек или плиток.") :
+                            indicator ? "Выберите индикатор для нижней панели." : "Выберите виджет для рабочего пространства.";
                         if (widgets.Items.Count > 0) widgets.SelectedIndex = 0;
                     }
                     catch (Exception error) { ConfigStore.Log(error); if (!closed) status.Text = "Не удалось загрузить виджеты."; }
@@ -1045,8 +1132,10 @@ namespace AppShelf
                 {
                     ListBoxItem item = widgets.SelectedItem as ListBoxItem;
                     if (busy || selected == null || snapshot == null || item == null) return;
-                    if (_pluginWidgets.Add(selected.Id, selected.Manifest.Version, snapshot, (string)item.Tag)) dialog.Close();
-                    else status.Text = "Виджет уже добавлен, недоступен или достигнут лимит (32).";
+                    bool added = indicator ? _pluginWidgets.AddIndicator(selected.Id, selected.Manifest.Version, snapshot, (string)item.Tag) :
+                        _pluginWidgets.Add(selected.Id, selected.Manifest.Version, snapshot, (string)item.Tag);
+                    if (added) dialog.Close();
+                    else status.Text = indicator ? "Индикатор уже добавлен, недоступен или достигнут лимит (6)." : "Виджет уже добавлен, недоступен или достигнут лимит (32).";
                 };
                 dialog.ShowDialog();
             }
