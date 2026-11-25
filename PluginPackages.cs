@@ -82,7 +82,7 @@ namespace AppShelf
             @"\A(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\z",
             RegexOptions.CultureInvariant);
         private static readonly HashSet<string> Capabilities = new HashSet<string>(
-            new[] { "command", "window", "background", "settings", "notification" },
+            new[] { "command", "window", "background", "settings", "notification", "widget" },
             StringComparer.Ordinal);
 
         internal PluginPackageStore(string profileRoot)
