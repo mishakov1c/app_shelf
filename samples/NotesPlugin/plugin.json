@@ -3,7 +3,7 @@
   "apiVersion": 1,
   "id": "example.notes",
   "name": "Заметки (демо)",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "entryPoint": "bin/NotesPlugin.exe",
   "description": "Демонстрация окон, настроек, уведомлений и резервирования данных.",
   "publisher": "AppShelf sample",

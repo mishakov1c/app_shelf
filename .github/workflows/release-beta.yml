@@ -113,7 +113,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = $env:APP_RELEASE_VERSION
-          $assets = @("AppShelf.exe", "artifacts/plugins/NotesPlugin-1.0.0.asplugin", "artifacts/plugins/StocksPlugin-1.0.0.asplugin")
+          $assets = @("AppShelf.exe", "artifacts/plugins/NotesPlugin-1.0.1.asplugin", "artifacts/plugins/StocksPlugin-1.0.0.asplugin")
           foreach ($asset in $assets) {
             if ((Get-Item -LiteralPath $asset -ErrorAction Stop).Length -le 0) { throw "Empty release asset: $asset" }
           }

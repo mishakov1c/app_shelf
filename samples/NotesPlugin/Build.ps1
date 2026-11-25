@@ -18,7 +18,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'plugin.json') -Destination $stage
     $output = [IO.Path]::GetFullPath($OutputDirectory)
     [void][IO.Directory]::CreateDirectory($output)
-    $package = Join-Path $output 'NotesPlugin-1.0.0.asplugin'
+    $package = Join-Path $output 'NotesPlugin-1.0.1.asplugin'
     $temporary = Join-Path $output ([guid]::NewGuid().ToString('N') + '.tmp')
     try {
         $archive = [IO.Compression.ZipFile]::Open($temporary, [IO.Compression.ZipArchiveMode]::Create)

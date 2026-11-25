@@ -57,7 +57,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: NotesPlugin-${{ github.sha }}
-          path: artifacts/plugins/NotesPlugin-1.0.0.asplugin
+          path: artifacts/plugins/NotesPlugin-1.0.1.asplugin
           if-no-files-found: error
           retention-days: 14
 

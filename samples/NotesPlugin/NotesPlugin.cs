@@ -11,7 +11,7 @@ namespace AppShelf.Sample
     internal static class NotesPlugin
     {
         private const string Id = "example.notes";
-        private const string Version = "1.0.0";
+        private const string Version = "1.0.1";
         private const int MaxText = 16000;
         private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
         private static Control dispatcher;

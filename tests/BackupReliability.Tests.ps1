@@ -1003,7 +1003,7 @@ public static class BackupTests
 
     private static void SamplePluginRoundtrip(string package)
     {
-        const string id = "example.notes", version = "1.0.0";
+        const string id = "example.notes", version = "1.0.1";
         PluginPackageStore store = new PluginPackageStore(Root);
         bool confirmed = false;
         store.Install(package, delegate(PluginManifest m) {

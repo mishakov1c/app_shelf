@@ -2584,6 +2584,35 @@ public static class Package6Tests
                         "Wide free placement did not restore three columns");
             } finally { w.Close(); }
         });
+        Case("legacy nine-zone geometry migrates to the shared canvas and old layout survives", delegate {
+            Seed("normal", 4);
+            AppConfig c = Load();
+            c.Items[3].Group = "Вторая";
+            c.GroupLayoutMode = "free";
+            c.GroupDefaultZone = "top-left";
+            c.GroupZoneOverrides = new Dictionary<string, string> { { "Вторая", "bottom-right" } };
+            ConfigStore.Save(c);
+            MainWindow w = Open(); try {
+                w.Width = 1100; w.Height = 780; Drain();
+                Call(w, "SetGroupLayoutMode", "canvas"); Drain();
+                AppConfig saved = Load();
+                Assert(saved.GroupLayoutMode == "canvas" && saved.CanvasPositions != null,
+                    "Canvas migration was not persisted");
+                Assert(saved.CanvasPositions.ContainsKey("app:Первая") && saved.CanvasPositions.ContainsKey("app:Вторая"),
+                    "Migrated group missing");
+                Assert(saved.CanvasPositions["app:Вторая"].X > saved.CanvasPositions["app:Первая"].X,
+                    "Legacy horizontal placement not retained");
+                Call(w, "ArrangeCanvas", "vertical"); Drain();
+                saved = Load();
+                foreach (FreeCanvasRect rect in saved.CanvasPositions.Values)
+                    Assert(rect.X == 0, "Vertical arrangement failed to save");
+                Call(w, "SetGroupLayoutMode", "free"); Drain();
+                Assert(Load().GroupZoneOverrides["Вторая"] == "bottom-right" && Get(w, "_freeLayoutGrid") != null,
+                    "Old layout changed during migration");
+                Call(w, "SetGroupLayoutMode", "canvas"); Drain();
+                Assert(Load().CanvasPositions["app:Вторая"].X == 0, "Switching back replaced saved canvas");
+            } finally { w.Close(); }
+        });
         Case("free zones use content heights before scrolling a small viewport", delegate {
             Seed("compact", 10);
             AppConfig c = Load();
