@@ -329,6 +329,11 @@ namespace AppShelf
             session.SettingsAsync(timeout, cancel).GetAwaiter().GetResult();
         }
 
+        internal PluginWidget[] GetWidgets(CancellationToken cancel)
+        {
+            return session.GetWidgetsAsync(timeout, cancel).GetAwaiter().GetResult().Widgets;
+        }
+
         internal PluginNotice[] Poll(CancellationToken cancel)
         {
             return session.PollAsync(timeout, cancel).GetAwaiter().GetResult().Notifications ?? new PluginNotice[0];
@@ -589,6 +594,34 @@ namespace AppShelf
                 if (child.Failed || child.HasExited) FailSlot(slot, error);
                 throw;
             }
+        }
+
+        // Refresh never starts/restarts a plugin. The UI must first explicitly
+        // activate a placed widget's plugin or use the existing background policy.
+        internal async Task<PluginWidget[]> GetWidgetsAsync(string id, string version)
+        {
+            PluginWidget[] result = null;
+            await Run(delegate
+            {
+                PluginManifest manifest = CheckActionVersion(id, version);
+                if (Array.IndexOf(manifest.Capabilities, "widget") < 0)
+                    throw new InvalidOperationException("Плагин не предоставляет виджеты.");
+                Slot slot = GetSlot(id);
+                PluginChild child = slot.Child;
+                if (slot.Status != "running" || child == null || child.HasExited ||
+                    child.Manifest.Version != version)
+                    throw new InvalidOperationException("Плагин виджетов не запущен.");
+                try
+                {
+                    result = child.GetWidgets(lifetime.Token);
+                }
+                catch (Exception error)
+                {
+                    if (child.Failed || child.HasExited) FailSlot(slot, error);
+                    throw;
+                }
+            }).ConfigureAwait(false);
+            return result;
         }
 
         internal Task InvokeAsync(string id, string version, string command)
