@@ -352,6 +352,8 @@ namespace AppShelf
         // be distinguished from backups made by releases without plugins.
         [DataMember(Name = "pluginSettingsIncluded", EmitDefaultValue = false)]
         public bool PluginSettingsIncluded;
+        [DataMember(Name = "archiveComponents", EmitDefaultValue = false)]
+        public int? ArchiveComponents;
 
         // Nullable fields retain legacy defaults when absent from older apps.json.
         [DataMember(Name = "soundsEnabled", EmitDefaultValue = false)]
@@ -474,6 +476,7 @@ namespace AppShelf
         {
             new PluginSettingsDocument().Apply(c);
             c.PluginSettingsIncluded = false;
+            c.ArchiveComponents = null;
         }
     }
 
@@ -647,6 +650,8 @@ namespace AppShelf
                         extension.Apply(config);
                     }
                 }
+                else if (File.Exists(PluginSettingsPath + ".bak"))
+                    throw new InvalidDataException("Основной файл настроек плагинов отсутствует. Сохраните резервную копию и восстановите файл.");
                 else if (File.Exists(FilePath) && (config.WidgetGroups != null || config.WidgetIndicators != null ||
                     config.BackupExecutable.HasValue || config.BackupPluginPackages.HasValue))
                 {

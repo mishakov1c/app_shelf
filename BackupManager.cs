@@ -42,6 +42,14 @@ namespace AppShelf
         }
     }
 
+    [Flags]
+    internal enum BackupComponents
+    {
+        Settings = 1, Reminders = 2, Collections = 4, Covers = 8, Backgrounds = 16,
+        WidgetLayout = 32, Executable = 64, Packages = 128, PluginData = 256,
+        All = 511
+    }
+
     public static class BackupStore
     {
         private const int MaxEntries = 2000;
@@ -183,22 +191,59 @@ namespace AppShelf
             ExportAll(filename, config, reminders, CurrentExecutable());
         }
 
+        internal static BackupComponents SelectedComponents(AppConfig config)
+        {
+            BackupComponents result = BackupComponents.Settings;
+            if (config.BackupReminders != false) result |= BackupComponents.Reminders;
+            if (config.BackupCollections != false)
+            {
+                result |= BackupComponents.Collections;
+                if (config.BackupCovers != false) result |= BackupComponents.Covers;
+            }
+            if (config.BackupBackgrounds != false) result |= BackupComponents.Backgrounds;
+            if (config.BackupWidgetLayout != false) result |= BackupComponents.WidgetLayout;
+            if (config.BackupExecutable != false) result |= BackupComponents.Executable;
+            if (config.BackupPluginPackages != false) result |= BackupComponents.Packages;
+            if (config.BackupPluginData != false) result |= BackupComponents.PluginData;
+            return result;
+        }
+
+        internal static bool Includes(BackupComponents set, BackupComponents item)
+        { return (set & item) == item; }
+
         internal static void ExportAll(string filename, AppConfig config, ReminderDocument reminders, string executablePath)
         {
-            if (config == null || reminders == null) throw new InvalidOperationException("Данные приложения не загружены.");
+            ExportSelected(filename, config, reminders, executablePath, SelectedComponents(config));
+        }
+
+        internal static void ExportSelected(string filename, AppConfig config, ReminderDocument reminders,
+            string executablePath, BackupComponents components)
+        {
+            if (config == null || (Includes(components, BackupComponents.Reminders) && reminders == null))
+                throw new InvalidOperationException("Данные приложения не загружены.");
+            if (!Includes(components, BackupComponents.Settings) || (components & ~BackupComponents.All) != 0 ||
+                (Includes(components, BackupComponents.Covers) && !Includes(components, BackupComponents.Collections)))
+                throw new InvalidDataException("Недопустимый состав резервной копии.");
             string collectionWarning;
             bool collectionsCanSave;
-            CollectionDocument collections = CollectionStore.Load(out collectionWarning, out collectionsCanSave);
-            if (!collectionsCanSave)
-                throw new InvalidDataException("Нельзя создавать неполную резервную копию: " + collectionWarning);
-            CollectionStore.Validate(collections);
+            CollectionDocument collections = null;
             HashSet<string> images = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (CollectionDefinition group in collections.Collections)
-                foreach (CollectionEntry entry in group.Entries)
-                    if (!String.IsNullOrEmpty(entry.CoverFile)) images.Add(entry.CoverFile);
+            if (Includes(components, BackupComponents.Collections))
+            {
+                collections = CollectionStore.Load(out collectionWarning, out collectionsCanSave);
+                if (!collectionsCanSave)
+                    throw new InvalidDataException("Нельзя создавать неполную резервную копию: " + collectionWarning);
+                CollectionStore.Validate(collections);
+                collections = collections.Copy();
+                foreach (CollectionDefinition group in collections.Collections)
+                    foreach (CollectionEntry entry in group.Entries)
+                        if (!Includes(components, BackupComponents.Covers)) entry.CoverFile = null;
+                        else if (!String.IsNullOrEmpty(entry.CoverFile)) images.Add(entry.CoverFile);
+            }
             // Include the full local wallpaper library, not only the selected image.
             // User images stay outside the executable, but belong in portable backups.
-            List<string> backgrounds = CustomBackgroundStore.ListPresets();
+            List<string> backgrounds = Includes(components, BackupComponents.Backgrounds)
+                ? CustomBackgroundStore.ListPresets() : new List<string>();
             // Copy through serializer: never mutate the live config while making portable paths.
             AppConfig portable;
             using (MemoryStream stream = new MemoryStream())
@@ -210,7 +255,10 @@ namespace AppShelf
             // Backup root is machine-specific and can contain a personal cloud path.
             // Keep it local rather than exporting it to a portable archive.
             portable.BackupDirectory = null;
-            portable.PluginSettingsIncluded = true;
+            portable.ArchiveComponents = (int)components;
+            portable.PluginSettingsIncluded = Includes(components, BackupComponents.WidgetLayout);
+            if (!portable.PluginSettingsIncluded)
+            { portable.WidgetGroups = null; portable.WidgetIndicators = null; }
             Dictionary<string, string> owned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (AppItem item in portable.Items)
             {
@@ -228,10 +276,11 @@ namespace AppShelf
                 item.SourcePath = null;
             }
             PluginPackageStore pluginStore = new PluginPackageStore(ConfigStore.DirectoryPath);
-            byte[] pluginBackup = pluginStore.CaptureBackup();
+            bool includePluginData = Includes(components, BackupComponents.PluginData);
+            byte[] pluginBackup = includePluginData ? pluginStore.CaptureBackup() : null;
             string binaryStage = Path.Combine(Path.GetTempPath(), "AppShelfPrograms-" + Guid.NewGuid().ToString("N"));
-            bool includeCore = config.BackupExecutable != false && !String.IsNullOrEmpty(executablePath);
-            bool includePackages = config.BackupPluginPackages != false;
+            bool includeCore = Includes(components, BackupComponents.Executable) && !String.IsNullOrEmpty(executablePath);
+            bool includePackages = Includes(components, BackupComponents.Packages);
             // Write to a temporary file; a failed export does not destroy the old backup.
             string temp = filename + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
@@ -252,8 +301,8 @@ namespace AppShelf
                     using (ZipArchive archive = new ZipArchive(output, ZipArchiveMode.Create, true))
                     {
                         StoreDocument(archive, "apps.json", portable);
-                        StoreDocument(archive, "reminders.json", reminders);
-                        StoreDocument(archive, "Collections/collections.json", collections);
+                        if (Includes(components, BackupComponents.Reminders)) StoreDocument(archive, "reminders.json", reminders);
+                        if (collections != null) StoreDocument(archive, "Collections/collections.json", collections);
                         if (pluginBackup != null)
                         {
                             ZipArchiveEntry plugins = archive.CreateEntry(PluginPackageStore.BackupArchiveEntry, CompressionLevel.Optimal);
@@ -302,9 +351,9 @@ namespace AppShelf
                         ZipArchiveEntry meta = archive.CreateEntry("backup-info.txt", CompressionLevel.Optimal);
                         using (StreamWriter writer = new StreamWriter(meta.Open()))
                         {
-                            writer.WriteLine("AppShelf portable backup 2.5");
+                            writer.WriteLine("AppShelf portable backup 2.6");
                             writer.WriteLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-                            writer.WriteLine("Includes settings, reminders, private shortcuts, collections, custom backgrounds and optional plugin data.");
+                            writer.WriteLine("Components: " + components.ToString());
                         }
                     }
                     output.Flush(true);
@@ -316,7 +365,7 @@ namespace AppShelf
                 Dictionary<string, string> checkedImages;
                 ReadBackup(temp, null, out checkedReminders, out checkedShortcuts,
                     out checkedCollections, out checkedImages);
-                byte[] afterPlugins = pluginStore.CaptureBackup();
+                byte[] afterPlugins = includePluginData ? pluginStore.CaptureBackup() : null;
                 if ((pluginBackup == null) != (afterPlugins == null) ||
                     (pluginBackup != null && !System.Linq.Enumerable.SequenceEqual(pluginBackup, afterPlugins)))
                     throw new IOException("Данные плагинов изменились во время резервного копирования.");
@@ -485,7 +534,25 @@ namespace AppShelf
                     }
                 }
             }
-            if (restored == null || reminders == null)
+            if (restored == null) throw new InvalidDataException("Архив должен содержать apps.json.");
+            BackupComponents components = ArchiveSelection(restored, reminders, collections);
+            if (restored.ArchiveComponents.HasValue)
+            {
+                if (Includes(components, BackupComponents.Reminders) != (reminders != null) ||
+                    Includes(components, BackupComponents.Collections) != (collections != null) ||
+                    Includes(components, BackupComponents.WidgetLayout) != restored.PluginSettingsIncluded ||
+                    (!Includes(components, BackupComponents.WidgetLayout) &&
+                        (restored.WidgetGroups != null || restored.WidgetIndicators != null)))
+                    throw new InvalidDataException("Состав архива не соответствует описанию.");
+                foreach (string name in entries)
+                    if ((!Includes(components, BackupComponents.Backgrounds) && name.StartsWith("Backgrounds/", StringComparison.OrdinalIgnoreCase)) ||
+                        (!Includes(components, BackupComponents.Covers) && name.StartsWith("Collections/Images/", StringComparison.OrdinalIgnoreCase)) ||
+                        (!Includes(components, BackupComponents.PluginData) && name == PluginPackageStore.BackupArchiveEntry) ||
+                        (!Includes(components, BackupComponents.Executable) && name == ExecutableEntry) ||
+                        (!Includes(components, BackupComponents.Packages) && PluginPackageStore.IsPackageBackupEntry(name)))
+                        throw new InvalidDataException("В архиве есть неуказанный компонент: " + name);
+            }
+            else if (reminders == null)
                 throw new InvalidDataException("Архив должен содержать apps.json и reminders.json.");
             // Archives created before Collections were introduced remain valid.
             // They must not overwrite or delete existing collection data.
@@ -506,7 +573,8 @@ namespace AppShelf
                     archivedCoverCount++;
             if (archivedCoverCount != requiredImages.Count)
                 throw new InvalidDataException("В архиве есть обложки, не относящиеся к подборкам.");
-            if (CustomBackgroundStore.IsCustomPreset(restored.MainBackgroundPreset) &&
+            if (Includes(components, BackupComponents.Backgrounds) &&
+                CustomBackgroundStore.IsCustomPreset(restored.MainBackgroundPreset) &&
                 !images.ContainsKey("Backgrounds/" + restored.MainBackgroundPreset.Substring(7)))
                 throw new InvalidDataException("В архиве нет выбранного пользовательского фона.");
             foreach (AppItem item in restored.Items)
@@ -526,6 +594,43 @@ namespace AppShelf
                 }
             }
             return restored;
+        }
+
+        private static BackupComponents ArchiveSelection(AppConfig restored, ReminderDocument reminders, CollectionDocument collections)
+        {
+            if (restored.ArchiveComponents.HasValue)
+            {
+                BackupComponents components = (BackupComponents)restored.ArchiveComponents.Value;
+                if (!Includes(components, BackupComponents.Settings) || (components & ~BackupComponents.All) != 0 ||
+                    (Includes(components, BackupComponents.Covers) && !Includes(components, BackupComponents.Collections)))
+                    throw new InvalidDataException("Некорректный состав архива.");
+                return components;
+            }
+            BackupComponents legacy = BackupComponents.All;
+            if (reminders == null) legacy &= ~BackupComponents.Reminders;
+            if (collections == null) legacy &= ~(BackupComponents.Collections | BackupComponents.Covers);
+            if (!restored.PluginSettingsIncluded && restored.WidgetGroups == null && restored.WidgetIndicators == null)
+                legacy &= ~BackupComponents.WidgetLayout;
+            return legacy;
+        }
+
+        internal static BackupComponents InspectComponents(string filename)
+        {
+            ReminderDocument reminders; Dictionary<string, string> shortcuts;
+            CollectionDocument collections; Dictionary<string, string> images;
+            AppConfig restored = ReadBackup(filename, null, out reminders, out shortcuts, out collections, out images);
+            BackupComponents result = ArchiveSelection(restored, reminders, collections);
+            using (FileStream input = File.OpenRead(filename))
+            using (ZipArchive archive = new ZipArchive(input, ZipArchiveMode.Read))
+            {
+                if (archive.GetEntry(PluginPackageStore.BackupArchiveEntry) == null) result &= ~BackupComponents.PluginData;
+                if (archive.GetEntry(ExecutableEntry) == null) result &= ~BackupComponents.Executable;
+                bool packages = false;
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                    if (PluginPackageStore.IsPackageBackupEntry(entry.FullName)) { packages = true; break; }
+                if (!packages) result &= ~BackupComponents.Packages;
+            }
+            return result;
         }
 
         // Existing images may be referenced by an older .bak document. Never
@@ -574,6 +679,11 @@ namespace AppShelf
 
         public static string RestoreAll(string filename, string selectedBackupRoot = null)
         {
+            return RestoreSelected(filename, selectedBackupRoot, BackupComponents.All);
+        }
+
+        internal static string RestoreSelected(string filename, string selectedBackupRoot, BackupComponents selected)
+        {
             string stage = Path.Combine(Path.GetTempPath(), "AppShelfRestore_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(stage);
             try
@@ -584,6 +694,51 @@ namespace AppShelf
                 Dictionary<string, string> images;
                 AppConfig restored = ReadBackup(filename, stage, out reminders, out shortcuts,
                     out collections, out images);
+                selected &= ArchiveSelection(restored, reminders, collections);
+                if (!Includes(selected, BackupComponents.Collections)) selected &= ~BackupComponents.Covers;
+                bool restoreSettings = Includes(selected, BackupComponents.Settings);
+                bool restoreWidgets = Includes(selected, BackupComponents.WidgetLayout);
+                bool restoreBackgrounds = Includes(selected, BackupComponents.Backgrounds);
+                bool restoreCovers = Includes(selected, BackupComponents.Covers);
+                bool restoreConfig = restoreSettings || restoreWidgets || restoreBackgrounds;
+                if (!Includes(selected, BackupComponents.Reminders)) reminders = null;
+                if (!Includes(selected, BackupComponents.Collections)) collections = null;
+                if (!restoreSettings) shortcuts.Clear();
+                if (!Includes(selected, BackupComponents.PluginData))
+                    File.Delete(Path.Combine(stage, "plugin-recovery.json"));
+
+                string currentWarning; bool currentSafe;
+                AppConfig current = ConfigStore.Load(out currentWarning, out currentSafe);
+                if (!currentSafe && (!restoreSettings || !restoreWidgets || !restoreBackgrounds))
+                    throw new InvalidDataException("Для выборочного восстановления нужны читаемые текущие настройки: " + currentWarning);
+                // Keep the backup policy local and preserve every unselected component.
+                if (currentSafe)
+                {
+                    List<PluginWidgetGroupConfig> groups = restored.WidgetGroups;
+                    List<PluginWidgetPlacementConfig> indicators = restored.WidgetIndicators;
+                    string background = restored.MainBackgroundPreset;
+                    if (!restoreSettings) restored = current.Copy();
+                    PluginSettingsDocument.Capture(current).Apply(restored);
+                    if (restoreWidgets) { restored.WidgetGroups = groups; restored.WidgetIndicators = indicators; }
+                    restored.MainBackgroundPreset = restoreBackgrounds ? background : current.MainBackgroundPreset;
+                }
+                if (!restoreBackgrounds && !currentSafe)
+                    throw new InvalidDataException("Нельзя сохранить текущее оформление при повреждённых настройках.");
+                if (!restoreCovers && collections != null)
+                {
+                    string collectionWarning; bool canSave;
+                    CollectionDocument local = CollectionStore.Load(out collectionWarning, out canSave);
+                    if (!canSave) throw new InvalidDataException(collectionWarning);
+                    foreach (CollectionDefinition group in collections.Collections)
+                    {
+                        CollectionDefinition old = local.Collections.Find(delegate(CollectionDefinition g) { return g.Id == group.Id; });
+                        foreach (CollectionEntry entry in group.Entries)
+                        {
+                            CollectionEntry previous = old == null ? null : old.Entries.Find(delegate(CollectionEntry e) { return e.Id == entry.Id; });
+                            entry.CoverFile = previous == null ? null : previous.CoverFile;
+                        }
+                    }
+                }
                 // Save the current state before touching it. Never delete prior backups.
                 Directory.CreateDirectory(ConfigStore.DirectoryPath);
                 // Current releases use the user-selected location. The no-argument
@@ -645,7 +800,7 @@ namespace AppShelf
                         Directory.CreateDirectory(CollectionStore.ImagesPath);
                         foreach (KeyValuePair<string, string> item in images)
                         {
-                            if (!item.Key.StartsWith("Collections/Images/", StringComparison.OrdinalIgnoreCase))
+                            if (!restoreCovers || !item.Key.StartsWith("Collections/Images/", StringComparison.OrdinalIgnoreCase))
                                 continue;
                             string destination = CollectionStore.CoverPath(Path.GetFileName(item.Key));
                             if (File.Exists(destination))
@@ -663,7 +818,7 @@ namespace AppShelf
                     }
                     foreach (KeyValuePair<string, string> item in images)
                     {
-                        if (!item.Key.StartsWith("Backgrounds/", StringComparison.OrdinalIgnoreCase))
+                        if (!restoreBackgrounds || !item.Key.StartsWith("Backgrounds/", StringComparison.OrdinalIgnoreCase))
                             continue;
                         Directory.CreateDirectory(CustomBackgroundStore.DirectoryPath);
                         string preset = "custom:" + Path.GetFileName(item.Key);
@@ -688,20 +843,8 @@ namespace AppShelf
                     // Restoring data must not change where backups are stored on this PC.
                     if (!String.IsNullOrWhiteSpace(selectedBackupRoot))
                         restored.BackupDirectory = BackupAutomation.ValidateRoot(selectedBackupRoot);
-                    // A stable-version archive never knew about the separate settings.
-                    // Preserve them rather than treating missing fields as an empty layout.
-                    if (!restored.PluginSettingsIncluded && restored.WidgetGroups == null &&
-                        restored.WidgetIndicators == null && restored.BackupExecutable == null &&
-                        restored.BackupPluginPackages == null)
-                    {
-                        string warning; bool safe;
-                        AppConfig current = ConfigStore.Load(out warning, out safe);
-                        if (safe) PluginSettingsDocument.Capture(current).Apply(restored);
-                        else if (File.Exists(ConfigStore.PluginSettingsPath))
-                            throw new InvalidDataException(warning);
-                    }
-                    ConfigStore.Save(restored, false);
-                    ReminderStore.Save(reminders);
+                    if (restoreConfig) ConfigStore.Save(restored, false);
+                    if (reminders != null) ReminderStore.Save(reminders);
                     if (collections != null) CollectionStore.Save(collections);
                     if (recoveredPath != null)
                     {
@@ -734,7 +877,7 @@ namespace AppShelf
                     throw new BackupRestoreException(importError, rollbackErrors, backupDir);
                 }
                 // Pruning must not run between the writes of a multi-file restore.
-                ConfigStore.CleanupRetiredShortcuts(retiredShortcuts);
+                if (restoreSettings) ConfigStore.CleanupRetiredShortcuts(retiredShortcuts);
                 return backupDir;
             }
             finally
