@@ -97,3 +97,28 @@ Install `artifacts/plugins/NotesPlugin-1.0.0.asplugin` through the plugin manage
 Acceptance on an isolated Windows profile: verify disabled installation, enable, open/reopen both windows, save Russian and multiline text, restart and confirm persistence; enable save notification, save again and check the host notification. Enable plugin data backup, create a ZIP with packages, remove the plugin, modify or remove the note data, restore the ZIP (no live installation), extract the package, reinstall with renewed trust, explicitly restore same-version data, then enable and verify the original note. Check the plugin remains disabled immediately after restore and that closing AppShelf stops its child process. Never test destructive restore against the only copy of real user data.
 
 The backup reliability regression builds and installs this actual sample, invokes commands/settings and health checks, roundtrips package and declared data through ZIP recovery, and verifies disabled restore and restart. It seeds the documented text files directly; interactive editing, native window presentation and tray notification display require manual acceptance. Stage 7 is not considered accepted until Windows CI and manual checks pass.
+
+
+## Stage 8: declarative widget API (provisional API 1 extension)
+
+The manifest may declare the new `widget` capability. Existing API 1 packages without it keep working; no new requests are sent to them. Older hosts reject packages with the unknown capability. No change to framing, trust, lifecycle or backup formats.
+
+A running, explicitly enabled widget-capable plugin accepts `getWidgets`. The host requests a whole snapshot rather than accepting pushed messages or executing UI code. Success includes an explicit `widgets` array (empty means none), with at most 8 descriptors per plugin. Widget IDs are stable within the plugin and use the same syntax as command IDs; IDs are unique in a snapshot. Title ≤100 characters. Host placement will use plugin ID + widget ID, never the display name. Supported kind hints: `card`, `tile`, `indicator`. Each descriptor has 1–12 flat elements (indicator: 1–2). All labels are nonempty plain text ≤240 UTF-16 units. Each element has exactly the fields appropriate to its type:
+
+| type | additional field | meaning |
+| --- | --- | --- |
+| text | none | informational text in label |
+| metric | value (nonempty string ≤100 units) | label/value pair |
+| progress | percent (finite number 0–100) | progress indicator |
+| action | commandId | registered hello command, executed only on a user click |
+
+Example request and response (illustrative prices, not real market quotes):
+
+```json
+{"apiVersion":1,"id":2,"method":"getWidgets"}
+{"apiVersion":1,"id":2,"ok":true,"widgets":[{"id":"quotes","title":"Курсы акций","kind":"card","elements":[{"type":"text","label":"Демо · условные данные"},{"type":"metric","label":"AAPL","value":"$200.00"},{"type":"metric","label":"MSFT","value":"$400.00"},{"type":"action","label":"Открыть","commandId":"open"}]}]}
+```
+
+Here open must already be advertised by hello under command/window capability. The host must render literal data, never parse as XAML/HTML, and dispatch actions via the existing version-checked invoke path. Invalid snapshot fields, duplicates, unknown types/actions, missing arrays, unexpected result fields and oversized messages fail the protocol. The existing 64 KiB frame bound and deadlines apply. Ordinary remote errors do not invalidate a healthy session. The runtime checks installed version and trust/enabled state; refresh never launches or restarts a stopped plugin. A renderer must explicitly activate a user-placed plugin or rely on its background policy.
+
+This stage implements only manifest acceptance, DTOs, request/response validation and runtime snapshot access; no visual renderer, placement settings, polling scheduler, stock data provider, arbitrary controls, images, remote assets, or widget-driven host APIs yet. Rendering, freshness/error states, bounded refresh scheduling, and a demonstrator are follow-up stages. No widget snapshot is persisted by this API. The protocol and real-process regression tests cover old packages, valid snapshots, actions, stale versions and invalid responses.
