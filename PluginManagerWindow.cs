@@ -98,6 +98,7 @@ namespace AppShelf
                     case "settings": return "настройки";
                     case "notification": return "уведомления";
                     case "background": return "фоновая работа";
+                    case "widget": return "виджеты";
                     default: return capability;
                 }
             }));
