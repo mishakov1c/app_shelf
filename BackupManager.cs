@@ -1764,9 +1764,11 @@ namespace AppShelf
                     box.Checked += delegate { Refresh(); }; box.Unchecked += delegate { Refresh(); };
                 }
                 StackPanel commands = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 4) };
-                Button all = new Button { Content = "Выбрать всё", Margin = new Thickness(0, 0, 6, 0) };
+                Button all = ActionButton("Выбрать всё", false);
+                all.Margin = new Thickness(0, 0, 6, 0);
                 all.Click += delegate { Set(available); };
-                Button minimum = new Button { Content = required ? "Минимальный набор" : "Снять выбор" };
+                Button minimum = ActionButton(required ? "Минимальный набор" : "Снять выбор", false);
+                minimum.Margin = new Thickness(0);
                 minimum.Click += delegate { Set(required ? BackupComponents.Settings : (BackupComponents)0); };
                 commands.Children.Add(all); commands.Children.Add(minimum); Panel.Children.Add(commands);
                 total = new TextBlock { Foreground = FluentUi.Secondary, TextWrapping = TextWrapping.Wrap,

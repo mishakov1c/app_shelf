@@ -168,6 +168,101 @@ namespace AppShelf
         }
     }
 
+
+    // Free canvas coordinates are measured in grid cells, not physical pixels.
+    // The same geometry is used for application and plugin widget cards.
+    [DataContract]
+    public sealed class FreeCanvasRect
+    {
+        [DataMember(Name = "x")] public int X;
+        [DataMember(Name = "y")] public int Y;
+        [DataMember(Name = "width")] public int Width;
+        [DataMember(Name = "height")] public int Height;
+
+        public FreeCanvasRect(int x, int y, int width, int height)
+        { X = x; Y = y; Width = width; Height = height; }
+
+        public FreeCanvasRect Copy()
+        { return new FreeCanvasRect(X, Y, Width, Height); }
+    }
+
+    public static class FreeCanvasLayout
+    {
+        // Bound persisted coordinates and arithmetic even for malformed profiles.
+        public const int MaxCells = 4096;
+
+        public static bool IsValid(FreeCanvasRect rect)
+        {
+            return rect != null && rect.X >= 0 && rect.Y >= 0 &&
+                rect.Width > 0 && rect.Height > 0 &&
+                rect.Width <= MaxCells && rect.Height <= MaxCells &&
+                rect.X <= MaxCells - rect.Width && rect.Y <= MaxCells - rect.Height;
+        }
+
+        public static bool Intersects(FreeCanvasRect a, FreeCanvasRect b)
+        {
+            return IsValid(a) && IsValid(b) &&
+                a.X < b.X + b.Width && b.X < a.X + a.Width &&
+                a.Y < b.Y + b.Height && b.Y < a.Y + a.Height;
+        }
+
+        public static bool CanPlace(FreeCanvasRect candidate, IEnumerable<FreeCanvasRect> occupied)
+        {
+            if (!IsValid(candidate)) return false;
+            if (occupied != null)
+                foreach (FreeCanvasRect other in occupied)
+                    if (Intersects(candidate, other)) return false;
+            return true;
+        }
+
+        // Return the earliest free position, top to bottom, then left to right.
+        // It is sufficient to inspect y=0 and existing bottom edges: a free
+        // rectangle can be moved upwards until it touches one of those edges.
+        // Jump across intersecting rectangles instead of scanning every cell.
+        // Never mutate caller-owned positions (including on a failed placement).
+        public static FreeCanvasRect FindFirstFree(int width, int height, int columns,
+            IEnumerable<FreeCanvasRect> occupied)
+        {
+            if (columns <= 0 || columns > MaxCells || width <= 0 || width > columns ||
+                height <= 0 || height > MaxCells) return null;
+            List<FreeCanvasRect> cards = new List<FreeCanvasRect>();
+            SortedSet<int> rows = new SortedSet<int>();
+            rows.Add(0);
+            if (occupied != null)
+                foreach (FreeCanvasRect rect in occupied)
+                {
+                    if (!IsValid(rect)) continue;
+                    cards.Add(rect);
+                    if (rect.Y + rect.Height <= MaxCells - height)
+                        rows.Add(rect.Y + rect.Height);
+                }
+
+            foreach (int y in rows)
+            {
+                int x = 0;
+                while (x <= columns - width)
+                {
+                    FreeCanvasRect candidate = new FreeCanvasRect(x, y, width, height);
+                    int next = x;
+                    foreach (FreeCanvasRect other in cards)
+                        if (Intersects(candidate, other))
+                            next = Math.Max(next, other.X + other.Width);
+                    if (next == x) return candidate;
+                    x = next;
+                }
+            }
+            return null;
+        }
+
+        public static int Snap(double dip, int step)
+        {
+            if (step <= 0 || Double.IsNaN(dip) || Double.IsInfinity(dip))
+                throw new ArgumentOutOfRangeException(step <= 0 ? "step" : "dip");
+            return (int)Math.Min(MaxCells, Math.Max(0, Math.Round(dip / step,
+                MidpointRounding.AwayFromZero)));
+        }
+    }
+
     [DataContract]
     public sealed class AppConfig
     {

@@ -160,6 +160,30 @@ namespace AppShelf.Sample
             window.Activate();
         }
 
+        private static void ApplyDarkTheme(Control control)
+        {
+            Color surface = Color.FromArgb(20, 28, 42);
+            Color field = Color.FromArgb(31, 42, 60);
+            Color foreground = Color.FromArgb(235, 240, 248);
+            control.ForeColor = foreground;
+            control.BackColor = surface;
+            TextBox editor = control as TextBox;
+            if (editor != null) editor.BackColor = field;
+            Button button = control as Button;
+            if (button != null)
+            {
+                button.UseVisualStyleBackColor = false;
+                button.FlatStyle = FlatStyle.Flat;
+                button.BackColor = field;
+                button.FlatAppearance.BorderColor = Color.FromArgb(59, 75, 98);
+                button.FlatAppearance.MouseOverBackColor = Color.FromArgb(46, 60, 81);
+                button.FlatAppearance.MouseDownBackColor = Color.FromArgb(39, 52, 72);
+            }
+            CheckBox checkbox = control as CheckBox;
+            if (checkbox != null) checkbox.UseVisualStyleBackColor = false;
+            foreach (Control child in control.Controls) ApplyDarkTheme(child);
+        }
+
         private static void OpenNotes()
         {
             if (notesWindow != null && !notesWindow.IsDisposed) { ShowExisting(notesWindow); return; }
@@ -190,6 +214,7 @@ namespace AppShelf.Sample
             {
                 if (args.CloseReason == CloseReason.UserClosing) { args.Cancel = true; form.Hide(); }
             };
+            ApplyDarkTheme(form);
             notesWindow = form;
             form.Show();
         }
@@ -216,6 +241,7 @@ namespace AppShelf.Sample
                 }
                 catch (Exception) { status.Text = "Не удалось сохранить настройки."; }
             };
+            ApplyDarkTheme(form);
             settingsWindow = form;
             form.Show();
         }
