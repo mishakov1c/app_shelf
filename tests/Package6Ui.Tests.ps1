@@ -2611,6 +2611,11 @@ public static class Package6Tests
                     "Old layout changed during migration");
                 Call(w, "SetGroupLayoutMode", "canvas"); Drain();
                 Assert(Load().CanvasPositions["app:Вторая"].X == 0, "Switching back replaced saved canvas");
+                Call(w, "ArrangeCanvas", "reset"); Drain();
+                Assert(Load().CanvasInitialized && Load().CanvasPositions == null, "Reset did not clear saved geometry");
+                Call(w, "SetGroupLayoutMode", "free"); Drain();
+                Call(w, "SetGroupLayoutMode", "canvas"); Drain();
+                Assert(Load().CanvasPositions == null, "Reset was overwritten by repeated legacy migration");
             } finally { w.Close(); }
         });
         Case("free zones use content heights before scrolling a small viewport", delegate {

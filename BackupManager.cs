@@ -248,6 +248,7 @@ namespace AppShelf
                 AppConfig common = config.Copy(); PluginSettingsDocument.Clear(common);
                 common.CanvasPositions = FreeCanvasLayout.SelectPositions(config.CanvasPositions, false);
                 common.CanvasGridStep = config.CanvasGridStep; common.CanvasViewportMode = config.CanvasViewportMode;
+                common.CanvasInitialized = config.CanvasInitialized;
                 long size = SerializedSize(common);
                 foreach (AppItem item in common.Items)
                     if (item != null && ConfigStore.IsOwnedShortcut(item.Path)) size += Length(item.Path);
@@ -340,7 +341,8 @@ namespace AppShelf
             portable.PluginSettingsIncluded = Includes(components, BackupComponents.WidgetLayout);
             if (!portable.PluginSettingsIncluded)
             { portable.WidgetGroups = null; portable.WidgetIndicators = null;
-                portable.CanvasPositions = FreeCanvasLayout.SelectPositions(portable.CanvasPositions, false); }
+                portable.CanvasPositions = FreeCanvasLayout.SelectPositions(portable.CanvasPositions, false);
+                if (portable.CanvasPositions.Count == 0) portable.CanvasPositions = null; }
             Dictionary<string, string> owned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (AppItem item in portable.Items)
             {
@@ -802,7 +804,9 @@ namespace AppShelf
                     List<PluginWidgetPlacementConfig> indicators = restored.WidgetIndicators;
                     string background = restored.MainBackgroundPreset;
                     Dictionary<string, FreeCanvasRect> archivePositions = restored.CanvasPositions;
-                    int archiveStep = FreeCanvasLayout.NormalizeStep(restored.CanvasGridStep);
+                    int? archiveGridStep = restored.CanvasGridStep;
+                    bool canvasInitialized = restoreSettings ? restored.CanvasInitialized : current.CanvasInitialized;
+                    int archiveStep = FreeCanvasLayout.NormalizeStep(archiveGridStep);
                     int currentStep = FreeCanvasLayout.NormalizeStep(current.CanvasGridStep);
                     int targetStep = restoreSettings ? archiveStep : currentStep;
                     string viewportMode = restoreSettings ? restored.CanvasViewportMode : current.CanvasViewportMode;
@@ -812,7 +816,8 @@ namespace AppShelf
                     restored.CanvasPositions = FreeCanvasLayout.MergePositions(
                         restoreSettings ? archivePositions : current.CanvasPositions, restoreSettings ? archiveStep : currentStep,
                         restoreWidgets ? archivePositions : current.CanvasPositions, restoreWidgets ? archiveStep : currentStep, targetStep);
-                    restored.CanvasGridStep = restoreSettings ? (archivePositions == null && restored.CanvasPositions == null ? (int?)null : targetStep) : current.CanvasGridStep;
+                    restored.CanvasGridStep = restoreSettings ? archiveGridStep : current.CanvasGridStep;
+                    restored.CanvasInitialized = canvasInitialized || restored.CanvasPositions != null;
                     restored.CanvasViewportMode = viewportMode;
                     restored.MainBackgroundPreset = restoreBackgrounds ? background : current.MainBackgroundPreset;
                 }

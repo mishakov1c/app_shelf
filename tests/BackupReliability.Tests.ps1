@@ -1113,14 +1113,14 @@ public static class BackupTests
     private static void CanvasBackupRoundtrip()
     {
         AppConfig source = Loaded();
-        source.CanvasGridStep = 20; source.CanvasViewportMode = "adaptive";
+        source.CanvasGridStep = 20; source.CanvasViewportMode = "adaptive"; source.CanvasInitialized = true;
         source.CanvasPositions = new Dictionary<string, FreeCanvasRect> {
             { "app:Work", new FreeCanvasRect(2, 3, 12, 8) },
             { "widget:1", new FreeCanvasRect(20, 3, 20, 10) }
         };
         ConfigStore.Save(source);
         Assert(!File.ReadAllText(ConfigStore.FilePath).Contains("canvasPositions"), "Canvas positions leaked into shared file");
-        Assert(Loaded().CanvasPositions["widget:1"].X == 20, "Sidecar lost canvas position");
+        Assert(Loaded().CanvasPositions["widget:1"].X == 20 && Loaded().CanvasInitialized, "Sidecar lost canvas position");
         string archive = Path.Combine(Root, "canvas.zip");
         BackupStore.ExportSelected(archive, source, Reminders("A"), null, BackupComponents.Settings | BackupComponents.WidgetLayout);
         AppConfig current = Loaded();

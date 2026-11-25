@@ -439,6 +439,8 @@ namespace AppShelf
                 Cursor = Cursors.SizeNWSE, ToolTip = "Изменить размер группы",
                 Background = Brushes.Transparent, Focusable = false
             };
+            FrameworkElementFactory hit = new FrameworkElementFactory(typeof(Border));
+            hit.SetValue(Border.BackgroundProperty, Brushes.Transparent);
             FrameworkElementFactory mark = new FrameworkElementFactory(typeof(TextBlock));
             mark.SetValue(TextBlock.TextProperty, "◢");
             mark.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(150, 168, 193)));
@@ -446,7 +448,8 @@ namespace AppShelf
             mark.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Right);
             mark.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Bottom);
             ControlTemplate template = new ControlTemplate(typeof(System.Windows.Controls.Primitives.Thumb));
-            template.VisualTree = mark;
+            hit.AppendChild(mark);
+            template.VisualTree = hit;
             grip.Template = template;
             entry.Grip = grip;
             SetZIndex(grip, 10);
@@ -793,6 +796,9 @@ namespace AppShelf
         [DataMember(Name = "canvasViewportMode", EmitDefaultValue = false)]
         public string CanvasViewportMode;
 
+        [DataMember(Name = "canvasInitialized", EmitDefaultValue = false)]
+        public bool CanvasInitialized;
+
         [DataMember(Name = "groupAlignment", EmitDefaultValue = false)]
         public string GroupAlignment;
 
@@ -1003,6 +1009,7 @@ namespace AppShelf
         [DataMember(Name = "canvasPositions", EmitDefaultValue = false)] public Dictionary<string, FreeCanvasRect> CanvasPositions;
         [DataMember(Name = "canvasGridStep", EmitDefaultValue = false)] public int? CanvasGridStep;
         [DataMember(Name = "canvasViewportMode", EmitDefaultValue = false)] public string CanvasViewportMode;
+        [DataMember(Name = "canvasInitialized", EmitDefaultValue = false)] public bool CanvasInitialized;
         [DataMember(Name = "widgetGroups", EmitDefaultValue = false)]
         public List<PluginWidgetGroupConfig> WidgetGroups;
         [DataMember(Name = "widgetIndicators", EmitDefaultValue = false)]
@@ -1028,6 +1035,7 @@ namespace AppShelf
         {
             return new PluginSettingsDocument {
                 CanvasPositions = c.CanvasPositions, CanvasGridStep = c.CanvasGridStep, CanvasViewportMode = c.CanvasViewportMode,
+                CanvasInitialized = c.CanvasInitialized,
                 WidgetGroups = c.WidgetGroups, WidgetIndicators = c.WidgetIndicators,
                 BackupExecutable = c.BackupExecutable, BackupPluginPackages = c.BackupPluginPackages,
                 BackupReminders = c.BackupReminders, BackupCollections = c.BackupCollections,
@@ -1043,6 +1051,7 @@ namespace AppShelf
             c.CanvasPositions = FreeCanvasLayout.MergePositions(CanvasPositions, FreeCanvasLayout.NormalizeStep(CanvasGridStep),
                 CanvasPositions, FreeCanvasLayout.NormalizeStep(CanvasGridStep), FreeCanvasLayout.NormalizeStep(CanvasGridStep));
             c.CanvasGridStep = CanvasGridStep; c.CanvasViewportMode = CanvasViewportMode;
+            c.CanvasInitialized = CanvasInitialized || c.CanvasPositions != null;
             c.WidgetGroups = WidgetGroups; c.WidgetIndicators = WidgetIndicators;
             c.BackupExecutable = BackupExecutable; c.BackupPluginPackages = BackupPluginPackages;
             c.BackupReminders = BackupReminders; c.BackupCollections = BackupCollections;
@@ -4569,6 +4578,7 @@ namespace AppShelf
         {
             if (_canvasBoard == null || !_canSave || (_search != null && !String.IsNullOrWhiteSpace(_search.Text))) return;
             AppConfig pending = _config.Copy();
+            pending.CanvasInitialized = true;
             if (command == "reset") pending.CanvasPositions = null;
             else
             {
@@ -4583,7 +4593,7 @@ namespace AppShelf
 
         private void MigrateCanvasLayout(AppConfig pending)
         {
-            if (pending.GroupLayoutMode != "canvas" || !_config.GroupingEnabled ||
+            if (pending.GroupLayoutMode != "canvas" || pending.CanvasInitialized || !_config.GroupingEnabled ||
                 NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "canvas" ||
                 (pending.CanvasPositions != null && pending.CanvasPositions.Count != 0) ||
                 (_search != null && !String.IsNullOrWhiteSpace(_search.Text))) return;
@@ -4610,12 +4620,14 @@ namespace AppShelf
                 positions.Add(item.Key, rect); occupied.Add(rect);
             }
             if (positions.Count != 0) pending.CanvasPositions = positions;
+            pending.CanvasInitialized = true;
         }
 
         private bool SaveCanvasPlacement(string key, FreeCanvasRect candidate)
         {
             if (_canvasBoard == null || !CanEditCanvas() || !FreeCanvasLayout.IsValid(candidate)) return false;
             AppConfig pending = _config.Copy();
+            pending.CanvasInitialized = true;
             if (pending.CanvasPositions == null)
                 pending.CanvasPositions = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
             Dictionary<string, FreeCanvasRect> positions = _canvasBoard.Capture();
