@@ -185,6 +185,7 @@ namespace AppShelf
         private Brush groupBackground = FluentUi.Surface, groupBorder = FluentUi.BorderColor;
         private int nextGroupNumber;
         private Dictionary<string, StackPanel> board;
+        private bool canvasAttached;
         private string[] zones;
         private Func<string, string> zoneLabel;
         private Func<string, string> renameGroup;
@@ -292,12 +293,29 @@ namespace AppShelf
         {
             ClearWidgetDropPreview();
             foreach (WidgetGroup group in groups) DetachCard(group);
-            board = null;
+            board = null; canvasAttached = false;
+        }
+
+        internal List<KeyValuePair<string, Border>> AttachCanvas()
+        {
+            canvasAttached = true;
+            List<KeyValuePair<string, Border>> cards = new List<KeyValuePair<string, Border>>();
+            foreach (WidgetGroup group in groups)
+            {
+                DetachCard(group);
+                cards.Add(new KeyValuePair<string, Border>("widget:" + group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture), group.Card));
+            }
+            return cards;
+        }
+
+        internal string CanvasDragKey(IDataObject data)
+        {
+            return canvasAttached && IsGroupDrag(data) ? "widget:" + draggingGroup.Number.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
         }
 
         internal void AttachBoard(Dictionary<string, StackPanel> hosts, string fallback)
         {
-            board = hosts; defaultZone = fallback;
+            board = hosts; canvasAttached = false; defaultZone = fallback;
             List<WidgetGroup> ordered = new List<WidgetGroup>(groups);
             ordered.Sort(delegate(WidgetGroup a, WidgetGroup b) {
                 int order = a.Order.CompareTo(b.Order);
@@ -324,7 +342,7 @@ namespace AppShelf
 
         private void ResizeGroup(WidgetGroup group)
         {
-            if (board != null) return;
+            if (board != null || canvasAttached) return;
             double available = Surface.ActualWidth > 8 ? Surface.ActualWidth - 8 : 400;
             group.Card.Width = Math.Max(1, Math.Min(available, 400));
         }
@@ -390,7 +408,7 @@ namespace AppShelf
         private bool WidgetDropTarget(DragEventArgs e, out WidgetGroup group, out int row, out int column)
         {
             group = null; row = column = 0;
-            if (board == null || !canEdit() || !IsWidgetDrag(e.Data)) return false;
+            if ((board == null && !canvasAttached) || !canEdit() || !IsWidgetDrag(e.Data)) return false;
             DependencyObject node = e.OriginalSource as DependencyObject;
             while (node != null)
             {
@@ -527,7 +545,7 @@ namespace AppShelf
             grip.PreviewMouseLeftButtonUp += delegate { candidate = false; grip.ReleaseMouseCapture(); };
             grip.MouseMove += delegate(object sender, MouseEventArgs e)
             {
-                if (!candidate || e.LeftButton != MouseButtonState.Pressed || !canEdit() || board == null ||
+                if (!candidate || e.LeftButton != MouseButtonState.Pressed || !canEdit() || (board == null && !canvasAttached) ||
                     !entries.Contains(entry)) return;
                 Point now = e.GetPosition(grip);
                 if (Math.Abs(now.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
@@ -584,7 +602,7 @@ namespace AppShelf
             group.Grip.PreviewMouseLeftButtonUp += delegate { candidate = false; group.Grip.ReleaseMouseCapture(); };
             group.Grip.MouseMove += delegate(object sender, MouseEventArgs e)
             {
-                if (!candidate || e.LeftButton != MouseButtonState.Pressed || !canEdit() || board == null) return;
+                if (!candidate || e.LeftButton != MouseButtonState.Pressed || !canEdit() || (board == null && !canvasAttached)) return;
                 Point now = e.GetPosition(group.Grip);
                 if (Math.Abs(now.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
                     Math.Abs(now.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
@@ -592,7 +610,7 @@ namespace AppShelf
                 draggingGroup = group;
                 try { DragDrop.DoDragDrop(group.Grip,
                     new DataObject(GroupDragFormat, group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)), DragDropEffects.Move); }
-                finally { draggingGroup = null; }
+                finally { draggingGroup = null; FreeCanvasBoard canvas = group.Card.Parent as FreeCanvasBoard; if (canvas != null) canvas.ShowGrid(false); }
             };
         }
 
@@ -923,7 +941,7 @@ namespace AppShelf
             Display(entry, SelectedLayout(entry, widget), async delegate(string command)
             {
                 if (!entries.Contains(entry) || entry.Revision != revision || entry.ActionBusy || entry.Busy ||
-                    (entry.Group != null && zones != null && board == null) ||
+                    (entry.Group != null && zones != null && board == null && !canvasAttached) ||
                     !Current(state(entry.PluginId), entry.Version, entry.ProcessId))
                     throw new InvalidOperationException("Виджет устарел или обновляется.");
                 entry.ActionBusy = true;
@@ -1000,7 +1018,7 @@ namespace AppShelf
         internal async Task RefreshVisibleAsync(Func<bool> active, Func<bool> indicatorsVisible = null)
         {
             Func<Placement, bool> eligible = delegate(Placement p) {
-                return p.Group == null ? indicatorsVisible != null && indicatorsVisible() : board != null && active(); };
+                return p.Group == null ? indicatorsVisible != null && indicatorsVisible() : (board != null || canvasAttached) && active(); };
             if (refreshing || draggingWidget != null || draggingGroup != null || automaticRead == null || !entries.Exists(delegate(Placement p) { return eligible(p); })) return;
             refreshing = true;
             try
@@ -1105,6 +1123,16 @@ namespace AppShelf
             {
                 AppConfig pending = _config.Copy();
                 pending.WidgetGroups = _pluginWidgets.CaptureLayout();
+                if (pending.CanvasPositions != null)
+                {
+                    HashSet<string> keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (pending.WidgetGroups != null)
+                        foreach (PluginWidgetGroupConfig group in pending.WidgetGroups)
+                            keys.Add("widget:" + group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    foreach (string key in new List<string>(pending.CanvasPositions.Keys))
+                        if (key.StartsWith("widget:", StringComparison.OrdinalIgnoreCase) && !keys.Contains(key))
+                            pending.CanvasPositions.Remove(key);
+                }
                 pending.WidgetIndicators = _pluginWidgets.CaptureIndicators();
                 saved = SaveConfigChanges(pending);
             }
@@ -1115,7 +1143,7 @@ namespace AppShelf
 
         private bool WidgetsInFreeLayout()
         {
-            return _config.GroupingEnabled && NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "free";
+            return _config.GroupingEnabled && (NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "free" || NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "canvas");
         }
 
         private void ShowAddPluginWidget() { ShowPluginWidgetPicker(false); }
