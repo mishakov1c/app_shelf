@@ -26,6 +26,26 @@ namespace AppShelf
         [DataMember(Name = "message", IsRequired = true)] public string Message { get; set; }
     }
 
+    // Declarative snapshots only: the host owns layout and renders plain text.
+    [DataContract]
+    internal sealed class PluginWidget
+    {
+        [DataMember(Name = "id", IsRequired = true)] public string Id { get; set; }
+        [DataMember(Name = "title", IsRequired = true)] public string Title { get; set; }
+        [DataMember(Name = "kind", IsRequired = true)] public string Kind { get; set; }
+        [DataMember(Name = "elements", IsRequired = true)] public PluginWidgetElement[] Elements { get; set; }
+    }
+
+    [DataContract]
+    internal sealed class PluginWidgetElement
+    {
+        [DataMember(Name = "type", IsRequired = true)] public string Type { get; set; }
+        [DataMember(Name = "label", IsRequired = true)] public string Label { get; set; }
+        [DataMember(Name = "value", EmitDefaultValue = false)] public string Value { get; set; }
+        [DataMember(Name = "percent", EmitDefaultValue = false)] public double? Percent { get; set; }
+        [DataMember(Name = "commandId", EmitDefaultValue = false)] public string CommandId { get; set; }
+    }
+
     [DataContract]
     internal sealed class PluginRequest
     {
@@ -49,6 +69,7 @@ namespace AppShelf
         [DataMember(Name = "pluginVersion", EmitDefaultValue = false)] public string PluginVersion { get; set; }
         [DataMember(Name = "commands", EmitDefaultValue = false)] public PluginCommand[] Commands { get; set; }
         [DataMember(Name = "notifications", EmitDefaultValue = false)] public PluginNotice[] Notifications { get; set; }
+        [DataMember(Name = "widgets", EmitDefaultValue = false)] public PluginWidget[] Widgets { get; set; }
         [DataMember(Name = "error", EmitDefaultValue = false)] public string Error { get; set; }
     }
 
@@ -165,6 +186,50 @@ namespace AppShelf
                 value.IndexOf('\0') < 0;
         }
 
+        private void ValidateWidgets(PluginWidget[] widgets)
+        {
+            if (widgets == null || widgets.Length > 8)
+                throw new InvalidDataException("Invalid widget snapshot.");
+            HashSet<string> ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (PluginWidget widget in widgets)
+            {
+                if (widget == null || widget.Id == null || !CommandId.IsMatch(widget.Id) ||
+                    !ids.Add(widget.Id) || !TextWithin(widget.Title, 100) ||
+                    (widget.Kind != "card" && widget.Kind != "tile" && widget.Kind != "indicator") ||
+                    widget.Elements == null || widget.Elements.Length == 0 || widget.Elements.Length > 12)
+                    throw new InvalidDataException("Invalid widget descriptor.");
+                if (widget.Kind == "indicator" && widget.Elements.Length > 2)
+                    throw new InvalidDataException("Too many indicator elements.");
+                foreach (PluginWidgetElement element in widget.Elements)
+                {
+                    if (element == null || !TextWithin(element.Label, 240))
+                        throw new InvalidDataException("Invalid widget element.");
+                    bool hasValue = element.Value != null, hasPercent = element.Percent.HasValue,
+                        hasCommand = element.CommandId != null;
+                    switch (element.Type)
+                    {
+                        case "text":
+                            if (hasValue || hasPercent || hasCommand) throw new InvalidDataException("Invalid text element.");
+                            break;
+                        case "metric":
+                            if (!TextWithin(element.Value, 100) || hasPercent || hasCommand)
+                                throw new InvalidDataException("Invalid metric element.");
+                            break;
+                        case "progress":
+                            if (hasValue || hasCommand || !hasPercent || Double.IsNaN(element.Percent.Value) ||
+                                Double.IsInfinity(element.Percent.Value) || element.Percent.Value < 0 || element.Percent.Value > 100)
+                                throw new InvalidDataException("Invalid progress element.");
+                            break;
+                        case "action":
+                            if (hasValue || hasPercent || !hasCommand || !commands.Contains(element.CommandId))
+                                throw new InvalidDataException("Unknown widget action.");
+                            break;
+                        default: throw new InvalidDataException("Unknown widget element type.");
+                    }
+                }
+            }
+        }
+
         private void ValidateResponse(PluginRequest request, PluginResponse reply)
         {
             if (reply.ApiVersion != ApiVersion || reply.Id != request.Id)
@@ -172,11 +237,13 @@ namespace AppShelf
             if (!reply.Ok)
             {
                 if (!TextWithin(reply.Error, 1000) || reply.Commands != null ||
-                    reply.Notifications != null || reply.PluginId != null || reply.PluginVersion != null)
+                    reply.Notifications != null || reply.Widgets != null || reply.PluginId != null || reply.PluginVersion != null)
                     throw new InvalidDataException("Invalid plugin error response.");
                 return;
             }
             if (reply.Error != null) throw new InvalidDataException("Unexpected plugin error.");
+            if (request.Method == "getWidgets") ValidateWidgets(reply.Widgets);
+            else if (reply.Widgets != null) throw new InvalidDataException("Unexpected plugin widgets.");
             if (request.Method == "hello")
             {
                 if (reply.PluginId != expectedId || reply.PluginVersion != expectedVersion ||
@@ -236,6 +303,9 @@ namespace AppShelf
                     break;
                 case "poll":
                     if (!capabilities.Contains("notification")) throw new InvalidOperationException("Plugin has no notifications.");
+                    break;
+                case "getWidgets":
+                    if (!capabilities.Contains("widget")) throw new InvalidOperationException("Plugin has no widgets.");
                     break;
                 case "ping":
                 case "shutdown": break;
@@ -331,6 +401,11 @@ namespace AppShelf
         internal Task<PluginResponse> PollAsync(int timeoutMs, CancellationToken cancel)
         {
             return Exchange(new PluginRequest { Method = "poll" }, timeoutMs, cancel);
+        }
+
+        internal Task<PluginResponse> GetWidgetsAsync(int timeoutMs, CancellationToken cancel)
+        {
+            return Exchange(new PluginRequest { Method = "getWidgets" }, timeoutMs, cancel);
         }
 
         internal Task<PluginResponse> PingAsync(int timeoutMs, CancellationToken cancel)
