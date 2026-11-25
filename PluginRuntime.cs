@@ -604,7 +604,7 @@ namespace AppShelf
         }
 
         // A snapshot and its process identity are captured under the same runtime gate.
-        internal async Task<PluginWidgetSnapshot> ReadWidgetSnapshotAsync(string id, string version, bool activate)
+        internal async Task<PluginWidgetSnapshot> ReadWidgetSnapshotAsync(string id, string version, bool activate, bool automatic = false)
         {
             PluginWidgetSnapshot result = null;
             await Run(delegate
@@ -615,8 +615,11 @@ namespace AppShelf
                     ? store.ReadEnabled(id, out executable) : CheckActionVersion(id, version);
                 if (Array.IndexOf(manifest.Capabilities, "widget") < 0)
                     throw new InvalidOperationException("Плагин не предоставляет виджеты.");
-                if (activate) StartCore(id, false, false);
                 Slot slot = GetSlot(id);
+                if (activate && automatic && (slot.Status == "error" || slot.Status == "stopping" ||
+                    (slot.Child != null && slot.Child.HasExited)))
+                    throw new InvalidOperationException("Плагин требует ручного перезапуска.");
+                if (activate) StartCore(id, false, false);
                 PluginChild child = slot.Child;
                 if (slot.Status != "running" || child == null || child.HasExited ||
                     child.Manifest.Version != manifest.Version)

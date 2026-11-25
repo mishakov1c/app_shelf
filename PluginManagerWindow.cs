@@ -497,7 +497,12 @@ namespace AppShelf
                 {
                     List<PluginDelivery> deliveries = await runtime.CheckHealthAsync();
                     if (_pluginRuntimeStopping) return;
-                    if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
+                    if (_pluginWidgets != null)
+                    {
+                        _pluginWidgets.InvalidateStopped();
+                        await _pluginWidgets.RefreshVisibleAsync(delegate { return !_pluginRuntimeStopping && WidgetsInFreeLayout() && IsVisible && WindowState != WindowState.Minimized; });
+                        if (_pluginRuntimeStopping) return;
+                    }
                     foreach (PluginDelivery delivery in deliveries)
                         if (_pluginNotices.Count < 12) _pluginNotices.Enqueue(delivery);
                     if (_pluginNotices.Count > 0 && _pluginNoticeTimer != null && !_pluginNoticeTimer.IsEnabled)
@@ -511,7 +516,12 @@ namespace AppShelf
             _pluginNoticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
             _pluginNoticeTimer.Tick += delegate { DeliverPluginNotice(); };
             _pluginHealthTimer.Start();
-            try { await runtime.StartBackgroundsAsync(); }
+            try
+            {
+                await runtime.StartBackgroundsAsync();
+                if (!_pluginRuntimeStopping && _pluginWidgets != null)
+                    await _pluginWidgets.RefreshVisibleAsync(delegate { return !_pluginRuntimeStopping && WidgetsInFreeLayout() && IsVisible && WindowState != WindowState.Minimized; });
+            }
             catch (Exception error) { ConfigStore.Log(error); }
         }
 

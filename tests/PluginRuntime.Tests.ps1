@@ -206,6 +206,9 @@ public static class PluginRuntimeTests {
             try { runtime.GetWidgetsAsync(fg,"1.0.0").GetAwaiter().GetResult(); throw new Exception("failed widget restarted"); }
             catch(InvalidOperationException) { count++; }
             Assert(Pid(fgData)==foreground,"widget refresh did not restart failed child");
+            try { runtime.ReadWidgetSnapshotAsync(fg,null,true,true).GetAwaiter().GetResult(); throw new Exception("automatic activation restarted a failed plugin"); }
+            catch(InvalidOperationException) { count++; }
+            Assert(Pid(fgData)==foreground,"automatic activation restarted failed child");
             File.Delete(Path.Combine(fgData,"mode"));
             runtime.StartAsync(fg,true).GetAwaiter().GetResult(); foreground=Pid(fgData);
             runtime.RemoveAsync(fg).GetAwaiter().GetResult();

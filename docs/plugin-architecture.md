@@ -179,3 +179,12 @@ Optional `widgetGroups` in apps.json stores group number, title, zone, order, co
 Placement changes use the ordinary configuration save path; a failed save reloads the last valid placement metadata. Full ZIP export includes the field through apps.json. Restored settings construct inactive placeholders even if plugins are missing/disabled; loading the layout alone performs no RPC or plugin start. The user can explicitly refresh an unavailable widget to activate the currently installed, enabled, trusted version. Refresh revalidates the version and process; no old command callbacks survive replacement. Saved layout is independent of the selected app-group mode.
 
 Automatic widget refresh, dragging individual widgets and bottom-panel indicators are follow-up work.
+
+
+## Stage 14: bounded automatic widget refresh
+
+The existing 15-second runtime health tick also schedules widget data refresh when the main window is visible, not minimized, and the free board is active. After background startup an initial refresh is attempted. Each tick handles up to four distinct plugin IDs round-robin; a single validated snapshot feeds all their placements. The workspace skips overlapping batches and plugins with an in-flight widget command or refresh. Identical visible content does not rebuild controls. A missing widget or unsupported selected size displays a placeholder; a failed read does not expose stale values as current.
+
+An inactive persisted placement may request one startup activation of its currently enabled/trusted package when the board first becomes visible. This requires the regular package approval/enabled checks and is not permission to enable or install a package. The runtime rejects automatic activation of an errored or exited process under its operation gate. Subsequent periodic reads are non-activating, version-bound to the running child. Manual refresh remains an explicit activation path for unavailable placements. Hidden layouts, minimized windows and closed hosts do not initiate widget refreshes; no new timer or uncontrolled retry loop. Live snapshots are not persisted.
+
+Tests cover batch deduplication, unchanged content, hidden layouts and rejection of failed-process auto-restart.

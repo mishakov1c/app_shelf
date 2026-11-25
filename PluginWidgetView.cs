@@ -166,7 +166,8 @@ namespace AppShelf
         {
             internal string PluginId, Version, WidgetId, Title, Kind, Size;
             internal int ProcessId, Revision, Row, Column;
-            internal bool Busy, Stale, RestorePending;
+            internal bool Busy, Stale, RestorePending, ActionBusy;
+            internal string UnavailableMessage;
             internal ContentControl Host;
             internal WidgetGroup Group;
             internal PluginWidget Snapshot;
@@ -188,6 +189,9 @@ namespace AppShelf
         private Func<bool> canEdit = delegate { return true; };
         private string defaultZone = "top-left";
         private WidgetGroup draggingGroup;
+        private bool refreshing;
+        private int refreshCursor;
+        private Func<string, string, bool, Task<PluginWidgetSnapshot>> automaticRead;
         internal const string GroupDragFormat = "AppShelf.WidgetGroup";
         internal WrapPanel Surface { get; private set; }
         internal bool HasWidgets { get { return entries.Count != 0; } }
@@ -618,23 +622,44 @@ namespace AppShelf
             entry.Host.Content = scroll;
         }
 
+        private static bool SameElements(PluginWidgetElement[] a, PluginWidgetElement[] b)
+        {
+            if (Object.ReferenceEquals(a, b)) return true;
+            if (a == null || b == null || a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++)
+                if (a[i].Type != b[i].Type || a[i].Label != b[i].Label || a[i].Value != b[i].Value ||
+                    a[i].Percent != b[i].Percent || a[i].CommandId != b[i].CommandId) return false;
+            return true;
+        }
+
+        internal void ConfigureAutomaticRefresh(Func<string, string, bool, Task<PluginWidgetSnapshot>> reader)
+        {
+            automaticRead = reader;
+        }
+
         private void Render(Placement entry, PluginWidget widget)
         {
             entry.Snapshot = widget;
             entry.Stale = false;
+            entry.UnavailableMessage = null;
             int revision = ++entry.Revision;
-            Display(entry, widget.ForSize(entry.Size), delegate(string command)
+            Display(entry, widget.ForSize(entry.Size), async delegate(string command)
             {
-                if (!entries.Contains(entry) || entry.Revision != revision ||
+                if (!entries.Contains(entry) || entry.Revision != revision || entry.ActionBusy || entry.Busy ||
+                    (zones != null && board == null) ||
                     !Current(state(entry.PluginId), entry.Version, entry.ProcessId))
-                    throw new InvalidOperationException("Виджет устарел.");
-                return invoke(entry.PluginId, entry.Version, entry.ProcessId, command);
+                    throw new InvalidOperationException("Виджет устарел или обновляется.");
+                entry.ActionBusy = true;
+                try { await invoke(entry.PluginId, entry.Version, entry.ProcessId, command); }
+                finally { entry.ActionBusy = false; }
             });
         }
 
         private void Unavailable(Placement entry, string message)
         {
+            if (entry.Stale && entry.UnavailableMessage == message) return;
             entry.Stale = true;
+            entry.UnavailableMessage = message;
             entry.Revision++;
             Display(entry, new PluginWidget { Id = entry.WidgetId,
                 Title = entry.Title, Kind = entry.Size == "quarter" ? "tile" : "card", Elements = new[] {
@@ -648,33 +673,42 @@ namespace AppShelf
                     Unavailable(entry, "Плагин недоступен. Запустите его и обновите виджет.");
         }
 
+        private void ApplySnapshot(Placement entry, PluginWidgetSnapshot snapshot)
+        {
+            if (!entries.Contains(entry)) return;
+            PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == entry.WidgetId; });
+            string version = snapshot.Version ?? entry.Version;
+            if (widget == null || !Current(state(entry.PluginId), version, snapshot.ProcessId))
+            {
+                Unavailable(entry, "Виджет недоступен в текущем сеансе плагина.");
+                return;
+            }
+            bool same = !entry.Stale && entry.ProcessId == snapshot.ProcessId && entry.Version == version &&
+                entry.Title == widget.Title && widget.SupportsSize(entry.Size) && entry.Snapshot.SupportsSize(entry.Size) &&
+                SameElements(entry.Snapshot.ForSize(entry.Size).Elements, widget.ForSize(entry.Size).Elements);
+            entry.ProcessId = snapshot.ProcessId;
+            entry.Version = version;
+            entry.RestorePending = false;
+            entry.Title = widget.Title;
+            entry.Snapshot = widget;
+            if (!widget.SupportsSize(entry.Size))
+            {
+                Unavailable(entry, "Размер больше не поддерживается. Выберите другой размер и обновите.");
+                return;
+            }
+            if (!same) Render(entry, widget);
+        }
+
         private async Task Refresh(Placement entry)
         {
-            if (!entries.Contains(entry) || entry.Busy) return;
+            if (!entries.Contains(entry) || entry.Busy || entry.ActionBusy) return;
             entry.Busy = true;
+            entry.RestorePending = false;
             try
             {
                 bool explicitActivation = zones != null && entry.Stale;
                 PluginWidgetSnapshot snapshot = await read(entry.PluginId, explicitActivation ? null : entry.Version, explicitActivation);
-                if (!entries.Contains(entry)) return;
-                PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == entry.WidgetId; });
-                string version = snapshot.Version ?? entry.Version;
-                if (widget == null || !Current(state(entry.PluginId), version, snapshot.ProcessId))
-                {
-                    Unavailable(entry, "Виджет недоступен в текущем сеансе плагина.");
-                    return;
-                }
-                entry.ProcessId = snapshot.ProcessId;
-                entry.Version = version;
-                entry.RestorePending = false;
-                entry.Title = widget.Title;
-                entry.Snapshot = widget;
-                if (!widget.SupportsSize(entry.Size))
-                {
-                    Unavailable(entry, "Размер больше не поддерживается. Выберите другой размер и обновите.");
-                    return;
-                }
-                Render(entry, widget);
+                ApplySnapshot(entry, snapshot);
             }
             catch (Exception error)
             {
@@ -682,6 +716,62 @@ namespace AppShelf
                 if (entries.Contains(entry)) Unavailable(entry, "Не удалось обновить виджет.");
             }
             finally { entry.Busy = false; }
+        }
+
+        // One bounded batch per timer tick. Read each plugin at most once, share its
+        // snapshot among placements and never queue overlapping periodic batches.
+        internal async Task RefreshVisibleAsync(Func<bool> active)
+        {
+            if (refreshing || automaticRead == null || board == null || !active()) return;
+            refreshing = true;
+            try
+            {
+                List<string> ids = new List<string>();
+                foreach (Placement entry in entries)
+                    if (!ids.Contains(entry.PluginId)) ids.Add(entry.PluginId);
+                if (ids.Count == 0) { refreshCursor = 0; return; }
+                int start = refreshCursor % ids.Count;
+                int count = Math.Min(4, ids.Count);
+                refreshCursor = (start + count) % ids.Count;
+                for (int n = 0; n < count; n++)
+                {
+                    if (board == null || !active()) break;
+                    string id = ids[(start + n) % ids.Count];
+                    List<Placement> batch = entries.FindAll(delegate(Placement p) { return p.PluginId == id; });
+                    if (batch.Count == 0 || batch.Exists(delegate(Placement p) { return p.Busy || p.ActionBusy; })) continue;
+                    PluginRuntimeState current = state(id);
+                    bool running = current != null && current.Status == "running";
+                    bool activate = !running && current != null && current.Status == "idle" &&
+                        batch.Exists(delegate(Placement p) { return p.RestorePending; });
+                    // A failed or stopped plugin is never automatically restarted.
+                    // One initial activation is allowed for a restored placement only.
+                    if (!running && !activate)
+                    {
+                        foreach (Placement p in batch)
+                        {
+                            p.RestorePending = false;
+                            if (!p.Stale) Unavailable(p, "Плагин недоступен. Обновите виджет вручную.");
+                        }
+                        continue;
+                    }
+                    foreach (Placement p in batch) { p.Busy = true; p.RestorePending = false; }
+                    try
+                    {
+                        PluginWidgetSnapshot snapshot = await automaticRead(id, running ? current.Version : null, activate);
+                        if (board != null && active())
+                            foreach (Placement p in batch) ApplySnapshot(p, snapshot);
+                    }
+                    catch (Exception error)
+                    {
+                        bool report = batch.Exists(delegate(Placement p) { return !p.Stale || p.UnavailableMessage != "Не удалось обновить виджет."; });
+                        if (report) ConfigStore.Log(error);
+                        foreach (Placement p in batch)
+                            if (entries.Contains(p)) Unavailable(p, "Не удалось обновить виджет.");
+                    }
+                    finally { foreach (Placement p in batch) p.Busy = false; }
+                }
+            }
+            finally { refreshing = false; }
         }
 
         private void Remove(Placement entry)
@@ -715,16 +805,23 @@ namespace AppShelf
             _pluginWidgets.ConfigureBoard(FreeGroupZones, FreeGroupZoneLabel,
                 delegate(string title) { return InputDialog("Переименовать группу", "Новое название:", title); },
                 delegate { return _canSave && WidgetsInFreeLayout(); });
+            _pluginWidgets.ConfigureAutomaticRefresh(delegate(string id, string version, bool activate)
+            { return GetPluginRuntime().ReadWidgetSnapshotAsync(id, version, activate, true); });
             _pluginWidgets.RestoreLayout(_config.WidgetGroups);
             return _pluginWidgets.Surface;
         }
 
         private void SavePluginWidgetLayout()
         {
-            AppConfig pending = _config.Copy();
-            pending.WidgetGroups = _pluginWidgets.CaptureLayout();
-            if (!SaveConfigChanges(pending))
-                _pluginWidgets.RestoreLayout(_config.WidgetGroups);
+            bool saved = false;
+            try
+            {
+                AppConfig pending = _config.Copy();
+                pending.WidgetGroups = _pluginWidgets.CaptureLayout();
+                saved = SaveConfigChanges(pending);
+            }
+            catch (Exception error) { ShowError("Не удалось сохранить раскладку виджетов.", error); }
+            if (!saved) _pluginWidgets.RestoreLayout(_config.WidgetGroups);
             RenderTiles();
         }
 

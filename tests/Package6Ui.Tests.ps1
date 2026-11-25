@@ -538,6 +538,56 @@ public static class Package6Tests
                 "Restore lost placement metadata or executed plugin");
             workspace.Clear();
         });
+        Case("automatic widget refresh batches placements, skips hidden layouts and never restarts errors", delegate {
+            PluginRuntimeState current = new PluginRuntimeState { Status = "idle" };
+            PluginWidget first = new PluginWidget { Id = "one", Kind = "tile", Title = "One",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "A", Value = "100" } } };
+            PluginWidget second = new PluginWidget { Id = "two", Kind = "tile", Title = "Two",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "B", Value = "200" } } };
+            PluginWidgetSnapshot snapshot = new PluginWidgetSnapshot { ProcessId = 42, Version = "1.0.0", Widgets = new[] { first, second } };
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(delegate { return current; },
+                delegate { throw new Exception("Periodic refresh used manual activation"); },
+                delegate { throw new Exception("Unexpected command"); }, delegate {});
+            workspace.ConfigureBoard(new[] { "top-left" }, delegate(string key) { return key; }, delegate { return null; }, delegate { return true; });
+            workspace.RestoreLayout(new List<PluginWidgetGroupConfig> { new PluginWidgetGroupConfig {
+                Number = 1, Title = "Widgets", Zone = "top-left", Order = 0,
+                Widgets = new List<PluginWidgetPlacementConfig> {
+                    new PluginWidgetPlacementConfig { PluginId = "test.widget", WidgetId = "one", Version = "1.0.0",
+                        Title = "One", Size = "quarter", Row = 0, Column = 0 },
+                    new PluginWidgetPlacementConfig { PluginId = "test.widget", WidgetId = "two", Version = "1.0.0",
+                        Title = "Two", Size = "quarter", Row = 0, Column = 1 } } } });
+            StackPanel host = new StackPanel();
+            workspace.AttachBoard(new Dictionary<string, StackPanel> { { "top-left", host } }, "top-left");
+            int reads = 0, activations = 0;
+            workspace.ConfigureAutomaticRefresh(delegate(string id, string version, bool activate) {
+                Assert(id == "test.widget", "Wrong plugin read"); reads++;
+                if (activate) {
+                    activations++;
+                    Assert(version == null && current.Status == "idle", "Invalid startup activation");
+                    current = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+                } else Assert(version == "1.0.0", "Running refresh did not bind version");
+                return Task.FromResult(snapshot);
+            });
+            workspace.RefreshVisibleAsync(delegate { return false; }).GetAwaiter().GetResult();
+            Assert(reads == 0, "Hidden workspace performed RPC");
+            workspace.RefreshVisibleAsync(delegate { return true; }).GetAwaiter().GetResult();
+            Grid cells = (Grid)((StackPanel)((Border)host.Children[0]).Child).Children[1];
+            ContentControl firstHost = (ContentControl)cells.Children[0];
+            Assert(reads == 1 && activations == 1 &&
+                Controls<TextBlock>(cells).Exists(delegate(TextBlock text) { return text.Text == "100"; }) &&
+                Controls<TextBlock>(cells).Exists(delegate(TextBlock text) { return text.Text == "200"; }),
+                "Snapshot did not serve both widgets");
+            object content = firstHost.Content;
+            workspace.RefreshVisibleAsync(delegate { return true; }).GetAwaiter().GetResult();
+            Assert(reads == 2 && activations == 1 && Object.ReferenceEquals(content, firstHost.Content),
+                "Unchanged snapshot rebuilt widget or restarted plugin");
+            current = new PluginRuntimeState { Status = "error" };
+            workspace.RefreshVisibleAsync(delegate { return true; }).GetAwaiter().GetResult();
+            Assert(reads == 2 && activations == 1 &&
+                Controls<TextBlock>(cells).Exists(delegate(TextBlock text) { return text.Text.Contains("Плагин недоступен"); }),
+                "Failed plugin restarted or retained live values");
+            workspace.Clear();
+        });
         Case("native declarative plugin widget renderer", delegate {
             PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
                 Elements = new[] {
