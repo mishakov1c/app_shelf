@@ -461,6 +461,49 @@ public static class Package6Tests
                     "Removing widgets did not collapse the surface");
             } finally { window.Close(); }
         });
+        Case("widget groups share free board zones and detach without losing content", delegate {
+            PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+            PluginWidget widget = new PluginWidget { Id = "quotes", Kind = "card", Title = "Quotes",
+                Elements = new[] { new PluginWidgetElement { Type = "text", Label = "Demo" } } };
+            PluginWidgetSnapshot snapshot = new PluginWidgetSnapshot { ProcessId = 42, Widgets = new[] { widget } };
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(delegate { return running; },
+                delegate { return Task.FromResult(snapshot); }, delegate { return Task.FromResult(true); }, delegate {});
+            bool editable = true;
+            workspace.ConfigureBoard(new[] { "top-left", "top-right" }, delegate(string key) { return key; },
+                delegate { return "Renamed"; }, delegate { return editable; });
+            StackPanel left = new StackPanel(), right = new StackPanel();
+            Border ordinary = new Border { Height = 50 };
+            left.Children.Add(ordinary);
+            Dictionary<string, StackPanel> zones = new Dictionary<string, StackPanel> { { "top-left", left }, { "top-right", right } };
+            workspace.AttachBoard(zones, "top-left");
+            Assert(workspace.Add("test.widget", "1.0.0", snapshot, "quotes"), "Cannot add widget in free mode");
+            workspace.AttachBoard(zones, "top-left"); workspace.FitBoard(220);
+            Assert(left.Children.Count == 2 && Object.ReferenceEquals(left.Children[0], ordinary), "Widget did not share app zone");
+            Border group = (Border)left.Children[1];
+            TextBlock heading = (TextBlock)((StackPanel)group.Child).Children[0];
+            Grid cells = (Grid)((StackPanel)group.Child).Children[1];
+            StackPanel root = new StackPanel(); root.Children.Add(left); root.Children.Add(right);
+            Window window = new Window { Width = 360, Height = 500, Content = root, ShowInTaskbar = false };
+            try {
+                window.Show(); Drain();
+                ContextMenu menu = heading.ContextMenu;
+                menu.PlacementTarget = heading; menu.IsOpen = true; Drain();
+                Click((MenuItem)menu.Items[0]); menu.IsOpen = false; Drain();
+                Assert(heading.Text == "Renamed", "Rename failed");
+                menu.IsOpen = true; Drain(); Click((MenuItem)menu.Items[1]); menu.IsOpen = false;
+                Assert(cells.Visibility == Visibility.Collapsed, "Collapse failed");
+                menu.IsOpen = true; Drain(); Click((MenuItem)menu.Items[2]); menu.IsOpen = false;
+                Assert(Object.ReferenceEquals(left.Children[0], group), "Widget could not move before app group");
+                menu.IsOpen = true; Drain(); Click((MenuItem)((MenuItem)menu.Items[4]).Items[1]); menu.IsOpen = false;
+                Assert(right.Children.Count == 1 && Object.ReferenceEquals(right.Children[0], group), "Zone move failed");
+                workspace.DetachBoard(); editable = false;
+                Assert(right.Children.Count == 0 && workspace.HasWidgets &&
+                    !workspace.Resize("test.widget", "quotes", "quarter"), "Hidden mode changed placement");
+                editable = true; workspace.AttachBoard(zones, "top-left");
+                Assert(right.Children.Count == 1 && Object.ReferenceEquals(right.Children[0], group) &&
+                    heading.Text == "Renamed" && cells.Visibility == Visibility.Collapsed, "Free layout was not restored");
+            } finally { window.Close(); }
+        });
         Case("native declarative plugin widget renderer", delegate {
             PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
                 Elements = new[] {

@@ -1992,6 +1992,7 @@ namespace AppShelf
             MenuItem addWidget = new MenuItem { Header = "Виджет плагина…", Icon = FluentUi.MenuGlyph("puzzle") };
             addWidget.Click += delegate { ShowAddPluginWidget(); };
             addMenu.Items.Add(addWidget);
+            addMenu.Opened += delegate { addWidget.IsEnabled = _canSave && WidgetsInFreeLayout(); };
             add.Click += delegate
             {
                 addMenu.PlacementTarget = add;
@@ -2335,7 +2336,7 @@ namespace AppShelf
             scroller.AllowDrop = true;
             contentGrid.AllowDrop = true;
             StackPanel workspace = new StackPanel();
-            workspace.Children.Add(CreatePluginWidgetSurface());
+            CreatePluginWidgetSurface();
             workspace.Children.Add(_tileHost);
             scroller.Content = workspace;
             contentGrid.Children.Add(scroller);
@@ -3699,6 +3700,12 @@ namespace AppShelf
             Border freeSurface;
             bool hasFreeZone = ResolveFreeGroupZone(e.OriginalSource,
                 out freeZone, out freeSurface);
+            if (_pluginWidgets != null && _pluginWidgets.IsGroupDrag(e.Data))
+            {
+                if (hasFreeZone && _pluginWidgets.CanDropGroup(e.Data, freeZone)) e.Effects = DragDropEffects.Move;
+                HighlightDropZone(e.Effects == DragDropEffects.Move ? freeSurface : null);
+                e.Handled = true; return;
+            }
             if (_canSave && draggedGroup != null && hasFreeZone)
             {
                 bool movingZone = !String.Equals(GroupZoneFor(draggedGroup),
@@ -3743,6 +3750,11 @@ namespace AppShelf
             Border freeSurface;
             bool hasFreeZone = ResolveFreeGroupZone(e.OriginalSource,
                 out freeZone, out freeSurface);
+            if (_pluginWidgets != null && _pluginWidgets.IsGroupDrag(e.Data))
+            {
+                if (hasFreeZone && _pluginWidgets.DropGroup(e.Data, freeZone)) e.Effects = DragDropEffects.Move;
+                e.Handled = true; return;
+            }
             if (draggedGroup != null && hasFreeZone)
             {
                 bool sameZone = String.Equals(GroupZoneFor(draggedGroup),
@@ -4621,7 +4633,11 @@ namespace AppShelf
                         group.Heading.MaxWidth = Double.PositiveInfinity;
                     }
                 }
-                if (free) FitFreeBoardToViewport(available);
+                if (free)
+                {
+                    if (_pluginWidgets != null) _pluginWidgets.FitBoard(available < 600 ? available - 12 : available / 3 - 16);
+                    FitFreeBoardToViewport(available);
+                }
             }
             finally { _updatingGroupWidths = false; }
         }
@@ -4644,6 +4660,7 @@ namespace AppShelf
         private void RenderTiles()
         {
             if (_tileHost == null) return;
+            if (_pluginWidgets != null) _pluginWidgets.DetachBoard();
             _tileHost.Children.Clear();
             _groupLayoutCards.Clear();
             _freeLayoutGrid = null;
@@ -4921,6 +4938,8 @@ namespace AppShelf
                     else _tileHost.Children.Add(groupCard);
                 }
             }
+            if (WidgetsInFreeLayout() && _pluginWidgets != null)
+                _pluginWidgets.AttachBoard(_freeZoneHosts, NormalizeGroupZone(_config.GroupDefaultZone));
             UpdateGroupWidths();
             if (_pluginWidgets != null) _pluginWidgets.ApplyAppearance(
                 FluentUi.MainGroupBackground(_config.MainBackgroundPreset, FluentUi.NormalizeGroupOpacity(_config.GroupOpacity)),
@@ -4928,7 +4947,7 @@ namespace AppShelf
             _empty.Text = _config.Items.Count == 0
                 ? "Пока здесь пусто.\n\nПеретащи EXE или ярлык из Проводника\nили нажми «+ Добавить»."
                 : "Ничего не найдено.";
-            _empty.Visibility = count == 0 && (_pluginWidgets == null || !_pluginWidgets.HasWidgets)
+            _empty.Visibility = count == 0 && (!WidgetsInFreeLayout() || _pluginWidgets == null || !_pluginWidgets.HasWidgets)
                 ? Visibility.Visible : Visibility.Collapsed;
             ShowDefaultStatus(count);
         }

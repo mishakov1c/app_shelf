@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Input;
 
 namespace AppShelf
 {
@@ -154,9 +155,11 @@ namespace AppShelf
     {
         private sealed class WidgetGroup
         {
-            internal int Number;
+            internal int Number, Order = Int32.MaxValue;
+            internal string Zone, Title;
             internal Border Card;
             internal Grid Cells;
+            internal TextBlock Heading;
         }
 
         private sealed class Placement
@@ -178,6 +181,14 @@ namespace AppShelf
         private readonly Action changed;
         private Brush groupBackground = FluentUi.Surface, groupBorder = FluentUi.BorderColor;
         private int nextGroupNumber;
+        private Dictionary<string, StackPanel> board;
+        private string[] zones;
+        private Func<string, string> zoneLabel;
+        private Func<string, string> renameGroup;
+        private Func<bool> canEdit = delegate { return true; };
+        private string defaultZone = "top-left";
+        private WidgetGroup draggingGroup;
+        internal const string GroupDragFormat = "AppShelf.WidgetGroup";
         internal WrapPanel Surface { get; private set; }
         internal bool HasWidgets { get { return entries.Count != 0; } }
 
@@ -243,15 +254,170 @@ namespace AppShelf
             return false;
         }
 
+        internal void ConfigureBoard(string[] zoneKeys, Func<string, string> label,
+            Func<string, string> rename, Func<bool> editable)
+        {
+            zones = zoneKeys; zoneLabel = label; renameGroup = rename; canEdit = editable;
+        }
+
+        private static void DetachCard(WidgetGroup group)
+        {
+            Panel parent = group.Card.Parent as Panel;
+            if (parent != null) parent.Children.Remove(group.Card);
+        }
+
+        internal void DetachBoard()
+        {
+            foreach (WidgetGroup group in groups) DetachCard(group);
+            board = null;
+        }
+
+        internal void AttachBoard(Dictionary<string, StackPanel> hosts, string fallback)
+        {
+            board = hosts; defaultZone = fallback;
+            List<WidgetGroup> ordered = new List<WidgetGroup>(groups);
+            ordered.Sort(delegate(WidgetGroup a, WidgetGroup b) {
+                int order = a.Order.CompareTo(b.Order);
+                return order != 0 ? order : a.Number.CompareTo(b.Number);
+            });
+            foreach (WidgetGroup group in ordered)
+            {
+                DetachCard(group);
+                StackPanel host;
+                if (!hosts.TryGetValue(group.Zone ?? defaultZone, out host)) host = hosts[defaultZone];
+                host.Children.Insert(Math.Min(group.Order, host.Children.Count), group.Card);
+            }
+        }
+
+        internal void FitBoard(double available)
+        {
+            if (board == null) return;
+            foreach (WidgetGroup group in groups)
+            {
+                group.Card.Width = Math.Max(1, Math.Min(available, 400));
+                group.Card.Margin = new Thickness(0, 0, 0, 8);
+            }
+        }
+
         private void ResizeGroup(WidgetGroup group)
         {
+            if (board != null) return;
             double available = Surface.ActualWidth > 8 ? Surface.ActualWidth - 8 : 400;
             group.Card.Width = Math.Max(1, Math.Min(available, 400));
         }
 
+        private void RememberZoneOrder(StackPanel host)
+        {
+            if (host == null) return;
+            foreach (WidgetGroup group in groups)
+                if (Object.ReferenceEquals(group.Card.Parent, host))
+                    group.Order = host.Children.IndexOf(group.Card);
+        }
+
+        private void MoveGroupBy(WidgetGroup group, int delta)
+        {
+            if (!canEdit() || board == null) return;
+            StackPanel host = group.Card.Parent as StackPanel;
+            if (host == null) return;
+            int from = host.Children.IndexOf(group.Card), to = from + delta;
+            if (from < 0 || to < 0 || to >= host.Children.Count) return;
+            host.Children.RemoveAt(from); host.Children.Insert(to, group.Card);
+            RememberZoneOrder(host); changed();
+        }
+
+        private void MoveGroupToZone(WidgetGroup group, string zone)
+        {
+            if (!canEdit() || board == null || !groups.Contains(group) || !board.ContainsKey(zone)) return;
+            StackPanel previous = group.Card.Parent as StackPanel;
+            StackPanel target = board[zone];
+            if (Object.ReferenceEquals(previous, target)) return;
+            DetachCard(group); target.Children.Add(group.Card);
+            group.Zone = zone;
+            RememberZoneOrder(previous); RememberZoneOrder(target);
+            changed();
+        }
+
+        internal bool IsGroupDrag(IDataObject data)
+        {
+            return draggingGroup != null && data.GetDataPresent(GroupDragFormat) &&
+                Object.Equals(data.GetData(GroupDragFormat), draggingGroup.Number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        internal bool CanDropGroup(IDataObject data, string zone)
+        {
+            return IsGroupDrag(data) && board != null && canEdit() && board.ContainsKey(zone) &&
+                !Object.ReferenceEquals(draggingGroup.Card.Parent, board[zone]);
+        }
+
+        internal bool DropGroup(IDataObject data, string zone)
+        {
+            if (!CanDropGroup(data, zone)) return false;
+            MoveGroupToZone(draggingGroup, zone); return true;
+        }
+
+        private void ConfigureGroupMenu(WidgetGroup group)
+        {
+            if (zones == null) return;
+            ContextMenu menu = new ContextMenu();
+            menu.Opened += delegate
+            {
+                menu.Items.Clear();
+                MenuItem rename = new MenuItem { Header = "Переименовать группу…", IsEnabled = canEdit() };
+                rename.Click += delegate {
+                    string value = renameGroup(group.Title);
+                    if (!String.IsNullOrWhiteSpace(value) && value.Trim().Length <= 100 && canEdit())
+                    { group.Title = value.Trim(); group.Heading.Text = group.Title; changed(); }
+                };
+                menu.Items.Add(rename);
+                MenuItem collapse = new MenuItem { Header = group.Cells.Visibility == Visibility.Visible ? "Свернуть группу" : "Развернуть группу", IsEnabled = canEdit() };
+                collapse.Click += delegate {
+                    if (!canEdit()) return;
+                    group.Cells.Visibility = group.Cells.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+                    changed();
+                };
+                menu.Items.Add(collapse);
+                StackPanel host = group.Card.Parent as StackPanel;
+                int index = host == null ? -1 : host.Children.IndexOf(group.Card);
+                MenuItem up = new MenuItem { Header = "Переместить выше", IsEnabled = canEdit() && index > 0 };
+                up.Click += delegate { MoveGroupBy(group, -1); }; menu.Items.Add(up);
+                MenuItem down = new MenuItem { Header = "Переместить ниже", IsEnabled = canEdit() && host != null && index >= 0 && index + 1 < host.Children.Count };
+                down.Click += delegate { MoveGroupBy(group, 1); }; menu.Items.Add(down);
+                MenuItem location = new MenuItem { Header = "Расположение", IsEnabled = canEdit() && board != null };
+                foreach (string key in zones)
+                {
+                    string target = key;
+                    MenuItem choice = new MenuItem { Header = zoneLabel(key), IsCheckable = true,
+                        IsChecked = board != null && Object.ReferenceEquals(group.Card.Parent, board[key]) };
+                    choice.Click += delegate { MoveGroupToZone(group, target); };
+                    location.Items.Add(choice);
+                }
+                menu.Items.Add(location);
+            };
+            group.Heading.ContextMenu = menu;
+            group.Heading.ToolTip = "Перетащите группу в другую зону или откройте меню правой кнопкой.";
+            Point start = new Point();
+            bool candidate = false;
+            group.Heading.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+            { start = e.GetPosition(group.Heading); candidate = true; };
+            group.Heading.PreviewMouseLeftButtonUp += delegate { candidate = false; };
+            group.Heading.MouseMove += delegate(object sender, MouseEventArgs e)
+            {
+                if (!candidate || e.LeftButton != MouseButtonState.Pressed || !canEdit() || board == null) return;
+                Point now = e.GetPosition(group.Heading);
+                if (Math.Abs(now.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                    Math.Abs(now.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+                candidate = false;
+                draggingGroup = group;
+                try { DragDrop.DoDragDrop(group.Heading,
+                    new DataObject(GroupDragFormat, group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)), DragDropEffects.Move); }
+                finally { draggingGroup = null; }
+            };
+        }
+
         private WidgetGroup NewGroup()
         {
-            WidgetGroup group = new WidgetGroup { Number = ++nextGroupNumber };
+            WidgetGroup group = new WidgetGroup { Number = ++nextGroupNumber, Zone = defaultZone };
+            group.Title = "Виджеты " + group.Number;
             group.Cells = new Grid { Height = 280, ClipToBounds = true };
             for (int i = 0; i < 2; i++)
             {
@@ -259,20 +425,25 @@ namespace AppShelf
                 group.Cells.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 0 });
             }
             StackPanel body = new StackPanel();
-            TextBlock title = new TextBlock { Text = "Виджеты " + group.Number, Foreground = FluentUi.Secondary,
+            TextBlock title = new TextBlock { Text = group.Title, Foreground = FluentUi.Secondary,
                 FontSize = 13, FontWeight = FontWeights.SemiBold, Margin = new Thickness(4, 0, 4, 6) };
             body.Children.Add(title); body.Children.Add(group.Cells);
             group.Card = new Border { Child = body, Padding = new Thickness(6), Margin = new Thickness(0, 0, 8, 8),
                 Background = groupBackground, BorderBrush = groupBorder, BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(13), VerticalAlignment = VerticalAlignment.Top };
-            groups.Add(group); Surface.Children.Add(group.Card); ResizeGroup(group);
+            group.Heading = title;
+            ConfigureGroupMenu(group);
+            groups.Add(group);
+            if (zones == null) Surface.Children.Add(group.Card);
+            ResizeGroup(group);
             return group;
         }
 
         private void RemoveEmptyGroup(WidgetGroup group)
         {
             if (entries.Exists(delegate(Placement p) { return p.Group == group; })) return;
-            groups.Remove(group); Surface.Children.Remove(group.Card);
+            StackPanel parent = group.Card.Parent as StackPanel;
+            groups.Remove(group); DetachCard(group); RememberZoneOrder(parent);
         }
 
         private void Position(Placement entry, WidgetGroup group, string size, int row, int column)
@@ -288,7 +459,7 @@ namespace AppShelf
 
         internal bool Add(string pluginId, string version, PluginWidgetSnapshot snapshot, string widgetId)
         {
-            if (entries.Count >= 32 || Contains(pluginId, widgetId) ||
+            if (!canEdit() || entries.Count >= 32 || Contains(pluginId, widgetId) ||
                 !Current(state(pluginId), version, snapshot.ProcessId)) return false;
             PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == widgetId; });
             if (widget == null || !widget.SupportsSize(widget.PreferredSize)) return false;
@@ -314,7 +485,7 @@ namespace AppShelf
                     string targetSize = size;
                     int row, column;
                     MenuItem item = new MenuItem { Header = SizeLabel(size), IsCheckable = true,
-                        IsChecked = size == entry.Size, IsEnabled = entry.Snapshot.SupportsSize(size) &&
+                        IsChecked = size == entry.Size, IsEnabled = canEdit() && entry.Snapshot.SupportsSize(size) &&
                         FindSpace(entry.Group, size, entry, out row, out column) };
                     item.Click += delegate { ChangeSize(entry, targetSize); };
                     sizeMenu.Items.Add(item);
@@ -323,13 +494,13 @@ namespace AppShelf
                 {
                     WidgetGroup target = group;
                     int row, column;
-                    MenuItem item = new MenuItem { Header = "Виджеты " + group.Number,
-                        IsEnabled = group != entry.Group && FindSpace(group, entry.Size, entry, out row, out column) };
+                    MenuItem item = new MenuItem { Header = group.Title,
+                        IsEnabled = canEdit() && group != entry.Group && FindSpace(group, entry.Size, entry, out row, out column) };
                     item.Click += delegate { Move(entry, target); };
                     moveMenu.Items.Add(item);
                 }
-                MenuItem newGroup = new MenuItem { Header = "В новую группу" };
-                newGroup.Click += delegate { if (entries.Contains(entry)) Move(entry, NewGroup()); };
+                MenuItem newGroup = new MenuItem { Header = "В новую группу", IsEnabled = canEdit() };
+                newGroup.Click += delegate { if (canEdit() && entries.Contains(entry)) Move(entry, NewGroup()); };
                 moveMenu.Items.Add(new Separator()); moveMenu.Items.Add(newGroup);
             };
             entry.Host.ContextMenu = menu;
@@ -357,7 +528,7 @@ namespace AppShelf
         private bool ChangeSize(Placement entry, string size)
         {
             int row, column;
-            if (!entries.Contains(entry) || !entry.Snapshot.SupportsSize(size) ||
+            if (!canEdit() || !entries.Contains(entry) || !entry.Snapshot.SupportsSize(size) ||
                 !FindSpace(entry.Group, size, entry, out row, out column)) return false;
             if (size == entry.Size) return true;
             Position(entry, entry.Group, size, row, column);
@@ -370,7 +541,7 @@ namespace AppShelf
         private void Move(Placement entry, WidgetGroup target)
         {
             int row, column;
-            if (!entries.Contains(entry) || target == entry.Group ||
+            if (!canEdit() || !entries.Contains(entry) || target == entry.Group ||
                 !FindSpace(target, entry.Size, entry, out row, out column)) return;
             Position(entry, target, entry.Size, row, column);
             changed();
@@ -452,7 +623,7 @@ namespace AppShelf
 
         private void Remove(Placement entry)
         {
-            if (!entries.Remove(entry)) return;
+            if (!canEdit() || !entries.Remove(entry)) return;
             entry.Revision++;
             entry.Group.Cells.Children.Remove(entry.Host);
             RemoveEmptyGroup(entry.Group);
@@ -462,7 +633,7 @@ namespace AppShelf
 
         internal void Clear()
         {
-            entries.Clear(); groups.Clear(); Surface.Children.Clear(); Surface.Visibility = Visibility.Collapsed;
+            DetachBoard(); entries.Clear(); groups.Clear(); Surface.Children.Clear(); Surface.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -478,12 +649,20 @@ namespace AppShelf
                 delegate(string id, string version, bool activate) { return GetPluginRuntime().ReadWidgetSnapshotAsync(id, version, activate); },
                 delegate(string id, string version, int process, string command) { return GetPluginRuntime().InvokeWidgetAsync(id, version, process, command); },
                 delegate { RenderTiles(); });
+            _pluginWidgets.ConfigureBoard(FreeGroupZones, FreeGroupZoneLabel,
+                delegate(string title) { return InputDialog("Переименовать группу", "Новое название:", title); },
+                delegate { return _canSave && WidgetsInFreeLayout(); });
             return _pluginWidgets.Surface;
+        }
+
+        private bool WidgetsInFreeLayout()
+        {
+            return _config.GroupingEnabled && NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "free";
         }
 
         private void ShowAddPluginWidget()
         {
-            if (_pluginWidgetPickerOpen || _pluginRuntimeStopping || _pluginWidgets == null) return;
+            if (!WidgetsInFreeLayout() || !_canSave || _pluginWidgetPickerOpen || _pluginRuntimeStopping || _pluginWidgets == null) return;
             _pluginWidgetPickerOpen = true;
             try
             {
