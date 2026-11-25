@@ -1451,8 +1451,12 @@ public static class Package6Tests
         }
         Case("long dark menus scroll, preserve gestures and disabled items", delegate {
             Seed("normal", 1); MainWindow w = Open(); ContextMenu menu = new ContextMenu(); try {
-                Assert(!app.Resources.Contains(typeof(System.Windows.Controls.Primitives.ScrollBar)),
-                    "Menu scrollbar style leaked into unrelated windows");
+                Style sharedScroll = app.Resources[typeof(System.Windows.Controls.Primitives.ScrollBar)] as Style;
+                Assert(sharedScroll != null && sharedScroll.TargetType == typeof(System.Windows.Controls.Primitives.ScrollBar),
+                    "Shared application scrollbar style missing");
+                Assert(!app.Resources.Contains(SystemParameters.VerticalScrollBarWidthKey) &&
+                    !app.Resources.Contains(SystemParameters.HorizontalScrollBarHeightKey),
+                    "Menu-specific system scrollbar dimensions leaked into application resources");
                 MenuItem disabled = new MenuItem { Header = "Недоступно", IsEnabled = false };
                 MenuItem parent = new MenuItem { Header = "Длинное подменю" };
                 menu.Items.Add(disabled); menu.Items.Add(parent);
