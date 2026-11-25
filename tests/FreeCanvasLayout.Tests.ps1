@@ -54,9 +54,9 @@ $second = New-Object System.Windows.Controls.Border
 $second.MinHeight = 100
 $third = New-Object System.Windows.Controls.Border
 $third.MinHeight = 140
-[void]$add.Invoke($board, [object[]]@('app:work',$first,20,(Rect 0 0 20 6)))
-[void]$add.Invoke($board, [object[]]@('widget:1',$second,20,(Rect 20 0 20 6)))
-[void]$add.Invoke($board, [object[]]@('app:other',$third,20,$null))
+[void]$add.Invoke($board, [object[]]@('app:work',$first.PSObject.BaseObject,20,(Rect 0 0 20 6).PSObject.BaseObject))
+[void]$add.Invoke($board, [object[]]@('widget:1',$second.PSObject.BaseObject,20,(Rect 20 0 20 6).PSObject.BaseObject))
+[void]$add.Invoke($board, [object[]]@('app:other',$third.PSObject.BaseObject,20,$null))
 function Layout {
     $board.Measure((New-Object System.Windows.Size -ArgumentList 900,600))
     $board.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$board.DesiredSize.Width,$board.DesiredSize.Height))
@@ -66,11 +66,11 @@ $actual = $capture.Invoke($board, $null)
 Assert ($actual.Count -eq 3) 'all cards must be placed'
 Assert ($actual['widget:1'].X -eq 20 -and $actual['widget:1'].Y -eq 0) 'valid saved location not preserved'
 Assert ($actual['app:other'].Y -ge 6) 'new card overlaps existing row'
-$blocked = $candidate.Invoke($board, [object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 0,0)))
+$blocked = $candidate.Invoke($board, [object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 0,0).PSObject.BaseObject))
 Assert ($null -eq $blocked) 'overlapping drag target accepted'
-$move = $candidate.Invoke($board, [object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 40,300)))
+$move = $candidate.Invoke($board, [object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 40,300).PSObject.BaseObject))
 Assert ($null -ne $move -and $move.X -eq 2 -and $move.Y -eq 15) 'valid drag target rejected'
-[void]$set.Invoke($board, [object[]]@('app:other',$move))
+[void]$set.Invoke($board, [object[]]@('app:other',$move.PSObject.BaseObject))
 Layout
 $actual = $capture.Invoke($board, $null)
 Assert ($actual['app:other'].X -eq 2 -and $actual['app:other'].Y -eq 15) 'move not retained'
@@ -98,7 +98,7 @@ Write-Host 'PASS shared WPF canvas layout and staged configuration'
 $resize = $type.GetMethod('ResizeCandidate', $flags)
 $wide = $resize.Invoke($board,[object[]]@('app:other', 600.0, 240.0))
 Assert ($null -ne $wide -and $wide.Width -eq 30 -and $wide.ManualHeight -eq 12) 'free resize rejected'
-[void]$set.Invoke($board,[object[]]@('app:other',$wide))
+[void]$set.Invoke($board,[object[]]@('app:other',$wide.PSObject.BaseObject))
 Layout
 $actual = $capture.Invoke($board,$null)
 Assert ($actual['app:other'].Width -eq 30 -and $actual['app:other'].Height -ge 12) 'resize not applied'
@@ -108,8 +108,8 @@ $converted = [AppShelf.FreeCanvasLayout]::ConvertStep($wide,20,10)
 Assert ($converted.X -eq 4 -and $converted.Width -eq 60 -and $converted.ManualHeight -eq 24) 'grid conversion changed DIP geometry'
 $begin = $type.GetMethod('BeginGroupDrag',$flags)
 $finish = $type.GetMethod('EndGroupDrag',$flags)
-[void]$begin.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 60,320)))
-$moved = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 100,360)))
+[void]$begin.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 60,320).PSObject.BaseObject))
+$moved = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 100,360).PSObject.BaseObject))
 Assert ($null -ne $moved -and $moved.X -eq 4 -and $moved.Y -eq 17) 'drag anchor offset lost'
 [void]$finish.Invoke($board,$null)
 Write-Host 'PASS resize, grid conversion and drag anchor'
