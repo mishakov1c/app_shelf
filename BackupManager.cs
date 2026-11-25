@@ -834,10 +834,41 @@ namespace AppShelf
                     string reminderWarning; bool reminderSafe;
                     ReminderDocument currentReminders = ReminderStore.Load(out reminderWarning, out reminderSafe);
                     string collectionWarning; bool collectionSafe;
-                    CollectionStore.Load(out collectionWarning, out collectionSafe);
+                    CollectionDocument localCollections = CollectionStore.Load(out collectionWarning, out collectionSafe);
                     if (reminderSafe && collectionSafe)
+                    {
+                        BackupComponents safetyComponents = BackupComponents.All;
+                        bool missingCover = false;
+                        foreach (CollectionDefinition group in localCollections.Collections)
+                            foreach (CollectionEntry entry in group.Entries)
+                                if (!String.IsNullOrEmpty(entry.CoverFile) &&
+                                    !File.Exists(CollectionStore.CoverPath(entry.CoverFile))) missingCover = true;
+                        bool missingBackground = CustomBackgroundStore.IsCustomPreset(current.MainBackgroundPreset) &&
+                            !File.Exists(CustomBackgroundStore.FilePath(current.MainBackgroundPreset));
+                        // A missing asset can be the very reason for restoring.
+                        // Preserve all existing assets as raw files and the original
+                        // JSON below; never let a known missing asset block repair.
+                        if (missingCover || missingBackground)
+                        {
+                            if (missingCover) safetyComponents &= ~BackupComponents.Covers;
+                            if (missingBackground) safetyComponents &= ~BackupComponents.Backgrounds;
+                            string[] assetFolders = { CollectionStore.ImagesPath, CustomBackgroundStore.DirectoryPath };
+                            string[] assetTargets = { "Collections/Images", "Backgrounds" };
+                            for (int i = 0; i < assetFolders.Length; i++)
+                            {
+                                if (!Directory.Exists(assetFolders[i])) continue;
+                                string target = Path.Combine(backupDir, assetTargets[i]);
+                                Directory.CreateDirectory(target);
+                                foreach (string file in Directory.GetFiles(assetFolders[i]))
+                                    if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) == 0)
+                                        File.Copy(file, Path.Combine(target, Path.GetFileName(file)), false);
+                            }
+                            File.WriteAllText(Path.Combine(backupDir, "missing-assets.txt"),
+                                "Некоторые ссылки ведут на отсутствующие файлы. Существующие изображения и исходные JSON сохранены отдельно.");
+                        }
                         ExportSelected(Path.Combine(backupDir, "AppShelf-before-restore.zip"), current,
-                            currentReminders, CurrentExecutable(), BackupComponents.All);
+                            currentReminders, CurrentExecutable(), safetyComponents);
+                    }
                 }
                 List<string> documents = new List<string> { "apps.json", "apps.json.bak", "reminders.json",
                     "reminders.json.bak", "Collections/collections.json",

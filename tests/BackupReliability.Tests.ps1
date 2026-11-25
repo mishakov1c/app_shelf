@@ -663,6 +663,13 @@ public static class BackupTests
             else BackupStore.RestoreAll(zip);
         }
         finally { failImageCopy = false; }
+        if (!corrupt && !copyFailure)
+        {
+            string safety = Directory.GetDirectories(Path.Combine(Root, "Backups"))[0];
+            Assert(File.Exists(Path.Combine(safety, "missing-assets.txt")) &&
+                File.Exists(Path.Combine(safety, "Collections", "collections.json")),
+                "Repair of missing asset did not retain original metadata");
+        }
         Assert(File.ReadAllText(CollectionStore.FilePath) == before, "Cover restore changed collection records");
         Assert(Directory.GetFiles(CollectionStore.ImagesPath).Length == (corrupt || copyFailure ? 0 : 1),
             "Cover restore lost valid data or left a partial file");
