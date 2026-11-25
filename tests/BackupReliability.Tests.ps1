@@ -1052,6 +1052,57 @@ public static class BackupTests
         }
     }
 
+    private static void DowngradePreservesExtensions()
+    {
+        AppConfig config = Loaded();
+        config.BackupExecutable = false;
+        config.BackupBackgrounds = false;
+        config.BackupReminders = false;
+        config.WidgetIndicators = new List<PluginWidgetPlacementConfig> {
+            new PluginWidgetPlacementConfig { PluginId = "test.backup", Version = "1.0.0", WidgetId = "status",
+                Title = "Status", Kind = "indicator", Size = "indicator" }
+        };
+        ConfigStore.Save(config);
+        string shared = File.ReadAllText(ConfigStore.FilePath);
+        Assert(!shared.Contains("widgetIndicators") && !shared.Contains("backupBackgrounds") &&
+            !shared.Contains("backupExecutable"), "New settings leaked into shared profile");
+        string sidecar = File.ReadAllText(ConfigStore.PluginSettingsPath);
+        Assert(sidecar.Contains("widgetIndicators") && sidecar.Contains("backupBackgrounds"), "Sidecar missing settings");
+        // Simulate stable 2.23.0 saving the shared JSON: it has no extension fields.
+        File.WriteAllText(ConfigStore.FilePath, shared.Replace("\"weatherCity\":\"B\"", "\"weatherCity\":\"Stable changed\""));
+        AppConfig after = Loaded();
+        Assert(after.WeatherCity == "Stable changed" && after.WidgetIndicators.Count == 1 &&
+            after.BackupBackgrounds == false && after.BackupReminders == false && after.BackupExecutable == false,
+            "Stable save lost new settings or shared edit");
+        Assert(File.ReadAllText(ConfigStore.PluginSettingsPath) == sidecar, "Stable save rewrote sidecar");
+        ConfigStore.Save(after);
+        Assert(Loaded().WidgetIndicators.Count == 1, "Return to beta lost layout");
+    }
+
+    private static void PartialBackupRoundtrip()
+    {
+        string archive = Path.Combine(Root, "partial.zip");
+        AppConfig source = Config("A", 2);
+        BackupStore.ExportSelected(archive, source, Reminders("A"), null, BackupComponents.Settings);
+        using (ZipArchive zip = ZipFile.OpenRead(archive))
+            Assert(zip.GetEntry("apps.json") != null && zip.GetEntry("reminders.json") == null &&
+                zip.GetEntry("Collections/collections.json") == null, "Partial archive contains excluded data");
+        Assert(BackupStore.InspectComponents(archive) == BackupComponents.Settings, "Wrong component inventory");
+        string reminders = File.ReadAllText(ReminderStore.FilePath);
+        AppConfig current = Loaded();
+        current.BackupBackgrounds = false; ConfigStore.Save(current);
+        BackupStore.RestoreAll(archive);
+        Assert(Loaded().WeatherCity == "A" && Loaded().BackupBackgrounds == false &&
+            File.ReadAllText(ReminderStore.FilePath) == reminders, "Partial restore overwrote excluded data");
+        string full = Path.Combine(Root, "selected.zip");
+        BackupStore.ExportSelected(full, Config("C", 2), Reminders("C"), null,
+            BackupComponents.Settings | BackupComponents.Reminders);
+        string shared = File.ReadAllText(ConfigStore.FilePath);
+        BackupStore.RestoreSelected(full, null, BackupComponents.Reminders);
+        Assert(File.ReadAllText(ConfigStore.FilePath) == shared && File.ReadAllText(ReminderStore.FilePath) != reminders,
+            "Reminder-only restore changed settings");
+    }
+
     private static void Case(string name, Action action)
     {
         try { Reset(); action(); passes++; Console.WriteLine("PASS: " + name); }
@@ -1065,6 +1116,8 @@ public static class BackupTests
             bool j = json, e = existing, f = fail;
             Case((json ? "JSON" : "ZIP") + " existing=" + existing + " fail=" + fail, delegate { ExportCase(j, e, f); });
         }
+        Case("downgrade preserves beta extension settings", DowngradePreservesExtensions);
+        Case("partial archives and selective restoration", PartialBackupRoundtrip);
         Case("plugin ZIP inventory, privacy, signature and staged restore", PluginBackupRoundtrip);
         if (!String.IsNullOrEmpty(samplePackage)) Case("real sample plugin install, IPC and ZIP recovery", delegate { SamplePluginRoundtrip(samplePackage); });
         Case("chosen backup directory isolation", InvalidBackupDirectory);
