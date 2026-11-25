@@ -45,7 +45,63 @@ public static class PluginProtocolTests {
             Entered.Set(); Released.WaitOne(5000); return 0;
         }
     }
+    static PluginWidget[] Widgets() {
+        return new[] { new PluginWidget { Id="quotes", Title="Курсы акций", Kind="card",
+            Elements=new[] {
+                new PluginWidgetElement { Type="text", Label="Демонстрационные данные" },
+                new PluginWidgetElement { Type="metric", Label="AAPL", Value="$200.00" },
+                new PluginWidgetElement { Type="progress", Label="CPU", Percent=42 },
+                new PluginWidgetElement { Type="action", Label="Открыть", CommandId="open" }
+            } } };
+    }
+    static void WidgetChecks() {
+        CancellationToken none=CancellationToken.None;
+        PluginResponse snapshot=Ok(2); snapshot.Widgets=Widgets();
+        using (MemoryStream send=new MemoryStream()) {
+            PluginProtocolSession p=Session(send,Frames(Hello(),snapshot,Ok(3)),delegate {}, "window","widget");
+            p.HelloAsync("ru-RU","data",1000,none).GetAwaiter().GetResult();
+            PluginWidget[] widgets=p.GetWidgetsAsync(1000,none).GetAwaiter().GetResult().Widgets;
+            Assert(widgets.Length==1 && widgets[0].Elements[1].Value=="$200.00" &&
+                widgets[0].Elements[2].Percent==42 && widgets[0].Elements[3].CommandId=="open","widget snapshot roundtrip");
+            p.InvokeAsync(widgets[0].Elements[3].CommandId,1000,none).GetAwaiter().GetResult();
+            send.Position=0; PluginFrame.Read<PluginRequest>(send);
+            Assert(PluginFrame.Read<PluginRequest>(send).Method=="getWidgets","widget request");
+            Assert(PluginFrame.Read<PluginRequest>(send).CommandId=="open","widget action uses invoke");
+        }
+        PluginProtocolSession old=Session(new MemoryStream(),Frames(Hello(),Ok(2)),delegate {}, "window");
+        old.HelloAsync("ru-RU","data",1000,none).GetAwaiter().GetResult();
+        Reject<InvalidOperationException>(delegate { old.GetWidgetsAsync(1000,none).GetAwaiter().GetResult(); },"undeclared widgets");
+        old.PingAsync(1000,none).GetAwaiter().GetResult();
+        Assert(!old.Failed,"old session unaffected");
+        foreach (string reason in new[] {"missing","duplicate","kind","type","label","percent","action","fields","count","indicator","unexpected","error"}) {
+            PluginResponse bad=Ok(2); bad.Widgets=Widgets();
+            if(reason=="missing") bad.Widgets=null;
+            if(reason=="duplicate") bad.Widgets=new[]{bad.Widgets[0],bad.Widgets[0]};
+            if(reason=="kind") bad.Widgets[0].Kind="native";
+            if(reason=="type") bad.Widgets[0].Elements[0].Type="html";
+            if(reason=="label") bad.Widgets[0].Elements[0].Label=new string('x',241);
+            if(reason=="percent") bad.Widgets[0].Elements[2].Percent=101;
+            if(reason=="action") bad.Widgets[0].Elements[3].CommandId="unknown";
+            if(reason=="fields") bad.Widgets[0].Elements[0].Value="unexpected";
+            if(reason=="count") bad.Widgets[0].Elements=new PluginWidgetElement[13];
+            if(reason=="indicator") bad.Widgets[0].Kind="indicator";
+            if(reason=="error") { bad.Ok=false; bad.Error="declined"; }
+            int abort=0;
+            PluginProtocolSession p=Session(new MemoryStream(),Frames(Hello(),bad),delegate { abort++; },"window","widget");
+            p.HelloAsync("ru-RU","data",1000,none).GetAwaiter().GetResult();
+            Reject<InvalidDataException>(delegate {
+                if(reason=="unexpected") p.PingAsync(1000,none).GetAwaiter().GetResult();
+                else p.GetWidgetsAsync(1000,none).GetAwaiter().GetResult();
+            },"widget "+reason);
+            Assert(p.Failed && abort==1,"invalid widget abort "+reason);
+        }
+        PluginResponse empty=Ok(2); empty.Widgets=new PluginWidget[0];
+        PluginProtocolSession noneAvailable=Session(new MemoryStream(),Frames(Hello(),empty),delegate {},"window","widget");
+        noneAvailable.HelloAsync("ru-RU","data",1000,none).GetAwaiter().GetResult();
+        Assert(noneAvailable.GetWidgetsAsync(1000,none).GetAwaiter().GetResult().Widgets.Length==0,"empty snapshot");
+    }
     public static void Run() {
+        WidgetChecks();
         CancellationToken none=CancellationToken.None;
         using (MemoryStream s=Frames(Hello())) {
             Assert(s.ReadByte()>0 && s.Length<65540,"little endian header");
