@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "id": "example.stocks",
+  "name": "Курсы акций (демо)",
+  "version": "1.0.0",
+  "entryPoint": "bin/StocksPlugin.exe",
+  "description": "Демонстрация размеров и автоматического обновления виджетов. Только условные котировки, без сети.",
+  "publisher": "AppShelf sample",
+  "capabilities": [
+    "widget",
+    "command"
+  ]
+}

@@ -188,3 +188,10 @@ The existing 15-second runtime health tick also schedules widget data refresh wh
 An inactive persisted placement may request one startup activation of its currently enabled/trusted package when the board first becomes visible. This requires the regular package approval/enabled checks and is not permission to enable or install a package. The runtime rejects automatic activation of an errored or exited process under its operation gate. Subsequent periodic reads are non-activating, version-bound to the running child. Manual refresh remains an explicit activation path for unavailable placements. Hidden layouts, minimized windows and closed hosts do not initiate widget refreshes; no new timer or uncontrolled retry loop. Live snapshots are not persisted.
 
 Tests cover batch deduplication, unchanged content, hidden layouts and rejection of failed-process auto-restart.
+
+
+## Stage 15: offline Stocks widget demonstration
+
+`samples/StocksPlugin` is an independent process using only the API protocol and simulated numbers (no API keys, network or real stock data). It demonstrates a card named “Курсы акций · демо” with all four size variants, a second compact Apple widget with two supported sizes and a future lower-panel indicator. Every snapshot advances the deterministic demo sequence; an explicit “Следующий пример” command advances it further. The package declares widget/command, not background, so it starts on explicit activation or approved restored placement. The titles identify the numbers as demo data.
+
+Double-click `Build-Plugins.cmd` to build Notes and Stocks packages into artifacts/plugins. Install `StocksPlugin-1.0.0.asplugin` disabled, enable it in the manager, select free layout, then Add → Widget plugin → load the Stocks demo. Try resizing, moving, adding the second widget, changing layout modes, restarting and checking periodic updates. CI builds and uploads the demo and runs a separate isolated regression of the actual package and lifecycle; the test builds its own fresh copy even in workflows that do not build samples first. A live quotation provider is outside the demo scope.

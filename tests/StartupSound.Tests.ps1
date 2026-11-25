@@ -98,7 +98,11 @@ public static class StartupSoundTests
             RenderFailureProbe(folder);
             return;
         }
-        File.WriteAllText(Path.Combine(folder, "started.txt"), WindowsStartup.IsTrayLaunch().ToString());
+        // Publish the readiness marker only after the writer has closed it.
+        string marker = Path.Combine(folder, "started.txt");
+        string temporary = marker + ".tmp";
+        File.WriteAllText(temporary, WindowsStartup.IsTrayLaunch().ToString());
+        File.Move(temporary, marker);
         if (Environment.GetEnvironmentVariable("APPSHELF_HOLD_TEST") == "1")
             using (EventWaitHandle stop = new EventWaitHandle(false, EventResetMode.ManualReset, "Local\\AppShelf.Package8." + new DirectoryInfo(folder).Name)) stop.WaitOne(20000);
     }
