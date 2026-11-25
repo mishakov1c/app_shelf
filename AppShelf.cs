@@ -1978,7 +1978,7 @@ namespace AppShelf
             addContent.Children.Add(plusIcon);
             addContent.Children.Add(addLabel);
             add.Content = addContent;
-            add.ToolTip = "Добавить приложение или сайт (Ctrl+O — выбрать файл)";
+            add.ToolTip = "Добавить приложение, сайт или виджет (Ctrl+O — выбрать файл)";
             ContextMenu addMenu = new ContextMenu();
             MenuItem addProgram = new MenuItem { Header = "Приложение или ярлык…" };
             addProgram.Click += delegate { AddFromDialog(); };
@@ -1989,6 +1989,9 @@ namespace AppShelf
             MenuItem addFolder = new MenuItem { Header = "Папку…" };
             addFolder.Click += delegate { AddFolderFromDialog(); };
             addMenu.Items.Add(addFolder);
+            MenuItem addWidget = new MenuItem { Header = "Виджет плагина…", Icon = FluentUi.MenuGlyph("puzzle") };
+            addWidget.Click += delegate { ShowAddPluginWidget(); };
+            addMenu.Items.Add(addWidget);
             add.Click += delegate
             {
                 addMenu.PlacementTarget = add;
@@ -2331,7 +2334,10 @@ namespace AppShelf
             _tileHost = new StackPanel { AllowDrop = true };
             scroller.AllowDrop = true;
             contentGrid.AllowDrop = true;
-            scroller.Content = _tileHost;
+            StackPanel workspace = new StackPanel();
+            workspace.Children.Add(CreatePluginWidgetSurface());
+            workspace.Children.Add(_tileHost);
+            scroller.Content = workspace;
             contentGrid.Children.Add(scroller);
             _empty = Text("Здесь пока нет приложений.\n\nПеретащи ярлык из Проводника\nили нажми «Добавить приложение».", 16, MutedBrush);
             _empty.TextAlignment = TextAlignment.Center;
@@ -4918,7 +4924,8 @@ namespace AppShelf
             _empty.Text = _config.Items.Count == 0
                 ? "Пока здесь пусто.\n\nПеретащи EXE или ярлык из Проводника\nили нажми «+ Добавить»."
                 : "Ничего не найдено.";
-            _empty.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            _empty.Visibility = count == 0 && (_pluginWidgets == null || !_pluginWidgets.HasWidgets)
+                ? Visibility.Visible : Visibility.Collapsed;
             ShowDefaultStatus(count);
         }
 

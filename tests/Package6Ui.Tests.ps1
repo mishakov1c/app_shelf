@@ -371,6 +371,61 @@ public static class Package6Tests
     {
         Assert(ConfigStore.DirectoryPath == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         Application app = new Application(); app.ShutdownMode = ShutdownMode.OnExplicitShutdown; FluentUi.Install(app);
+        Case("session widget workspace add, refresh, invalidation and removal", delegate {
+            PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+            PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "200" },
+                    new PluginWidgetElement { Type = "action", Label = "Открыть", CommandId = "open" } } };
+            PluginWidget tile = new PluginWidget { Id = "cpu", Title = "CPU", Kind = "tile",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "CPU", Value = "42%" } } };
+            PluginWidget indicator = new PluginWidget { Id = "vpn", Title = "VPN", Kind = "indicator",
+                Elements = new[] { new PluginWidgetElement { Type = "text", Label = "Connected" } } };
+            PluginWidgetSnapshot snapshot = new PluginWidgetSnapshot { ProcessId = 42, Widgets = new[] { card, tile, indicator } };
+            int changes = 0, reads = 0, invokes = 0;
+            string invoked = null;
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(
+                delegate(string id) { return running; },
+                delegate(string id, string version, bool activate) {
+                    Assert(!activate && id == "test.widget" && version == "1.0.0", "Refresh must not start plugin");
+                    reads++; return Task.FromResult(snapshot);
+                },
+                delegate(string id, string version, int pid, string command) {
+                    Assert(id == "test.widget" && version == "1.0.0" && pid == 42, "Widget action identity lost");
+                    invokes++; invoked = command; return Task.FromResult(true);
+                }, delegate { changes++; });
+            Assert(!workspace.HasWidgets && workspace.Surface.Visibility == Visibility.Collapsed, "Empty widget surface visible");
+            Assert(!workspace.Add("test.widget", "1.0.0", snapshot, "vpn"), "Indicator added to main surface");
+            Assert(workspace.Add("test.widget", "1.0.0", snapshot, "quotes") &&
+                workspace.Add("test.widget", "1.0.0", snapshot, "cpu"), "Distinct widgets could not be added");
+            Assert(!workspace.Add("test.widget", "1.0.0", snapshot, "quotes") && changes == 2 &&
+                workspace.HasWidgets && workspace.Surface.Children.Count == 2, "Duplicate placement accepted");
+            Window window = new Window { Width = 460, Height = 400, Content = workspace.Surface, ShowInTaskbar = false };
+            try {
+                window.Show(); Drain();
+                ContentControl host = (ContentControl)workspace.Surface.Children[0];
+                Button old = Controls<Button>(host).Find(delegate(Button button) { return Object.Equals(button.Tag, "open"); });
+                Assert(old != null, "Widget action missing");
+                Click(old);
+                Assert(invokes == 1 && invoked == "open", "Widget action did not dispatch");
+                PluginWidget updated = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
+                    Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "201" } } };
+                snapshot = new PluginWidgetSnapshot { ProcessId = 42, Widgets = new[] { updated, tile } };
+                Click((MenuItem)host.ContextMenu.Items[0]); Drain();
+                Assert(reads == 1 && Controls<TextBlock>(host).Exists(delegate(TextBlock text) { return text.Text == "201"; }),
+                    "Manual refresh did not update data");
+                Click(old); Assert(invokes == 1, "Detached widget command still executed");
+                running = new PluginRuntimeState { Status = "error" };
+                workspace.InvalidateStopped();
+                Assert(Controls<TextBlock>(host).Exists(delegate(TextBlock text) { return text.Text.Contains("Плагин недоступен"); }),
+                    "Stopped plugin retained live content");
+                Assert(!workspace.Add("test.other", "1.0.0", snapshot, "quotes"), "Stopped process accepted");
+                Click((MenuItem)host.ContextMenu.Items[1]);
+                ContentControl remaining = (ContentControl)workspace.Surface.Children[0];
+                Click((MenuItem)remaining.ContextMenu.Items[1]);
+                Assert(changes == 4 && !workspace.HasWidgets && workspace.Surface.Visibility == Visibility.Collapsed,
+                    "Removing widgets did not collapse the surface");
+            } finally { window.Close(); }
+        });
         Case("native declarative plugin widget renderer", delegate {
             PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
                 Elements = new[] {
@@ -1714,6 +1769,7 @@ public static class Package6Tests
             Seed("normal", 5); MainWindow w = Open(); try {
                 TextBox search = (TextBox)Get(w, "_search"); search.Text = "APP 2"; Drain(); Assert(Tiles(w).Count == 1, "Search failed"); search.Text = "unmatched"; Drain(); Assert(Tiles(w).Count == 0 && ((TextBlock)Get(w, "_empty")).IsVisible, "Empty search failed"); search.Text = "";
                 int calls = AddDialogCalls; Click(ButtonNamed(w, "+  Добавить")); Assert(AddMenu.IsOpen, "Add menu did not open"); Click(Menu(AddMenu, "Приложение или ярлык…")); AddMenu.IsOpen = false; Assert(AddDialogCalls == calls + 1, "Add menu did not reach file dialog");
+                Assert(Menu(AddMenu, "Виджет плагина…") != null, "Widget add menu missing");
                 Click(ToolsButton(w)); Assert(Tools(w).IsOpen, "Overflow did not open"); Tools(w).IsOpen = false;
                 ContextMenu menu = Tools(w); Assert(menu.Items.IndexOf(Menu(menu, "О программе")) == menu.Items.IndexOf(Menu(menu, "Настройки…")) + 1, "About menu order wrong");
             } finally { w.Close(); }

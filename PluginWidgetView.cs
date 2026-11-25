@@ -148,4 +148,269 @@ namespace AppShelf
             return stack;
         }
     }
+
+    // A session-local workspace. Only explicit user actions add, refresh or remove
+    // widgets; no timer-driven RPCs and no mutation of the application groups.
+    internal sealed class PluginWidgetWorkspace
+    {
+        private sealed class Placement
+        {
+            internal string PluginId, Version, WidgetId, Title, Kind;
+            internal int ProcessId, Revision;
+            internal bool Busy, Stale;
+            internal ContentControl Host;
+        }
+
+        private readonly List<Placement> entries = new List<Placement>();
+        private readonly Func<string, PluginRuntimeState> state;
+        private readonly Func<string, string, bool, Task<PluginWidgetSnapshot>> read;
+        private readonly Func<string, string, int, string, Task> invoke;
+        private readonly Action changed;
+        internal WrapPanel Surface { get; private set; }
+        internal bool HasWidgets { get { return entries.Count != 0; } }
+
+        internal PluginWidgetWorkspace(Func<string, PluginRuntimeState> state,
+            Func<string, string, bool, Task<PluginWidgetSnapshot>> read,
+            Func<string, string, int, string, Task> invoke, Action changed)
+        {
+            this.state = state; this.read = read; this.invoke = invoke; this.changed = changed;
+            Surface = new WrapPanel { Visibility = Visibility.Collapsed,
+                HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 8) };
+            Surface.SizeChanged += delegate { foreach (Placement entry in entries) Resize(entry); };
+        }
+
+        internal bool Contains(string pluginId, string widgetId)
+        {
+            return entries.Exists(delegate(Placement p) { return p.PluginId == pluginId && p.WidgetId == widgetId; });
+        }
+
+        private static bool Current(PluginRuntimeState state, string version, int processId)
+        {
+            return state != null && state.Status == "running" && state.Version == version &&
+                processId > 0 && state.ProcessId == processId;
+        }
+
+        private void Resize(Placement entry)
+        {
+            double available = Surface.ActualWidth > 8 ? Surface.ActualWidth - 8 : 320;
+            entry.Host.Width = Math.Max(1, Math.Min(available, entry.Kind == "tile" ? 160 : 320));
+        }
+
+        internal bool Add(string pluginId, string version, PluginWidgetSnapshot snapshot, string widgetId)
+        {
+            if (entries.Count >= 32 || Contains(pluginId, widgetId) ||
+                !Current(state(pluginId), version, snapshot.ProcessId)) return false;
+            PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == widgetId; });
+            if (widget == null || (widget.Kind != "card" && widget.Kind != "tile")) return false;
+            Placement entry = new Placement { PluginId = pluginId, Version = version, WidgetId = widget.Id,
+                Title = widget.Title, Kind = widget.Kind, ProcessId = snapshot.ProcessId };
+            entry.Host = new ContentControl { Margin = new Thickness(0, 0, 8, 8),
+                VerticalAlignment = VerticalAlignment.Top, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            ContextMenu menu = new ContextMenu();
+            MenuItem refresh = new MenuItem { Header = "Обновить виджет" };
+            refresh.Click += async delegate { await Refresh(entry); };
+            MenuItem remove = new MenuItem { Header = "Убрать виджет" };
+            remove.Click += delegate { Remove(entry); };
+            menu.Items.Add(refresh); menu.Items.Add(remove);
+            entry.Host.ContextMenu = menu;
+            entries.Add(entry);
+            Render(entry, widget);
+            Surface.Children.Add(entry.Host);
+            Resize(entry);
+            Surface.Visibility = Visibility.Visible;
+            changed();
+            return true;
+        }
+
+        private void Render(Placement entry, PluginWidget widget)
+        {
+            entry.Stale = false;
+            int revision = ++entry.Revision;
+            entry.Host.Content = PluginWidgetView.Create(widget, delegate(string command)
+            {
+                if (!entries.Contains(entry) || entry.Revision != revision ||
+                    !Current(state(entry.PluginId), entry.Version, entry.ProcessId))
+                    throw new InvalidOperationException("Виджет устарел.");
+                return invoke(entry.PluginId, entry.Version, entry.ProcessId, command);
+            });
+        }
+
+        private void Unavailable(Placement entry, string message)
+        {
+            entry.Stale = true;
+            entry.Revision++;
+            entry.Host.Content = PluginWidgetView.Create(new PluginWidget { Id = entry.WidgetId,
+                Title = entry.Title, Kind = entry.Kind, Elements = new[] {
+                    new PluginWidgetElement { Type = "text", Label = message } } }, null);
+        }
+
+        internal void InvalidateStopped()
+        {
+            foreach (Placement entry in entries)
+                if (!entry.Stale && !Current(state(entry.PluginId), entry.Version, entry.ProcessId))
+                    Unavailable(entry, "Плагин недоступен. Запустите его и обновите виджет.");
+        }
+
+        private async Task Refresh(Placement entry)
+        {
+            if (!entries.Contains(entry) || entry.Busy) return;
+            entry.Busy = true;
+            try
+            {
+                PluginWidgetSnapshot snapshot = await read(entry.PluginId, entry.Version, false);
+                if (!entries.Contains(entry)) return;
+                PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == entry.WidgetId; });
+                if (widget == null || widget.Kind != entry.Kind ||
+                    !Current(state(entry.PluginId), entry.Version, snapshot.ProcessId))
+                {
+                    Unavailable(entry, "Виджет недоступен в текущем сеансе плагина.");
+                    return;
+                }
+                entry.ProcessId = snapshot.ProcessId;
+                entry.Title = widget.Title;
+                Render(entry, widget);
+            }
+            catch (Exception error)
+            {
+                ConfigStore.Log(error);
+                if (entries.Contains(entry)) Unavailable(entry, "Не удалось обновить виджет.");
+            }
+            finally { entry.Busy = false; }
+        }
+
+        private void Remove(Placement entry)
+        {
+            if (!entries.Remove(entry)) return;
+            entry.Revision++;
+            Surface.Children.Remove(entry.Host);
+            Surface.Visibility = HasWidgets ? Visibility.Visible : Visibility.Collapsed;
+            changed();
+        }
+
+        internal void Clear()
+        {
+            entries.Clear(); Surface.Children.Clear(); Surface.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    public sealed partial class MainWindow
+    {
+        private PluginWidgetWorkspace _pluginWidgets;
+        private bool _pluginWidgetPickerOpen;
+
+        private WrapPanel CreatePluginWidgetSurface()
+        {
+            _pluginWidgets = new PluginWidgetWorkspace(
+                delegate(string id) { return GetPluginRuntime().State(id); },
+                delegate(string id, string version, bool activate) { return GetPluginRuntime().ReadWidgetSnapshotAsync(id, version, activate); },
+                delegate(string id, string version, int process, string command) { return GetPluginRuntime().InvokeWidgetAsync(id, version, process, command); },
+                delegate { RenderTiles(); });
+            return _pluginWidgets.Surface;
+        }
+
+        private void ShowAddPluginWidget()
+        {
+            if (_pluginWidgetPickerOpen || _pluginRuntimeStopping || _pluginWidgets == null) return;
+            _pluginWidgetPickerOpen = true;
+            try
+            {
+                Window dialog = new Window { Owner = this, Title = "AppShelf — Добавить виджет",
+                    Width = 480, Height = 410, MinWidth = 360, MinHeight = 330,
+                    WindowStartupLocation = WindowStartupLocation.CenterOwner };
+                FluentUi.PrepareWindow(dialog);
+                DockPanel layout = new DockPanel { Margin = new Thickness(18) };
+                dialog.Content = layout;
+                StackPanel top = new StackPanel();
+                DockPanel.SetDock(top, Dock.Top); layout.Children.Add(top);
+                top.Children.Add(Text("Виджеты плагинов", 20, WhiteBrush));
+                TextBlock hint = Text("Выберите включённый плагин и загрузите список его виджетов.", 12, MutedBrush);
+                hint.TextWrapping = TextWrapping.Wrap;
+                hint.Margin = new Thickness(0, 6, 0, 10); top.Children.Add(hint);
+                ComboBox packages = new ComboBox { MinHeight = 32, IsEnabled = false };
+                top.Children.Add(packages);
+                Button load = ActionButton("Загрузить виджеты", false);
+                load.Margin = new Thickness(0, 8, 0, 8); load.IsEnabled = false;
+                top.Children.Add(load);
+                TextBlock status = Text("Поиск установленных плагинов…", 12, MutedBrush);
+                status.TextWrapping = TextWrapping.Wrap; status.Margin = new Thickness(0, 0, 0, 8);
+                top.Children.Add(status);
+                StackPanel buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+                DockPanel.SetDock(buttons, Dock.Bottom); layout.Children.Add(buttons);
+                Button add = ActionButton("Добавить", true); add.IsEnabled = false;
+                Button close = ActionButton("Закрыть", false);
+                close.Click += delegate { dialog.Close(); };
+                buttons.Children.Add(add); buttons.Children.Add(close);
+                ListBox widgets = new ListBox { Margin = new Thickness(0, 0, 0, 10) };
+                layout.Children.Add(widgets);
+                PluginWidgetSnapshot snapshot = null;
+                InstalledPlugin selected = null;
+                bool busy = false, closed = false;
+                dialog.Closed += delegate { closed = true; };
+                packages.SelectionChanged += delegate
+                {
+                    snapshot = null; selected = null; widgets.Items.Clear(); add.IsEnabled = false;
+                    load.IsEnabled = !busy && packages.SelectedItem != null;
+                };
+                widgets.SelectionChanged += delegate { add.IsEnabled = !busy && snapshot != null && widgets.SelectedItem != null; };
+                dialog.Loaded += async delegate
+                {
+                    try
+                    {
+                        List<InstalledPlugin> installed = await Task.Run(delegate
+                        {
+                            PluginPackageStore store = new PluginPackageStore(ConfigStore.DirectoryPath);
+                            return store.HasInstalledDirectory ? store.List() : new List<InstalledPlugin>();
+                        });
+                        if (closed || _pluginRuntimeStopping) return;
+                        foreach (InstalledPlugin plugin in installed)
+                            if (plugin.Enabled && plugin.Error == null && plugin.Manifest != null &&
+                                Array.IndexOf(plugin.Manifest.Capabilities, "widget") >= 0)
+                                packages.Items.Add(new ComboBoxItem { Content = plugin.Manifest.Name, Tag = plugin });
+                        packages.IsEnabled = packages.Items.Count > 0;
+                        if (packages.Items.Count > 0)
+                        {
+                            packages.SelectedIndex = 0; status.Text = "Загрузка виджетов может запустить выбранный плагин.";
+                        }
+                        else status.Text = "Нет включённых плагинов с поддержкой виджетов.";
+                    }
+                    catch (Exception error) { ConfigStore.Log(error); if (!closed) status.Text = "Не удалось получить список плагинов."; }
+                };
+                load.Click += async delegate
+                {
+                    ComboBoxItem choice = packages.SelectedItem as ComboBoxItem;
+                    if (busy || choice == null) return;
+                    busy = true; packages.IsEnabled = load.IsEnabled = add.IsEnabled = false;
+                    widgets.Items.Clear(); snapshot = null; selected = (InstalledPlugin)choice.Tag;
+                    status.Text = "Загрузка…";
+                    try
+                    {
+                        PluginWidgetSnapshot result = await GetPluginRuntime().ReadWidgetSnapshotAsync(selected.Id, selected.Manifest.Version, true);
+                        if (closed || _pluginRuntimeStopping) return;
+                        snapshot = result;
+                        foreach (PluginWidget widget in result.Widgets)
+                            if ((widget.Kind == "card" || widget.Kind == "tile") && !_pluginWidgets.Contains(selected.Id, widget.Id))
+                                widgets.Items.Add(new ListBoxItem { Content = Text(widget.Title, 13, WhiteBrush), Tag = widget.Id });
+                        status.Text = widgets.Items.Count == 0 ? "Нет доступных новых карточек или плиток." :
+                            "Выберите виджет для рабочего пространства.";
+                        if (widgets.Items.Count > 0) widgets.SelectedIndex = 0;
+                    }
+                    catch (Exception error) { ConfigStore.Log(error); if (!closed) status.Text = "Не удалось загрузить виджеты."; }
+                    finally
+                    {
+                        busy = false;
+                        if (!closed) { packages.IsEnabled = load.IsEnabled = true; add.IsEnabled = snapshot != null && widgets.SelectedItem != null; }
+                    }
+                };
+                add.Click += delegate
+                {
+                    ListBoxItem item = widgets.SelectedItem as ListBoxItem;
+                    if (busy || selected == null || snapshot == null || item == null) return;
+                    if (_pluginWidgets.Add(selected.Id, selected.Manifest.Version, snapshot, (string)item.Tag)) dialog.Close();
+                    else status.Text = "Виджет уже добавлен, недоступен или достигнут лимит (32).";
+                };
+                dialog.ShowDialog();
+            }
+            finally { _pluginWidgetPickerOpen = false; }
+        }
+    }
 }

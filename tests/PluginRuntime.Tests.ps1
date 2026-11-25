@@ -179,11 +179,16 @@ public static class PluginRuntimeTests {
             PluginCommand[] commands=runtime.GetCommandsAsync(fg,"1.0.0").GetAwaiter().GetResult();
             Assert(commands.Length==2 && commands[0].Id=="open","commands discovered on demand");
             State(runtime,fg,"running");
-            PluginWidget[] widgets=runtime.GetWidgetsAsync(fg,"1.0.0").GetAwaiter().GetResult();
+            PluginWidgetSnapshot live=runtime.ReadWidgetSnapshotAsync(fg,"1.0.0",false).GetAwaiter().GetResult();
+            PluginWidget[] widgets=live.Widgets;
+            Assert(live.ProcessId==Pid(fgData),"snapshot bound to real child");
+            try { runtime.InvokeWidgetAsync(fg,"1.0.0",live.ProcessId+1,"open").GetAwaiter().GetResult(); throw new Exception("stale widget process accepted"); }
+            catch(InvalidOperationException) { count++; }
+            Assert(!File.Exists(Path.Combine(fgData,"invoked")),"stale widget executed command");
             Assert(widgets.Length==1 && widgets[0].Id=="quotes" && widgets[0].Elements[0].Value=="200.00","real widget snapshot");
             try { runtime.GetWidgetsAsync(fg,"9.0.0").GetAwaiter().GetResult(); throw new Exception("stale widget version accepted"); }
             catch(InvalidOperationException) { count++; }
-            runtime.InvokeAsync(fg,"1.0.0",widgets[0].Elements[1].CommandId).GetAwaiter().GetResult();
+            runtime.InvokeWidgetAsync(fg,"1.0.0",live.ProcessId,widgets[0].Elements[1].CommandId).GetAwaiter().GetResult();
             Assert(File.ReadAllText(Path.Combine(fgData,"invoked"))=="open","command invoked");
             runtime.OpenSettingsAsync(fg,"1.0.0").GetAwaiter().GetResult();
             Assert(File.ReadAllText(Path.Combine(fgData,"settings"))=="opened","settings invoked");
@@ -207,7 +212,8 @@ public static class PluginRuntimeTests {
             Assert(Exited(foreground) && File.Exists(Path.Combine(fgData,"hello")),"remove stopped process and kept data");
             store.Install(fg1,delegate {return true;},null,runtime.BeforePackageCommit);
             runtime.SetEnabledAsync(fg,true).GetAwaiter().GetResult(); State(runtime,fg,"idle");
-            runtime.StartAsync(fg).GetAwaiter().GetResult(); foreground=Pid(fgData);
+            PluginWidgetSnapshot activated=runtime.ReadWidgetSnapshotAsync(fg,"1.0.0",true).GetAwaiter().GetResult(); foreground=Pid(fgData);
+            Assert(activated.ProcessId==foreground && activated.Widgets.Length==1,"explicit widget selection activates idle plugin");
         }
         Assert(Exited(last) && Exited(foreground),"host shutdown closed both processes");
         Console.WriteLine("PASS: "+count+" real plugin lifecycle checks");

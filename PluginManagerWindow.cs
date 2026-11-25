@@ -497,6 +497,7 @@ namespace AppShelf
                 {
                     List<PluginDelivery> deliveries = await runtime.CheckHealthAsync();
                     if (_pluginRuntimeStopping) return;
+                    if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
                     foreach (PluginDelivery delivery in deliveries)
                         if (_pluginNotices.Count < 12) _pluginNotices.Enqueue(delivery);
                     if (_pluginNotices.Count > 0 && _pluginNoticeTimer != null && !_pluginNoticeTimer.IsEnabled)
@@ -517,6 +518,7 @@ namespace AppShelf
         private void StopPluginRuntime()
         {
             _pluginRuntimeStopping = true;
+            if (_pluginWidgets != null) _pluginWidgets.Clear();
             if (_pluginHealthTimer != null) _pluginHealthTimer.Stop();
             if (_pluginNoticeTimer != null) _pluginNoticeTimer.Stop();
             _pluginNotices.Clear();
@@ -657,6 +659,7 @@ namespace AppShelf
             {
                 PluginManagerWindow manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime(), _config.BackupDirectory);
                 manager.ShowDialog();
+                if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
             }
             catch (Exception error)
             {

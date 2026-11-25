@@ -378,6 +378,12 @@ namespace AppShelf
         }
     }
 
+    internal sealed class PluginWidgetSnapshot
+    {
+        internal int ProcessId { get; set; }
+        internal PluginWidget[] Widgets { get; set; }
+    }
+
     internal sealed class PluginRuntimeState
     {
         internal string Status { get; set; }
@@ -596,16 +602,16 @@ namespace AppShelf
             }
         }
 
-        // Refresh never starts/restarts a plugin. The UI must first explicitly
-        // activate a placed widget's plugin or use the existing background policy.
-        internal async Task<PluginWidget[]> GetWidgetsAsync(string id, string version)
+        // A snapshot and its process identity are captured under the same runtime gate.
+        internal async Task<PluginWidgetSnapshot> ReadWidgetSnapshotAsync(string id, string version, bool activate)
         {
-            PluginWidget[] result = null;
+            PluginWidgetSnapshot result = null;
             await Run(delegate
             {
                 PluginManifest manifest = CheckActionVersion(id, version);
                 if (Array.IndexOf(manifest.Capabilities, "widget") < 0)
                     throw new InvalidOperationException("Плагин не предоставляет виджеты.");
+                if (activate) StartCore(id, false, false);
                 Slot slot = GetSlot(id);
                 PluginChild child = slot.Child;
                 if (slot.Status != "running" || child == null || child.HasExited ||
@@ -613,7 +619,8 @@ namespace AppShelf
                     throw new InvalidOperationException("Плагин виджетов не запущен.");
                 try
                 {
-                    result = child.GetWidgets(lifetime.Token);
+                    result = new PluginWidgetSnapshot { ProcessId = child.ProcessId,
+                        Widgets = child.GetWidgets(lifetime.Token) };
                 }
                 catch (Exception error)
                 {
@@ -622,6 +629,33 @@ namespace AppShelf
                 }
             }).ConfigureAwait(false);
             return result;
+        }
+
+        internal async Task<PluginWidget[]> GetWidgetsAsync(string id, string version)
+        {
+            return (await ReadWidgetSnapshotAsync(id, version, false).ConfigureAwait(false)).Widgets;
+        }
+
+        // A stale widget must never start a child or invoke a replacement process.
+        internal Task InvokeWidgetAsync(string id, string version, int processId, string command)
+        {
+            return Run(delegate
+            {
+                PluginManifest manifest = CheckActionVersion(id, version);
+                Slot slot = GetSlot(id);
+                PluginChild child = slot.Child;
+                if (Array.IndexOf(manifest.Capabilities, "widget") < 0 ||
+                    slot.Status != "running" || child == null || child.HasExited ||
+                    child.ProcessId != processId || child.Manifest.Version != version ||
+                    !Array.Exists(child.Commands, delegate(PluginCommand item) { return item.Id == command; }))
+                    throw new InvalidOperationException("Виджет устарел. Обновите его.");
+                try { child.Invoke(command, lifetime.Token); }
+                catch (Exception error)
+                {
+                    if (child.Failed || child.HasExited) FailSlot(slot, error);
+                    throw;
+                }
+            });
         }
 
         internal Task InvokeAsync(string id, string version, string command)
