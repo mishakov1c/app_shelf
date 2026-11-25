@@ -255,6 +255,9 @@ namespace AppShelf
             return null;
         }
 
+        public static string NormalizeViewportMode(string mode)
+        { return mode == "scroll" || mode == "scale" || mode == "collapse" ? mode : "adaptive"; }
+
         public static int NormalizeStep(int? value)
         { return value == 10 || value == 20 || value == 30 || value == 40 ? value.Value : 20; }
 
@@ -292,6 +295,9 @@ namespace AppShelf
             internal string Key;
             internal Border Card;
             internal System.Windows.Controls.Primitives.Thumb Grip;
+            internal Button Compact;
+            internal bool TemporarilyExpanded;
+            internal Rect DisplayRect, CompactRect;
             internal int Columns;
             internal FreeCanvasRect Preferred, Effective;
         }
@@ -301,6 +307,12 @@ namespace AppShelf
         private FreeCanvasRect previewRect;
         private string dragKey;
         private Vector dragOffset;
+        private double viewportWidth = Double.PositiveInfinity;
+        private string viewportMode = "scroll";
+        private string activeMode = "scroll";
+        private double displayScale = 1;
+        internal bool IsTemporaryLayout { get { return activeMode == "adaptive" || activeMode == "collapse" || displayScale < 0.999; } }
+        internal double DisplayScale { get { return displayScale; } }
         internal Func<string, FreeCanvasRect, bool> CommitPlacement;
         internal Func<bool> CanEdit;
 
@@ -320,6 +332,15 @@ namespace AppShelf
                 Background = new SolidColorBrush(Color.FromArgb(45, 106, 176, 255)) };
             SetZIndex(preview, 20);
             Children.Add(preview);
+        }
+
+        internal void SetViewport(double width, string mode)
+        {
+            if (Double.IsNaN(width) || width <= 0) return;
+            mode = FreeCanvasLayout.NormalizeViewportMode(mode);
+            if (viewportMode == mode && (viewportWidth == width || Math.Abs(viewportWidth - width) < 0.5)) return;
+            viewportWidth = width; viewportMode = mode;
+            InvalidateMeasure();
         }
 
         internal void AddCard(string key, Border card, int columns, FreeCanvasRect saved)
@@ -353,11 +374,21 @@ namespace AppShelf
             entry.Grip = grip;
             SetZIndex(grip, 10);
             Children.Add(grip);
+            string title = System.Windows.Automation.AutomationProperties.GetName(card);
+            if (String.IsNullOrWhiteSpace(title)) title = key;
+            Button compact = new Button { Content = title + "  ▸", Tag = title,
+                MinHeight = 34, Padding = new Thickness(8, 4, 8, 4),
+                Background = FluentUi.Surface, Foreground = FluentUi.Foreground,
+                BorderBrush = FluentUi.BorderColor, HorizontalContentAlignment = HorizontalAlignment.Left,
+                Visibility = Visibility.Hidden, ToolTip = "Временно раскрыть группу" };
+            entry.Compact = compact;
+            compact.Click += delegate { ToggleTemporaryGroup(key); };
+            Children.Add(compact);
             FreeCanvasRect initial = null, candidate = null;
             double dx = 0, dy = 0;
             grip.DragStarted += delegate
             {
-                if (entry.Effective == null || (CanEdit != null && !CanEdit())) return;
+                if (entry.Effective == null || IsTemporaryLayout || (CanEdit != null && !CanEdit())) return;
                 initial = entry.Effective.Copy(); candidate = initial.Copy();
                 dx = dy = 0; ShowGrid(true);
             };
@@ -395,7 +426,7 @@ namespace AppShelf
         protected override Size MeasureOverride(Size availableSize)
         {
             List<FreeCanvasRect> occupied = new List<FreeCanvasRect>();
-            int columns = InitialColumns, rows = (int)Math.Ceiling(400.0 / CellStep);
+            int columns = 0, rows = 0;
             foreach (Entry entry in entries)
             {
                 int width = WidthFor(entry), manual = entry.Preferred == null ? 0 : entry.Preferred.ManualHeight;
@@ -427,8 +458,74 @@ namespace AppShelf
                 columns = Math.Max(columns, rect.X + rect.Width);
                 rows = Math.Max(rows, rect.Y + rect.Height);
             }
-            return new Size(Math.Min(FreeCanvasLayout.MaxCells, columns + 4) * CellStep,
-                Math.Min(FreeCanvasLayout.MaxCells, rows + 4) * CellStep);
+            double contentWidth = columns * CellStep;
+            double naturalWidth = Math.Min(FreeCanvasLayout.MaxCells, Math.Max(InitialColumns, columns) + 4) * CellStep;
+            double naturalHeight = Math.Min(FreeCanvasLayout.MaxCells, Math.Max((int)Math.Ceiling(400.0 / CellStep), rows) + 4) * CellStep;
+            bool finite = !Double.IsInfinity(viewportWidth);
+            bool overflow = finite && contentWidth > viewportWidth + 0.5;
+            string next = overflow ? viewportMode : "scroll";
+            if (activeMode == "collapse" && next != "collapse")
+                foreach (Entry entry in entries) entry.TemporarilyExpanded = false;
+            activeMode = next;
+            displayScale = next == "scale" ? Math.Max(0.75, Math.Min(1, viewportWidth / Math.Max(1, contentWidth))) : 1;
+            if (finite && viewportMode != "scroll")
+                naturalWidth = Math.Max(viewportWidth, contentWidth);
+            if (activeMode == "adaptive" || activeMode == "collapse")
+                return MeasureTemporary(Math.Max(1, viewportWidth));
+            foreach (Entry entry in entries)
+            {
+                entry.Card.Visibility = Visibility.Visible;
+                entry.Compact.Visibility = Visibility.Hidden;
+                entry.Grip.Visibility = IsTemporaryLayout ? Visibility.Hidden : Visibility.Visible;
+            }
+            return new Size(naturalWidth * displayScale, naturalHeight * displayScale);
+        }
+
+        private Size MeasureTemporary(double width)
+        {
+            // Sort by the original visual order, not by creation order.
+            List<Entry> ordered = new List<Entry>(entries);
+            ordered.Sort(delegate(Entry a, Entry b) {
+                if (a.Effective == null) return b.Effective == null ? 0 : 1;
+                if (b.Effective == null) return -1;
+                int y = a.Effective.Y.CompareTo(b.Effective.Y);
+                return y != 0 ? y : a.Effective.X.CompareTo(b.Effective.X);
+            });
+            double top = 0, cardWidth = Math.Max(1, width - Gap);
+            foreach (Entry entry in ordered)
+            {
+                bool collapse = activeMode == "collapse";
+                entry.Grip.Visibility = Visibility.Hidden;
+                entry.Compact.Visibility = collapse ? Visibility.Visible : Visibility.Hidden;
+                entry.Card.Visibility = !collapse || entry.TemporarilyExpanded ? Visibility.Visible : Visibility.Hidden;
+                entry.CompactRect = new Rect(0, 0, 0, 0);
+                entry.DisplayRect = new Rect(0, 0, 0, 0);
+                if (collapse)
+                {
+                    entry.Compact.Content = (string)entry.Compact.Tag + (entry.TemporarilyExpanded ? "  ▾" : "  ▸");
+                    entry.Compact.Measure(new Size(cardWidth, Double.PositiveInfinity));
+                    double height = Math.Max(34, entry.Compact.DesiredSize.Height);
+                    entry.CompactRect = new Rect(0, top, cardWidth, height);
+                    top += height + Gap;
+                }
+                if (entry.Card.Visibility == Visibility.Visible)
+                {
+                    entry.Card.Measure(new Size(cardWidth, Double.PositiveInfinity));
+                    double height = Math.Max(1, entry.Card.DesiredSize.Height);
+                    entry.DisplayRect = new Rect(0, top, cardWidth, height);
+                    top += height + Gap;
+                }
+            }
+            return new Size(width, Math.Max(1, top));
+        }
+
+        internal bool ToggleTemporaryGroup(string key)
+        {
+            Entry entry = Find(key);
+            if (activeMode != "collapse" || entry == null) return false;
+            entry.TemporarilyExpanded = !entry.TemporarilyExpanded;
+            InvalidateMeasure();
+            return true;
         }
 
         private Rect PixelRect(FreeCanvasRect rect)
@@ -439,14 +536,20 @@ namespace AppShelf
 
         protected override Size ArrangeOverride(Size finalSize)
         {
+            bool stacked = activeMode == "adaptive" || activeMode == "collapse";
             foreach (Entry entry in entries)
             {
                 Rect rect = PixelRect(entry.Effective);
-                entry.Card.Arrange(rect);
-                entry.Grip.Arrange(entry.Effective == null ? new Rect(0, 0, 0, 0) :
+                // Scale only the visual tree; the saved geometry stays in unscaled cells.
+                entry.Card.RenderTransform = displayScale < 0.999
+                    ? (Transform)new ScaleTransform(displayScale, displayScale) : Transform.Identity;
+                entry.Card.Arrange(stacked ? entry.DisplayRect : new Rect(rect.X * displayScale,
+                    rect.Y * displayScale, rect.Width, rect.Height));
+                entry.Compact.Arrange(stacked ? entry.CompactRect : new Rect(0, 0, 0, 0));
+                entry.Grip.Arrange(IsTemporaryLayout || entry.Effective == null ? new Rect(0, 0, 0, 0) :
                     new Rect(rect.Right - 18, rect.Bottom - 18, 18, 18));
             }
-            Rect target = PixelRect(previewRect);
+            Rect target = IsTemporaryLayout ? new Rect(0, 0, 0, 0) : PixelRect(previewRect);
             preview.Measure(target.Size);
             preview.Arrange(target);
             return finalSize;
@@ -466,7 +569,7 @@ namespace AppShelf
         internal void BeginGroupDrag(string key, Point point)
         {
             Entry entry = Find(key);
-            if (entry == null || entry.Effective == null) return;
+            if (IsTemporaryLayout || entry == null || entry.Effective == null) return;
             dragKey = key;
             dragOffset = point - new Point(entry.Effective.X * CellStep, entry.Effective.Y * CellStep);
             ShowGrid(true);
@@ -478,7 +581,7 @@ namespace AppShelf
         internal FreeCanvasRect MoveCandidate(string key, Point point)
         {
             Entry entry = Find(key);
-            if (entry == null || entry.Effective == null || point.X < 0 || point.Y < 0 ||
+            if (IsTemporaryLayout || entry == null || entry.Effective == null || point.X < 0 || point.Y < 0 ||
                 point.X > ActualWidth || point.Y > ActualHeight) return null;
             if (String.Equals(key, dragKey, StringComparison.OrdinalIgnoreCase)) point -= dragOffset;
             FreeCanvasRect rect = new FreeCanvasRect(FreeCanvasLayout.Snap(point.X, CellStep),
@@ -490,7 +593,7 @@ namespace AppShelf
         internal FreeCanvasRect ResizeCandidate(string key, double widthDip, double heightDip)
         {
             Entry entry = Find(key);
-            if (entry == null || entry.Effective == null) return null;
+            if (IsTemporaryLayout || entry == null || entry.Effective == null) return null;
             int width = Math.Max(MinimumColumns, FreeCanvasLayout.Snap(widthDip, CellStep));
             int manual = Math.Max(2, FreeCanvasLayout.Snap(heightDip, CellStep));
             // Measure the content at the proposed width, then restore the
@@ -609,6 +712,9 @@ namespace AppShelf
 
         [DataMember(Name = "canvasGridStep", EmitDefaultValue = false)]
         public int? CanvasGridStep;
+
+        [DataMember(Name = "canvasViewportMode", EmitDefaultValue = false)]
+        public string CanvasViewportMode;
 
         [DataMember(Name = "groupAlignment", EmitDefaultValue = false)]
         public string GroupAlignment;
@@ -4359,7 +4465,7 @@ namespace AppShelf
         }
 
         private bool CanEditCanvas()
-        { return _canSave && (_search == null || String.IsNullOrWhiteSpace(_search.Text)); }
+        { return _canSave && (_canvasBoard == null || !_canvasBoard.IsTemporaryLayout) && (_search == null || String.IsNullOrWhiteSpace(_search.Text)); }
 
         private bool SaveCanvasPlacement(string key, FreeCanvasRect candidate)
         {
@@ -5338,7 +5444,14 @@ namespace AppShelf
 
         private void UpdateGroupWidths()
         {
-            if (_canvasBoard != null) { _canvasBoard.InvalidateMeasure(); return; }
+            if (_canvasBoard != null)
+            {
+                double outer = _tilesScroller.ActualWidth > 1 ? _tilesScroller.ActualWidth : Width;
+                double viewport = outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
+                _canvasBoard.SetViewport(Math.Max(1, viewport), _config.CanvasViewportMode);
+                _canvasBoard.InvalidateMeasure();
+                return;
+            }
             if (_updatingGroupWidths || _tilesScroller == null ||
                 (_groupLayoutCards.Count == 0 && _freeLayoutGrid == null)) return;
             // Reserve scrollbar room even while hidden: otherwise the scrollbar
@@ -5706,6 +5819,7 @@ namespace AppShelf
                     if (canvasMode)
                     {
                         string key = "app:" + group;
+                        System.Windows.Automation.AutomationProperties.SetName(groupCard, group.Length == 0 ? "Без группы" : group);
                         int columns = (int)Math.Ceiling(NaturalGroupWidth(inGroup, 400) / _canvasBoard.CellStep);
                         _canvasBoard.AddCard(key, groupCard, columns, CanvasPosition(key));
                     }
@@ -7545,6 +7659,16 @@ namespace AppShelf
             foreach (int step in new[] { 10, 20, 30, 40 })
                 canvasStepSetting.Items.Add(new ComboBoxItem { Content = step + " DIP", Tag = step,
                     IsSelected = step == FreeCanvasLayout.NormalizeStep(_config.CanvasGridStep) });
+            TextBlock canvasViewportLabel = Text("При уменьшении окна:", 12, MutedBrush);
+            ComboBox canvasViewportSetting = new ComboBox { MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
+                Style = tileSetting.Style };
+            foreach (ResourceDictionary styles in tileSetting.Resources.MergedDictionaries)
+                canvasViewportSetting.Resources.MergedDictionaries.Add(styles);
+            string viewportMode = FreeCanvasLayout.NormalizeViewportMode(_config.CanvasViewportMode);
+            string[] viewportKeys = { "adaptive", "scale", "collapse", "scroll" };
+            string[] viewportTitles = { "Адаптивная расстановка", "Масштабирование (не ниже 75%)", "Сворачивание групп", "Прокрутка полотна" };
+            for (int i = 0; i < viewportKeys.Length; i++)
+                canvasViewportSetting.Items.Add(new ComboBoxItem { Content = viewportTitles[i], Tag = viewportKeys[i], IsSelected = viewportMode == viewportKeys[i] });
 
             TextBlock groupWidthLabel = Text("Ширина групп:", 12, MutedBrush);
             WrapPanel groupWidthChoices = new WrapPanel { Margin = new Thickness(4, 5, 0, 9) };
@@ -7664,7 +7788,7 @@ namespace AppShelf
                 groupLayoutLabel.Visibility = basic;
                 groupLayoutChoices.Visibility = basic;
                 groupModeDescription.Visibility = basic;
-                canvasStepLabel.Visibility = canvasStepSetting.Visibility = grouped && groupLayoutCanvas.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+                canvasViewportLabel.Visibility = canvasViewportSetting.Visibility = canvasStepLabel.Visibility = canvasStepSetting.Visibility = grouped && groupLayoutCanvas.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
                 groupModeDescription.Text = groupLayoutCanvas.IsChecked == true
                     ? "Общая сетка групп и виджетов; свободное перемещение без пересечений."
                     : free
@@ -8089,7 +8213,7 @@ namespace AppShelf
             AddSettingsSection(appearanceRows, "appearance-tiles", "Плитки и группы",
                 new List<UIElement> { groupingSetting, tileSettingLabel, tileSetting,
                     tileScaleLabel, tileScaleRow,
-                    groupLayoutLabel, groupLayoutChoices, groupModeDescription, canvasStepLabel, canvasStepSetting,
+                    groupLayoutLabel, groupLayoutChoices, groupModeDescription, canvasStepLabel, canvasStepSetting, canvasViewportLabel, canvasViewportSetting,
                     groupWidthLabel, groupWidthChoices, groupAlignmentLabel, groupAlignmentSetting,
                     groupLayoutHint, groupDefaultZoneLabel, groupZonePicker, groupZoneSelection,
                     freeGroupHint,
@@ -8289,6 +8413,7 @@ namespace AppShelf
                 pending.GroupingEnabled = groupingSetting.IsChecked == true;
                 pending.GroupLayoutMode = groupLayoutCanvas.IsChecked == true ? "canvas" : groupLayoutFree.IsChecked == true ? "free" :
                     groupLayoutGrid.IsChecked == true ? "grid" : "vertical";
+                pending.CanvasViewportMode = (string)((ComboBoxItem)canvasViewportSetting.SelectedItem).Tag;
                 int newCanvasStep = (int)((ComboBoxItem)canvasStepSetting.SelectedItem).Tag;
                 int previousCanvasStep = FreeCanvasLayout.NormalizeStep(pending.CanvasGridStep);
                 if (newCanvasStep != previousCanvasStep)

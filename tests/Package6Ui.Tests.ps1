@@ -1130,7 +1130,8 @@ public static class Package6Tests
                     "Menu icons missing");
                 MenuItem panel = Menu(quick, "Нижняя панель");
                 Assert(panel.Items.Count == 3 && Menu(quick, "Режим плиток").Items.Count == 3 &&
-                    Menu(quick, "Размещение групп").Items.Count == 3,
+                    Menu(quick, "Размещение групп").Items.Count == 4 &&
+                    ((MenuItem)Menu(quick, "Размещение групп").Items[3]).Header.ToString() == "Свободное полотно",
                     "Quick mode choices incomplete");
                 Assert(Menu(quick, "Звук включён").IsCheckable &&
                     Menu(quick, "Группировка приложений").IsCheckable &&

@@ -305,6 +305,7 @@ namespace AppShelf
                 DetachCard(group);
                 group.Heading.TextWrapping = TextWrapping.Wrap;
                 group.Heading.TextTrimming = TextTrimming.None;
+                AutomationProperties.SetName(group.Card, group.Title);
                 cards.Add(new KeyValuePair<string, Border>("widget:" + group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture), group.Card));
             }
             return cards;

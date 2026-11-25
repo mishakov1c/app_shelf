@@ -113,3 +113,36 @@ $moved = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Win
 Assert ($null -ne $moved -and $moved.X -eq 4 -and $moved.Y -eq 17) 'drag anchor offset lost'
 [void]$finish.Invoke($board,$null)
 Write-Host 'PASS resize, grid conversion and drag anchor'
+
+# Narrow-window strategies are view-only and never persist altered positions.
+$viewport = $type.GetMethod('SetViewport',$flags)
+$temp = $type.GetProperty('IsTemporaryLayout',$flags)
+$scale = $type.GetProperty('DisplayScale',$flags)
+$toggle = $type.GetMethod('ToggleTemporaryGroup',$flags)
+$before = $capture.Invoke($board,$null)
+[void]$viewport.Invoke($board,[object[]]@(420.0,'adaptive'))
+Layout
+Assert ($temp.GetValue($board,$null)) 'adaptive view did not activate'
+Assert ($first.RenderSize.Width -le 420 -and $second.RenderSize.Width -le 420) 'adaptive cards exceed viewport'
+Assert ($null -eq $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 0,0).PSObject.BaseObject))) 'temporary layout accepts edits'
+[void]$viewport.Invoke($board,[object[]]@(420.0,'collapse'))
+Layout
+Assert ($first.Visibility.ToString() -eq 'Hidden') 'compact view did not collapse cards'
+Assert ($toggle.Invoke($board,[object[]]@('app:work'))) 'temporary reveal rejected'
+Layout
+Assert ($first.Visibility.ToString() -eq 'Visible' -and $second.Visibility.ToString() -eq 'Hidden') 'temporary reveal changed other card'
+[void]$viewport.Invoke($board,[object[]]@(420.0,'scale'))
+Layout
+Assert ([Math]::Abs($scale.GetValue($board,$null) - 0.75) -lt 0.001) 'minimum readable scale not respected'
+[void]$viewport.Invoke($board,[object[]]@(420.0,'scroll'))
+Layout
+Assert (-not $temp.GetValue($board,$null)) 'scroll mode unexpectedly temporary'
+Assert ($board.DesiredSize.Width -gt 420) 'scroll mode lost original extent'
+[void]$viewport.Invoke($board,[object[]]@(1200.0,'adaptive'))
+Layout
+Assert (-not $temp.GetValue($board,$null)) 'wide view did not restore original layout'
+$after = $capture.Invoke($board,$null)
+foreach ($key in $before.Keys) {
+    Assert ($before[$key].X -eq $after[$key].X -and $before[$key].Y -eq $after[$key].Y -and $before[$key].Width -eq $after[$key].Width -and $before[$key].Height -eq $after[$key].Height) 'viewport strategy modified original placement'
+}
+Write-Host 'PASS viewport strategies and restoration'
