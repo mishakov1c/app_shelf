@@ -242,7 +242,7 @@ public static class RestoreBackupTests
         Assert(File.ReadAllText(config.Items[0].Path).Contains("example.com/A"), "Restored shortcut differs from A");
         Assert(ReminderStore.Load(out warning, out safe).Reminders[0].Title == "Reminder-A", "Reminders differ from A");
     }
-    private static void PrepareGeometry(MainWindow window)
+    private static void PrepareGeometry(MainWindow window, bool trackGeometry = true)
     {
         EventHandler sourceHandler = (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
@@ -253,7 +253,8 @@ public static class RestoreBackupTests
         window.ShowInTaskbar = false;
         window.Show();
         window.Dispatcher.Invoke(DispatcherPriority.Loaded, new Action(delegate { }));
-        Set(window, "_windowPlacementTrackingReady", true);
+        Set(window, "_windowPlacementTrackingReady", trackGeometry);
+        if (!trackGeometry) ((DispatcherTimer)Get(window, "_windowPlacementSaveTimer")).Stop();
         window.Width = 1000;
         window.Left = 170;
         window.Measure(new Size(1000, 600));
@@ -276,12 +277,11 @@ public static class RestoreBackupTests
         MainWindow window = new MainWindow();
         try
         {
-            PrepareGeometry(window);
+            PrepareGeometry(window, false);
             // This scenario exports the seeded B profile, not geometry from
             // the deliberately resized in-memory window. Prevent the debounce
             // timer from racing the modal dialog setup. The pending/queued timer
             // restore cases below still exercise real SaveWindowPlacement.
-            Set(window, "_windowPlacementTrackingReady", false);
             DispatcherTimer exportPlacement = (DispatcherTimer)Get(window, "_windowPlacementSaveTimer");
             exportPlacement.Stop();
             settingsAction = delegate(Window settings)
