@@ -3786,16 +3786,21 @@ namespace AppShelf
                 _bottomPanelLayout.Children.Insert(_bottomPanelLayout.Children.IndexOf(_bottomCategoryDetails) + 1, _bottomFullMonitors);
             }
             _bottomCompactItems.Visibility = expanded ? Visibility.Collapsed : Visibility.Visible;
+            // Temporarily detach plugin cards before rebuilding the compact favorites.
+            if (_pluginWidgets != null) _pluginWidgets.AttachIndicatorPanel(null);
             _bottomCompactItems.Children.Clear();
             if (mode == "compact" && !expanded)
             {
                 foreach (string key in BottomPanelFavorites(_config))
                     if (BottomIndicatorEnabled(key))
                         _bottomCompactItems.Children.Add(BottomIndicatorButton(key, true));
-                if (_bottomCompactItems.Children.Count == 0)
+                if (_bottomCompactItems.Children.Count == 0 && (_pluginWidgets == null || _pluginWidgets.IndicatorCount == 0))
                     _bottomCompactItems.Children.Add(Text("Нет выбранных показателей", 12, MutedBrush));
-                AlignCompactExpandButton();
             }
+            if (_pluginWidgets != null)
+                _pluginWidgets.AttachIndicatorPanel(mode == "categories" ? null :
+                    mode == "compact" && !expanded ? _bottomCompactItems : _bottomFullMonitors);
+            if (mode == "compact") AlignCompactExpandButton();
             if (mode != "categories") _bottomCategoryDetails.Visibility = Visibility.Collapsed;
             else RefreshBottomCategoryDetails();
         }

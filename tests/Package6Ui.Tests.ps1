@@ -611,7 +611,7 @@ public static class Package6Tests
             workspace.RefreshVisibleAsync(delegate { return false; }, delegate { return false; }).GetAwaiter().GetResult();
             Assert(reads == 0, "Hidden indicator refreshed");
             workspace.RefreshVisibleAsync(delegate { return false; }, delegate { return true; }).GetAwaiter().GetResult();
-            StackPanel panel = (StackPanel)workspace.IndicatorHost.Content;
+            WrapPanel panel = workspace.IndicatorHost;
             Assert(reads == 1 && Controls<TextBlock>(panel).Exists(delegate(TextBlock t) { return t.Text == "200"; }),
                 "Indicator did not refresh outside free layout");
             ContentControl item = (ContentControl)panel.Children[0];
@@ -1823,6 +1823,63 @@ public static class Package6Tests
                 finally { w.Close(); }
             });
         }
+        Case("plugin indicators share footer wrap layout without losing saved cards", delegate {
+            Seed("normal", 1);
+            AppConfig data = Load();
+            data.BottomPanelMode = "detailed";
+            data.ShowCountdownTimer = true;
+            data.BottomPanelFavorites = new List<string> { "countdown", "reminders" };
+            data.WidgetIndicators = new List<PluginWidgetPlacementConfig> { new PluginWidgetPlacementConfig {
+                PluginId = "example.test", WidgetId = "route", Version = "1.0.0",
+                Title = "Network", Size = "indicator" } };
+            ConfigStore.Save(data);
+            MainWindow w = Open(); try {
+                w.Width = 1050; w.Height = 700; Drain(); w.UpdateLayout();
+                PluginWidgetWorkspace workspace = (PluginWidgetWorkspace)Get(w, "_pluginWidgets");
+                WrapPanel full = (WrapPanel)Get(w, "_bottomFullMonitors");
+                WrapPanel favorites = (WrapPanel)Get(w, "_bottomCompactItems");
+                DockPanel compact = (DockPanel)Get(w, "_bottomCompactRow");
+                ContentControl indicator = (ContentControl)full.Children[full.Children.Count - 1];
+                Assert(workspace.IndicatorCount == 1 && workspace.IndicatorHost.Visibility == Visibility.Collapsed &&
+                    indicator.Parent == full, "Detailed footer has a separate plugin row");
+                FrameworkElement reminder = (FrameworkElement)Get(w, "_remindersChip");
+                Assert(Math.Abs(indicator.TranslatePoint(new Point(0,0), full).Y - reminder.TranslatePoint(new Point(0,0), full).Y) <= 1,
+                    "Indicator did not use spare space on detailed first row");
+                Live(w).BottomPanelMode = "compact";
+                Call(w, "ApplyBottomPanelMode"); Drain();
+                Assert(indicator.Parent == favorites && favorites.Children.Count == 3, "Compact indicator missing or duplicated");
+                Assert(Math.Abs(indicator.TranslatePoint(new Point(0,0), favorites).Y -
+                    ((FrameworkElement)favorites.Children[0]).TranslatePoint(new Point(0,0), favorites).Y) <= 1,
+                    "Compact indicator did not use spare first row");
+                Click((Button)compact.Children[0]);
+                Assert(indicator.Parent == full && favorites.Children.Count == 0, "Expanded compact lost or duplicated indicator");
+                Click((Button)compact.Children[0]);
+                Assert(indicator.Parent == favorites && favorites.Children.Count == 3, "Collapsed compact lost indicator");
+                Live(w).BottomPanelMode = "categories";
+                Call(w, "ApplyBottomPanelMode"); Drain();
+                Assert(indicator.Parent == workspace.IndicatorHost && workspace.IndicatorHost.Visibility == Visibility.Visible,
+                    "Category mode lost indicator host");
+                Live(w).BottomPanelMode = "detailed";
+                Call(w, "ApplyBottomPanelMode"); Drain();
+                Assert(indicator.Parent == full && workspace.IndicatorHost.Children.Count == 0 &&
+                    workspace.IndicatorCount == 1, "Mode switches duplicated or lost placement");
+                // Force a width-constrained wrap independently of the main window minimum.
+                WrapPanel narrow = new WrapPanel();
+                Border builtin = new Border { Width = 110, Height = 30 };
+                narrow.Children.Add(builtin);
+                workspace.AttachIndicatorPanel(narrow);
+                indicator.Width = 110;
+                narrow.Measure(new Size(160, Double.PositiveInfinity));
+                narrow.Arrange(new Rect(0, 0, 160, narrow.DesiredSize.Height));
+                Assert(indicator.TranslatePoint(new Point(0,0), narrow).Y >= 30, "Indicator did not wrap at narrow width");
+                indicator.ClearValue(FrameworkElement.WidthProperty);
+                workspace.AttachIndicatorPanel(full);
+                Assert(workspace.CaptureIndicators().Count == 1, "Layout reparenting changed saved placements");
+                Click((MenuItem)indicator.ContextMenu.Items[1]);
+                Assert(workspace.IndicatorCount == 0 && workspace.CaptureIndicators() == null &&
+                    full.Children.Contains(reminder) && full.Children.Count == 5, "Removal touched built-in indicators");
+            } finally { w.Close(); }
+        });
         Case("legacy configuration retains detailed bottom panel", delegate
         {
             Seed("normal", 1);

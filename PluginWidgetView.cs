@@ -233,8 +233,8 @@ namespace AppShelf
         internal const string WidgetDragFormat = "AppShelf.Widget";
         internal WrapPanel Surface { get; private set; }
         internal bool HasWidgets { get { return groups.Count != 0; } }
-        internal ScrollViewer IndicatorHost { get; private set; }
-        private StackPanel indicatorPanel;
+        internal WrapPanel IndicatorHost { get; private set; }
+        private WrapPanel indicatorPanel;
 
         internal PluginWidgetWorkspace(Func<string, PluginRuntimeState> state,
             Func<string, string, bool, Task<PluginWidgetSnapshot>> read,
@@ -244,10 +244,36 @@ namespace AppShelf
             Surface = new WrapPanel { Visibility = Visibility.Collapsed,
                 HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 8) };
             Surface.SizeChanged += delegate { foreach (WidgetGroup group in groups) ResizeGroup(group); };
-            indicatorPanel = new StackPanel { Orientation = Orientation.Horizontal };
-            IndicatorHost = new ScrollViewer { Content = indicatorPanel, Visibility = Visibility.Collapsed,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                MaxHeight = 90, Margin = new Thickness(0, 4, 0, 0) };
+            IndicatorHost = new WrapPanel { Orientation = Orientation.Horizontal, Visibility = Visibility.Collapsed,
+                Margin = new Thickness(0, 4, 0, 0) };
+            indicatorPanel = IndicatorHost;
+        }
+
+        // One actual card per placement, shared by the active footer layout.
+        // The category layout retains a separate wrapping host below its full-width tabs.
+        internal void AttachIndicatorPanel(WrapPanel target)
+        {
+            target = target ?? IndicatorHost;
+            if (!Object.ReferenceEquals(indicatorPanel, target))
+            {
+                foreach (Placement entry in entries)
+                    if (entry.Group == null)
+                    {
+                        indicatorPanel.Children.Remove(entry.Host);
+                        target.Children.Add(entry.Host);
+                    }
+                indicatorPanel = target;
+            }
+            UpdateIndicatorHostVisibility();
+        }
+
+        internal int IndicatorCount
+        { get { return entries.FindAll(delegate(Placement p) { return p.Group == null; }).Count; } }
+
+        private void UpdateIndicatorHostVisibility()
+        {
+            IndicatorHost.Visibility = Object.ReferenceEquals(indicatorPanel, IndicatorHost) && IndicatorCount != 0
+                ? Visibility.Visible : Visibility.Collapsed;
         }
 
         internal void ConfigureIndicatorEditing(Func<bool> editable) { canEditIndicators = editable; }
@@ -774,7 +800,7 @@ namespace AppShelf
 
         internal bool AddIndicator(string pluginId, string version, PluginWidgetSnapshot snapshot, string widgetId)
         {
-            if (!canEditIndicators() || indicatorPanel.Children.Count >= 6 || Contains(pluginId, widgetId) ||
+            if (!canEditIndicators() || IndicatorCount >= 6 || Contains(pluginId, widgetId) ||
                 !Current(state(pluginId), version, snapshot.ProcessId)) return false;
             PluginWidget widget = Array.Find(snapshot.Widgets, delegate(PluginWidget item) { return item.Id == widgetId; });
             if (widget == null || widget.Kind != "indicator") return false;
@@ -783,7 +809,7 @@ namespace AppShelf
             WireIndicator(entry);
             entries.Add(entry);
             indicatorPanel.Children.Add(entry.Host);
-            IndicatorHost.Visibility = Visibility.Visible;
+            UpdateIndicatorHostVisibility();
             Render(entry, widget);
             changed();
             return Contains(pluginId, widgetId);
@@ -918,7 +944,7 @@ namespace AppShelf
                     entries.Add(entry); indicatorPanel.Children.Add(entry.Host);
                     Unavailable(entry, "Нет данных");
                 }
-            IndicatorHost.Visibility = indicatorPanel.Children.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+            UpdateIndicatorHostVisibility();
             Surface.Visibility = HasWidgets ? Visibility.Visible : Visibility.Collapsed;
         }
 
@@ -1134,7 +1160,7 @@ namespace AppShelf
             if (entry.Group == null)
             {
                 indicatorPanel.Children.Remove(entry.Host);
-                IndicatorHost.Visibility = indicatorPanel.Children.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+                UpdateIndicatorHostVisibility();
             }
             else
             {
@@ -1147,8 +1173,11 @@ namespace AppShelf
 
         internal void Clear()
         {
-            DetachBoard(); entries.Clear(); groups.Clear(); Surface.Children.Clear(); Surface.Visibility = Visibility.Collapsed;
-            indicatorPanel.Children.Clear(); IndicatorHost.Visibility = Visibility.Collapsed;
+            DetachBoard();
+            foreach (Placement entry in entries)
+                if (entry.Group == null) indicatorPanel.Children.Remove(entry.Host);
+            entries.Clear(); groups.Clear(); Surface.Children.Clear(); Surface.Visibility = Visibility.Collapsed;
+            UpdateIndicatorHostVisibility();
         }
     }
 
@@ -1196,6 +1225,7 @@ namespace AppShelf
             }
             catch (Exception error) { ShowError("Не удалось сохранить раскладку виджетов.", error); }
             if (!saved) _pluginWidgets.RestoreLayout(_config.WidgetGroups, _config.WidgetIndicators);
+            ApplyBottomPanelMode();
             RenderTiles();
         }
 
