@@ -5911,9 +5911,9 @@ namespace AppShelf
                             groupMenu.Items.Add(zoneMenu);
                         }
                         headerPanel.ContextMenu = groupMenu;
-                        heading.ToolTip = freeMode
+                        heading.ToolTip = heading.Text + "\n" + (freeMode
                             ? "Правая кнопка — размещение группы и другие действия"
-                            : "Правая кнопка — порядок, переименование, удаление";
+                            : "Правая кнопка — порядок, переименование, удаление");
 
                         // Drag by the dedicated handle, never by an application tile.
                         // A normal click on the heading still expands/collapses.

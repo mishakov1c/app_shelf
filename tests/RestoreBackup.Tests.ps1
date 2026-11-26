@@ -277,6 +277,13 @@ public static class RestoreBackupTests
         try
         {
             PrepareGeometry(window);
+            // This scenario exports the seeded B profile, not geometry from
+            // the deliberately resized in-memory window. Prevent the debounce
+            // timer from racing the modal dialog setup. The pending/queued timer
+            // restore cases below still exercise real SaveWindowPlacement.
+            Set(window, "_windowPlacementTrackingReady", false);
+            DispatcherTimer exportPlacement = (DispatcherTimer)Get(window, "_windowPlacementSaveTimer");
+            exportPlacement.Stop();
             settingsAction = delegate(Window settings)
             {
                 pickedFile = source;
@@ -290,6 +297,11 @@ public static class RestoreBackupTests
                 {
                     AssertBackupGroups(backup);
                     ToggleBackupGroup(backup, "backup-full");
+                    string seedWarning; bool seedSafe;
+                    AppConfig seed = ConfigStore.Load(out seedWarning, out seedSafe);
+                    Assert(seedSafe && seedWarning == null && seed.WindowWidth == 950 &&
+                        ((AppConfig)Get(window, "_config")).WindowWidth == 950 &&
+                        !exportPlacement.IsEnabled, "Unexpected geometry save before export");
                     pickedFile = zip;
                     Click(backup, "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u0440\u0435\u0437\u0435\u0440\u0432\u043d\u0443\u044e \u043a\u043e\u043f\u0438\u044e ZIP\u2026");
                     Assert(File.Exists(zip) && compositionDialogs == 1, "ZIP export or composition picker was blocked");

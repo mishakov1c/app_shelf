@@ -2598,7 +2598,9 @@ public static class Package6Tests
                     TextBlock heading = (TextBlock)header.Children[header.Children.Count - 1];
                     Assert(heading.TextWrapping == TextWrapping.Wrap &&
                         heading.TextTrimming == TextTrimming.None &&
-                        Object.Equals(heading.ToolTip, heading.Text), "D03 heading truncation policy in " + mode);
+                        Convert.ToString(heading.ToolTip).StartsWith(heading.Text, StringComparison.Ordinal) &&
+                        Convert.ToString(heading.ToolTip).Contains("Правая кнопка"),
+                        "D03 heading or context-menu hint missing in " + mode);
                 }
             } finally { w.Close(); }
         });
