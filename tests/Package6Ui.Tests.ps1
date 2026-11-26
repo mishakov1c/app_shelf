@@ -9,7 +9,7 @@ $env:APPSHELF_TEST_DATA = $temp
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
@@ -28,16 +28,6 @@ try {
             $anchor = 'if (dialog.ShowDialog(this) == true) AddPaths(dialog.FileNames);'
             if (-not $text.Contains($anchor)) { throw 'Add dialog boundary missing.' }
             $text = $text.Replace($anchor, 'Package6Tests.AddDialogCalls++;')
-            # Replace only the footer's two probe calls, keeping network traffic offline.
-            foreach ($index in @(1, 2)) {
-                # Both replacements must match precisely one production call.
-                $probe = if ($index -eq 1) { 'NetworkChecks.ProbeAsync(firstTarget, 1)' } else { 'NetworkChecks.ProbeAsync(secondTarget, 2)' }
-                $mock = if ($index -eq 1) { 'Package6Tests.ControlledProbe(firstTarget, 1)' } else { 'Package6Tests.ControlledProbe(secondTarget, 2)' }
-                if ($text.Split(@($probe), [StringSplitOptions]::None).Length -ne 2) {
-                    throw 'Footer probe isolation anchor missing.'
-                }
-                $text = $text.Replace($probe, $mock)
-            }
             $anchor = 'Process.Start(new ProcessStartInfo("https://github.com/mishakov1c/app_shelf")'
             if (-not $text.Contains($anchor)) { throw 'Repository launch boundary missing.' }
             $text = $text.Replace($anchor, 'Package6Tests.OpenLink(new ProcessStartInfo("https://github.com/mishakov1c/app_shelf")')
@@ -55,11 +45,6 @@ try {
             $target = '            dialog.ShowDialog();'
             if ($text.Split(@($target), [StringSplitOptions]::None).Length -ne 2) { throw 'Backup dialog interception anchor missing.' }
             $text = $text.Replace($target, '            Package6Tests.Backup(dialog);')
-        }
-        if ($file -eq 'AppShelfExtras.cs') {
-            $target = 'Loaded += async delegate { await RefreshReportAsync(); };'
-            if ($text.Split(@($target), [StringSplitOptions]::None).Length -ne 2) { throw 'Diagnostics network isolation anchor missing.' }
-            $text = $text.Replace($target, '') # Keep real diagnostics layout, but no live network probes.
         }
         $text = $text.Replace('WindowsStartup.Apply(enable, hidden);', '').Replace('WindowsStartup.WriteRaw(previousRunValue);', '')
         $text = $text.Replace('System.Media.SystemSounds.Asterisk.Play();', '').Replace('System.Media.SystemSounds.Exclamation.Play();', '')
@@ -97,13 +82,6 @@ public static class Package6Tests
     {
         dialog.ShowInTaskbar = false; dialog.Show(); Drain();
         try { backup(dialog); } finally { dialog.Close(); }
-    }
-    internal static Func<NetworkChecks.Target, int, Task<string>> NetworkProbeHook;
-    internal static Task<string> ControlledProbe(NetworkChecks.Target target, int index)
-    {
-        return NetworkProbeHook != null
-            ? NetworkProbeHook(target, index)
-            : NetworkChecks.ProbeAsync(target, index);
     }
     private static int rdpConfirmations;
     private static MessageBoxResult rdpAnswer = MessageBoxResult.No;
@@ -188,7 +166,7 @@ public static class Package6Tests
     {
         MainWindow w = new MainWindow();
         w.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), w, typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(w, "_networkTimer", new DispatcherTimer());
+        Set(w, "_weatherTimer", new DispatcherTimer());
         w.ShowInTaskbar = false; w.Show(); Drain();
         PresentationSource source = PresentationSource.FromVisual(w);
         Assert(source != null && source.CompositionTarget != null, "No native WPF source");
@@ -316,28 +294,6 @@ public static class Package6Tests
             if (Object.Equals(button.Tag, tag)) return button;
         throw new Exception("Settings button missing: " + tag);
     }
-    private static ComboBox NetworkMode(Window d, int slot)
-    {
-        foreach (ComboBox c in Controls<ComboBox>(d))
-            if (Object.Equals(c.Tag, "NetworkTargetMode" + slot)) return c;
-        throw new Exception("Network check mode control missing: " + slot);
-    }
-    private static TextBox NetworkAddress(Window d, int slot)
-    {
-        foreach (TextBox t in Controls<TextBox>(d))
-            if (Object.Equals(t.Tag, "NetworkTargetAddress" + slot)) return t;
-        throw new Exception("Network check target control missing: " + slot);
-    }
-    private static string FavoriteName(Window d, string key)
-    {
-        foreach (ListBoxItem row in Controls<ListBox>(d)[0].Items)
-        {
-            CheckBox check = row.Content as CheckBox;
-            if (check != null && Object.Equals(check.Tag, key))
-                return Convert.ToString(check.Content);
-        }
-        throw new Exception("Missing favorite key: " + key);
-    }
     private static Border AccordionHeader(Window d, string key)
     {
         foreach (Border border in Controls<Border>(d))
@@ -371,6 +327,382 @@ public static class Package6Tests
     {
         Assert(ConfigStore.DirectoryPath == Path.Combine(Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"), "Isolation failed");
         Application app = new Application(); app.ShutdownMode = ShutdownMode.OnExplicitShutdown; FluentUi.Install(app);
+        Case("widget groups use four nonoverlapping sizes and independent lifecycle", delegate {
+            PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+            PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "200" },
+                    new PluginWidgetElement { Type = "action", Label = "Открыть", CommandId = "open" } },
+                DefaultSize = "full" };
+            card.Layouts = new[] {
+                new PluginWidgetLayout { Size = "full", Elements = card.Elements },
+                new PluginWidgetLayout { Size = "half-horizontal", Elements = card.Elements },
+                new PluginWidgetLayout { Size = "half-vertical", Elements = card.Elements },
+                new PluginWidgetLayout { Size = "quarter", Elements = new[] {
+                    new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "compact" } } }
+            };
+            PluginWidget tile = new PluginWidget { Id = "cpu", Title = "CPU", Kind = "tile",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "CPU", Value = "42%" } } };
+            PluginWidget indicator = new PluginWidget { Id = "vpn", Title = "VPN", Kind = "indicator",
+                Elements = new[] { new PluginWidgetElement { Type = "text", Label = "Connected" } } };
+            PluginWidgetSnapshot snapshot = new PluginWidgetSnapshot { ProcessId = 42, Widgets = new[] { card, tile, indicator } };
+            int changes = 0, reads = 0, invokes = 0;
+            string invoked = null;
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(
+                delegate(string id) { return running; },
+                delegate(string id, string version, bool activate) {
+                    Assert(!activate && id == "test.widget" && version == "1.0.0", "Refresh must not start plugin");
+                    reads++; return Task.FromResult(snapshot);
+                },
+                delegate(string id, string version, int pid, string command) {
+                    Assert(id == "test.widget" && version == "1.0.0" && pid == 42, "Widget action identity lost");
+                    invokes++; invoked = command; return Task.FromResult(true);
+                }, delegate { changes++; });
+            Assert(!workspace.HasWidgets && workspace.Surface.Visibility == Visibility.Collapsed, "Empty widget surface visible");
+            Assert(!workspace.Add("test.widget", "1.0.0", snapshot, "vpn"), "Indicator added to main surface");
+            Assert(workspace.Add("test.widget", "1.0.0", snapshot, "quotes"), "Card not added");
+            Border group = (Border)workspace.Surface.Children[0];
+            Grid cells = (Grid)((StackPanel)group.Child).Children[1];
+            ContentControl host = (ContentControl)cells.Children[0];
+            Assert(cells.RowDefinitions.Count == 2 && cells.ColumnDefinitions.Count == 2 &&
+                Grid.GetRowSpan(host) == 2 && Grid.GetColumnSpan(host) == 2, "Full size is not 2x2");
+            Assert(workspace.Resize("test.widget", "quotes", "half-vertical") &&
+                Grid.GetRowSpan(host) == 2 && Grid.GetColumnSpan(host) == 1, "Vertical half is not 1x2");
+            Assert(workspace.Resize("test.widget", "quotes", "quarter") &&
+                Grid.GetRowSpan(host) == 1 && Grid.GetColumnSpan(host) == 1 && cells.Height == 140,
+                "Quarter is not 1x1 or empty bottom row did not collapse");
+            Assert(Controls<TextBlock>(host).Exists(delegate(TextBlock t) { return t.Text == "compact"; }),
+                "Quarter layout content not selected");
+            Assert(workspace.Resize("test.widget", "quotes", "half-horizontal") &&
+                Grid.GetRowSpan(host) == 1 && Grid.GetColumnSpan(host) == 2, "Horizontal half is not 2x1");
+            Assert(workspace.Add("test.widget", "1.0.0", snapshot, "cpu") &&
+                workspace.Surface.Children.Count == 1 && cells.Children.Count == 2, "Widgets did not share a group");
+            ContentControl remaining = (ContentControl)cells.Children[1];
+            Assert(Grid.GetRow(remaining) == 1 && Grid.GetColumn(remaining) == 0 &&
+                Grid.GetRowSpan(remaining) == 1 && Grid.GetColumnSpan(remaining) == 1 && cells.Height == 280,
+                "Quarter overlaps half or bottom row did not expand");
+            Assert(!workspace.Resize("test.widget", "quotes", "full") &&
+                Grid.GetRowSpan(host) == 1 && Grid.GetColumnSpan(host) == 2, "Resize overlapped neighbor");
+            Assert(!workspace.Add("test.widget", "1.0.0", snapshot, "quotes") && changes == 5,
+                "Duplicate placement accepted or failed resize mutated state");
+            Window window = new Window { Width = 460, Height = 430, Content = workspace.Surface, ShowInTaskbar = false };
+            try {
+                window.Show(); Drain();
+                remaining.ContextMenu.PlacementTarget = remaining;
+                remaining.ContextMenu.IsOpen = true; Drain();
+                MenuItem move = (MenuItem)remaining.ContextMenu.Items[4];
+                MenuItem toNew = (MenuItem)move.Items[move.Items.Count - 1];
+                Assert(Convert.ToString(toNew.Header) == "В новую группу", "Move command missing");
+                Click(toNew); remaining.ContextMenu.IsOpen = false; Drain();
+                Assert(workspace.Surface.Children.Count == 2 && cells.Children.Count == 1,
+                    "Move to new group failed");
+                Assert(workspace.Resize("test.widget", "quotes", "full"), "Freed cells not reusable");
+                Button old = Controls<Button>(host).Find(delegate(Button button) { return Object.Equals(button.Tag, "open"); });
+                Assert(old != null, "Widget action missing");
+                Click(old);
+                Assert(invokes == 1 && invoked == "open", "Widget action did not dispatch");
+                PluginWidget updated = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
+                    Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "201" } } };
+                snapshot = new PluginWidgetSnapshot { ProcessId = 42, Widgets = new[] { updated, tile } };
+                Click((MenuItem)host.ContextMenu.Items[0]); Drain();
+                Assert(reads == 1 && Controls<TextBlock>(host).Exists(delegate(TextBlock text) { return text.Text == "201"; }),
+                    "Manual refresh did not update data");
+                Click(old); Assert(invokes == 1, "Detached widget command still executed");
+                running = new PluginRuntimeState { Status = "error" };
+                workspace.InvalidateStopped();
+                Assert(Controls<TextBlock>(host).Exists(delegate(TextBlock text) { return text.Text.Contains("Плагин недоступен"); }),
+                    "Stopped plugin retained live content");
+                Assert(!workspace.Add("test.other", "1.0.0", snapshot, "quotes"), "Stopped process accepted");
+                Click((MenuItem)host.ContextMenu.Items[1]);
+                Assert(workspace.Surface.Children.Count == 1, "Empty group was not removed");
+                Click((MenuItem)remaining.ContextMenu.Items[1]);
+                Assert(changes == 9 && !workspace.HasWidgets && workspace.Surface.Visibility == Visibility.Collapsed,
+                    "Removing widgets did not collapse the surface");
+            } finally { window.Close(); }
+        });
+        Case("widget groups share free board zones and detach without losing content", delegate {
+            PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+            PluginWidget widget = new PluginWidget { Id = "quotes", Kind = "card", Title = "Quotes",
+                Elements = new[] { new PluginWidgetElement { Type = "text", Label = "Demo" } } };
+            PluginWidgetSnapshot snapshot = new PluginWidgetSnapshot { ProcessId = 42, Widgets = new[] { widget } };
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(delegate { return running; },
+                delegate { return Task.FromResult(snapshot); }, delegate { return Task.FromResult(true); }, delegate {});
+            bool editable = true;
+            workspace.ConfigureBoard(new[] { "top-left", "top-right" }, delegate(string key) { return key; },
+                delegate { return "Renamed"; }, delegate { return editable; });
+            StackPanel left = new StackPanel(), right = new StackPanel();
+            Border ordinary = new Border { Height = 50 };
+            left.Children.Add(ordinary);
+            Dictionary<string, StackPanel> zones = new Dictionary<string, StackPanel> { { "top-left", left }, { "top-right", right } };
+            workspace.AttachBoard(zones, "top-left");
+            Assert(workspace.Add("test.widget", "1.0.0", snapshot, "quotes"), "Cannot add widget in free mode");
+            workspace.AttachBoard(zones, "top-left"); workspace.FitBoard(220);
+            Assert(left.Children.Count == 2 && Object.ReferenceEquals(left.Children[0], ordinary), "Widget did not share app zone");
+            Border group = (Border)left.Children[1];
+            DockPanel header = (DockPanel)((StackPanel)group.Child).Children[0];
+            TextBlock heading = (TextBlock)header.Children[2];
+            Button collapseButton = (Button)header.Children[0];
+            Grid cells = (Grid)((StackPanel)group.Child).Children[1];
+            StackPanel root = new StackPanel(); root.Children.Add(left); root.Children.Add(right);
+            Window window = new Window { Width = 360, Height = 500, Content = root, ShowInTaskbar = false };
+            try {
+                window.Show(); Drain();
+                ContextMenu menu = heading.ContextMenu;
+                menu.PlacementTarget = heading; menu.IsOpen = true; Drain();
+                Click((MenuItem)menu.Items[0]); menu.IsOpen = false; Drain();
+                Assert(heading.Text == "Renamed  ·  1", "Rename failed");
+                Click(collapseButton);
+                Assert(cells.Visibility == Visibility.Collapsed, "Collapse button failed");
+                Click(collapseButton);
+                Assert(cells.Visibility == Visibility.Visible, "Expand button failed");
+                menu.IsOpen = true; Drain(); Click((MenuItem)menu.Items[1]); menu.IsOpen = false;
+                Assert(cells.Visibility == Visibility.Collapsed, "Collapse menu failed");
+                menu.IsOpen = true; Drain(); Click((MenuItem)menu.Items[2]); menu.IsOpen = false;
+                Assert(Object.ReferenceEquals(left.Children[0], group), "Widget could not move before app group");
+                menu.IsOpen = true; Drain(); Click((MenuItem)((MenuItem)menu.Items[4]).Items[1]); menu.IsOpen = false;
+                Assert(right.Children.Count == 1 && Object.ReferenceEquals(right.Children[0], group), "Zone move failed");
+                workspace.DetachBoard(); editable = false;
+                Assert(right.Children.Count == 0 && workspace.HasWidgets &&
+                    !workspace.Resize("test.widget", "quotes", "quarter"), "Hidden mode changed placement");
+                editable = true; workspace.AttachBoard(zones, "top-left");
+                Assert(right.Children.Count == 1 && Object.ReferenceEquals(right.Children[0], group) &&
+                    heading.Text == "Renamed  ·  1" && cells.Visibility == Visibility.Collapsed, "Free layout was not restored");
+            } finally { window.Close(); }
+        });
+        Case("widget layout persists, restores without executing and rejects overlap", delegate {
+            PluginWidgetGroupConfig group = new PluginWidgetGroupConfig { Number = 7, Title = "Финансы",
+                Zone = "middle-right", Order = 2, Collapsed = true, Widgets = new List<PluginWidgetPlacementConfig> {
+                    new PluginWidgetPlacementConfig { PluginId = "example.stocks", WidgetId = "quotes", Version = "1.0.0",
+                        Title = "Курсы акций", Size = "half-horizontal", Row = 0, Column = 0 },
+                    new PluginWidgetPlacementConfig { PluginId = "example.stocks", WidgetId = "price", Version = "1.0.0",
+                        Title = "Цена", Size = "quarter", Row = 1, Column = 1 } } };
+            AppConfig config = new AppConfig { GroupingEnabled = true, GroupLayoutMode = "free",
+                WidgetGroups = new List<PluginWidgetGroupConfig> { group } };
+            AppConfig copy = config.Copy(); copy.WidgetGroups[0].Widgets[0].Row = 1;
+            Assert(group.Widgets[0].Row == 0, "Widget layout copy was shallow");
+            bool rejected = false;
+            try { PluginWidgetGroupConfig.Validate(copy.WidgetGroups); } catch (InvalidDataException) { rejected = true; }
+            Assert(rejected, "Overlapping stored placements accepted");
+            ConfigStore.Save(config);
+            string warning; bool safe;
+            AppConfig loaded = ConfigStore.Load(out warning, out safe);
+            Assert(safe && warning == null && loaded.WidgetGroups.Count == 1 &&
+                loaded.WidgetGroups[0].Widgets[1].Column == 1, "Widget layout did not roundtrip");
+            int reads = 0, actions = 0, changes = 0;
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(
+                delegate { return new PluginRuntimeState { Status = "idle" }; },
+                delegate { reads++; throw new Exception("Restore must not execute a plugin"); },
+                delegate { actions++; throw new Exception("Restore must not execute a command"); },
+                delegate { changes++; });
+            workspace.RestoreLayout(loaded.WidgetGroups);
+            List<PluginWidgetGroupConfig> captured = workspace.CaptureLayout();
+            Assert(reads == 0 && actions == 0 && changes == 0 && workspace.HasWidgets &&
+                captured[0].Number == 7 && captured[0].Title == "Финансы" && captured[0].Zone == "middle-right" &&
+                captured[0].Collapsed && captured[0].Order == 2 &&
+                captured[0].Widgets[0].Size == "half-horizontal" && captured[0].Widgets[1].Column == 1,
+                "Restore lost placement metadata or executed plugin");
+            workspace.Clear();
+        });
+        Case("automatic widget refresh batches placements, skips hidden layouts and never restarts errors", delegate {
+            PluginRuntimeState current = new PluginRuntimeState { Status = "idle" };
+            PluginWidget first = new PluginWidget { Id = "one", Kind = "tile", Title = "One",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "A", Value = "100" } } };
+            PluginWidget second = new PluginWidget { Id = "two", Kind = "tile", Title = "Two",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "B", Value = "200" } } };
+            PluginWidgetSnapshot snapshot = new PluginWidgetSnapshot { ProcessId = 42, Version = "1.0.0", Widgets = new[] { first, second } };
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(delegate { return current; },
+                delegate { throw new Exception("Periodic refresh used manual activation"); },
+                delegate { throw new Exception("Unexpected command"); }, delegate {});
+            workspace.ConfigureBoard(new[] { "top-left" }, delegate(string key) { return key; }, delegate { return null; }, delegate { return true; });
+            workspace.RestoreLayout(new List<PluginWidgetGroupConfig> { new PluginWidgetGroupConfig {
+                Number = 1, Title = "Widgets", Zone = "top-left", Order = 0,
+                Widgets = new List<PluginWidgetPlacementConfig> {
+                    new PluginWidgetPlacementConfig { PluginId = "test.widget", WidgetId = "one", Version = "1.0.0",
+                        Title = "One", Size = "quarter", Row = 0, Column = 0 },
+                    new PluginWidgetPlacementConfig { PluginId = "test.widget", WidgetId = "two", Version = "1.0.0",
+                        Title = "Two", Size = "quarter", Row = 0, Column = 1 } } } });
+            StackPanel host = new StackPanel();
+            workspace.AttachBoard(new Dictionary<string, StackPanel> { { "top-left", host } }, "top-left");
+            int reads = 0, activations = 0;
+            workspace.ConfigureAutomaticRefresh(delegate(string id, string version, bool activate) {
+                Assert(id == "test.widget", "Wrong plugin read"); reads++;
+                if (activate) {
+                    activations++;
+                    Assert(version == null && current.Status == "idle", "Invalid startup activation");
+                    current = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+                } else Assert(version == "1.0.0", "Running refresh did not bind version");
+                return Task.FromResult(snapshot);
+            });
+            workspace.RefreshVisibleAsync(delegate { return false; }).GetAwaiter().GetResult();
+            Assert(reads == 0, "Hidden workspace performed RPC");
+            workspace.RefreshVisibleAsync(delegate { return true; }).GetAwaiter().GetResult();
+            Grid cells = (Grid)((StackPanel)((Border)host.Children[0]).Child).Children[1];
+            ContentControl firstHost = (ContentControl)cells.Children[0];
+            Assert(reads == 1 && activations == 1 &&
+                Controls<TextBlock>(cells).Exists(delegate(TextBlock text) { return text.Text == "100"; }) &&
+                Controls<TextBlock>(cells).Exists(delegate(TextBlock text) { return text.Text == "200"; }),
+                "Snapshot did not serve both widgets");
+            object content = firstHost.Content;
+            workspace.RefreshVisibleAsync(delegate { return true; }).GetAwaiter().GetResult();
+            Assert(reads == 2 && activations == 1 && Object.ReferenceEquals(content, firstHost.Content),
+                "Unchanged snapshot rebuilt widget or restarted plugin");
+            current = new PluginRuntimeState { Status = "error" };
+            workspace.RefreshVisibleAsync(delegate { return true; }).GetAwaiter().GetResult();
+            Assert(reads == 2 && activations == 1 &&
+                Controls<TextBlock>(cells).Exists(delegate(TextBlock text) { return text.Text.Contains("Плагин недоступен"); }),
+                "Failed plugin restarted or retained live values");
+            workspace.Clear();
+        });
+        Case("exact widget cell movement preserves spans and rejects collisions", delegate {
+            PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(delegate { return running; },
+                delegate { throw new Exception("Move performed RPC"); },
+                delegate { throw new Exception("Move invoked command"); }, delegate {});
+            List<PluginWidgetGroupConfig> saved = new List<PluginWidgetGroupConfig> {
+                new PluginWidgetGroupConfig { Number = 1, Title = "One", Zone = "top-left", Order = 0,
+                    Widgets = new List<PluginWidgetPlacementConfig> {
+                        new PluginWidgetPlacementConfig { PluginId = "test.widget", WidgetId = "quarter", Version = "1.0.0",
+                            Title = "Quarter", Size = "quarter", Row = 0, Column = 0 } } },
+                new PluginWidgetGroupConfig { Number = 2, Title = "Two", Zone = "top-right", Order = 0,
+                    Widgets = new List<PluginWidgetPlacementConfig> {
+                        new PluginWidgetPlacementConfig { PluginId = "test.widget", WidgetId = "half", Version = "1.0.0",
+                            Title = "Half", Size = "half-horizontal", Row = 0, Column = 0 } } }
+            };
+            workspace.RestoreLayout(saved);
+            Assert(!workspace.MoveWidget("test.widget", "quarter", 2, 0, 1), "Overlapping move accepted");
+            Assert(!workspace.MoveWidget("test.widget", "half", 2, 1, 1), "Out of bounds span accepted");
+            Assert(workspace.MoveWidget("test.widget", "quarter", 1, 1, 1), "In-group move failed");
+            Assert(workspace.CaptureLayout()[0].Widgets[0].Row == 1 && workspace.CaptureLayout()[0].Widgets[0].Column == 1,
+                "In-group move not recorded");
+            Assert(workspace.MoveWidget("test.widget", "quarter", 2, 1, 1), "Cross-group move failed");
+            List<PluginWidgetGroupConfig> moved = workspace.CaptureLayout();
+            Assert(moved.Count == 1 && moved[0].Number == 2 && moved[0].Widgets.Count == 2 &&
+                moved[0].Widgets.Exists(delegate(PluginWidgetPlacementConfig p) {
+                    return p.WidgetId == "quarter" && p.Row == 1 && p.Column == 1 && p.Size == "quarter"; }),
+                "Cross-group move lost position or empty source group");
+            workspace.Clear();
+        });
+        Case("plugin indicators persist and refresh independently of free layout", delegate {
+            PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
+            PluginWidget indicator = new PluginWidget { Id = "market", Kind = "indicator", Title = "Market demo",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "200" } } };
+            PluginWidgetSnapshot snapshot = new PluginWidgetSnapshot { Version = "1.0.0", ProcessId = 42, Widgets = new[] { indicator } };
+            int changes = 0, reads = 0;
+            PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(delegate { return running; },
+                delegate { return Task.FromResult(snapshot); }, delegate { return Task.FromResult(true); }, delegate { changes++; });
+            workspace.ConfigureBoard(new[] { "top-left" }, delegate(string key) { return key; }, delegate { return null; }, delegate { return false; });
+            workspace.ConfigureIndicatorEditing(delegate { return true; });
+            Assert(workspace.AddIndicator("example.stocks", "1.0.0", snapshot, "market") &&
+                !workspace.HasWidgets && workspace.IndicatorHost.Visibility == Visibility.Visible,
+                "Indicator is not independent of group mode");
+            Assert(!workspace.AddIndicator("example.stocks", "1.0.0", snapshot, "market"), "Duplicate indicator accepted");
+            List<PluginWidgetPlacementConfig> saved = workspace.CaptureIndicators();
+            AppConfig cfg = new AppConfig { WidgetIndicators = saved, GroupingEnabled = false };
+            ConfigStore.Save(cfg);
+            string warning; bool safe;
+            AppConfig loaded = ConfigStore.Load(out warning, out safe);
+            Assert(safe && warning == null && loaded.WidgetIndicators[0].Size == "indicator", "Indicator layout did not persist");
+            workspace.RestoreLayout(null, loaded.WidgetIndicators);
+            Assert(!workspace.HasWidgets && workspace.IndicatorHost.Visibility == Visibility.Visible && changes == 1,
+                "Indicator restore changed group state");
+            workspace.ConfigureAutomaticRefresh(delegate(string id, string version, bool activate) {
+                Assert(id == "example.stocks" && version == "1.0.0" && !activate, "Incorrect indicator refresh"); reads++;
+                return Task.FromResult(snapshot);
+            });
+            workspace.RefreshVisibleAsync(delegate { return false; }, delegate { return false; }).GetAwaiter().GetResult();
+            Assert(reads == 0, "Hidden indicator refreshed");
+            workspace.RefreshVisibleAsync(delegate { return false; }, delegate { return true; }).GetAwaiter().GetResult();
+            WrapPanel panel = workspace.IndicatorHost;
+            Assert(reads == 1 && Controls<TextBlock>(panel).Exists(delegate(TextBlock t) { return t.Text == "200"; }),
+                "Indicator did not refresh outside free layout");
+            ContentControl item = (ContentControl)panel.Children[0];
+            Click((MenuItem)item.ContextMenu.Items[1]);
+            Assert(workspace.IndicatorHost.Visibility == Visibility.Collapsed && workspace.CaptureIndicators() == null &&
+                changes == 2, "Indicator removal did not collapse bottom strip");
+        });
+        Case("shared dark selection controls apply to unstyled dialogs", delegate {
+            ComboBox combo = new ComboBox { MinHeight = 32 };
+            combo.Items.Add("First"); combo.Items.Add("Second"); combo.SelectedIndex = 0;
+            ListBox list = new ListBox { Height = 100 };
+            list.Items.Add("One"); list.Items.Add("Two"); list.SelectedIndex = 0;
+            StackPanel content = new StackPanel(); content.Children.Add(combo); content.Children.Add(list);
+            Window window = new Window { Width = 380, Height = 260, Content = content, ShowInTaskbar = false };
+            FluentUi.PrepareWindow(window);
+            try {
+                window.Show(); Drain();
+                Assert(combo.Template != null && combo.Template.FindName("PART_Popup", combo) != null,
+                    "Shared combo template missing popup");
+                Assert(list.Template.FindName("ListChrome", list) != null &&
+                    Object.Equals(((SolidColorBrush)list.Background).Color, ((SolidColorBrush)FluentUi.Brush("#192334")).Color),
+                    "Shared dark list style missing");
+                combo.IsDropDownOpen = true; Drain();
+                Assert(combo.IsDropDownOpen, "Shared combo cannot open");
+                combo.SelectedIndex = 1; combo.IsDropDownOpen = false;
+                list.SelectedIndex = 1; list.IsEnabled = false; Drain();
+                Assert(combo.SelectedIndex == 1 && list.SelectedIndex == 1, "Shared selection behavior changed");
+            } finally { window.Close(); }
+        });
+        Case("native declarative plugin widget renderer", delegate {
+            PluginWidget card = new PluginWidget { Id = "quotes", Title = "Курсы акций", Kind = "card",
+                Elements = new[] {
+                    new PluginWidgetElement { Type = "text", Label = "<Button> literal & _text" },
+                    new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "$200.00" },
+                    new PluginWidgetElement { Type = "progress", Label = "CPU", Percent = 24 },
+                    new PluginWidgetElement { Type = "action", Label = "Открыть _детали", CommandId = "open" },
+                    new PluginWidgetElement { Type = "action", Label = "Обновить", CommandId = "refresh" }
+                } };
+            TaskCompletionSource<bool> pending = new TaskCompletionSource<bool>();
+            string command = null; int calls = 0;
+            Border view = PluginWidgetView.Create(card, delegate(string id) { command = id; calls++; return pending.Task; });
+            Border tile = PluginWidgetView.Create(new PluginWidget { Id = "cpu", Title = "CPU", Kind = "tile",
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "Загрузка", Value = "24%" },
+                    new PluginWidgetElement { Type = "progress", Label = "CPU", Percent = 24 } } }, null);
+            Border indicator = PluginWidgetView.Create(new PluginWidget { Id = "vpn", Title = "VPN", Kind = "indicator",
+                Elements = new[] { new PluginWidgetElement { Type = "text", Label = "Подключён" },
+                    new PluginWidgetElement { Type = "action", Label = "Подробнее", CommandId = "open" } } }, null);
+            int indicatorCalls = 0;
+            Border clickable = PluginWidgetView.Create(new PluginWidget { Id = "network", Title = "Network", Kind = "indicator",
+                Elements = new[] { new PluginWidgetElement { Type = "text", Label = "OK" },
+                    new PluginWidgetElement { Type = "action", Label = "Details", CommandId = "open" } } },
+                delegate(string id) { Assert(id == "open", "Incorrect indicator action"); indicatorCalls++; return Task.FromResult(true); });
+            StackPanel panel = new StackPanel { Width = 320, Margin = new Thickness(12) };
+            panel.Children.Add(view); panel.Children.Add(tile); panel.Children.Add(indicator); panel.Children.Add(clickable);
+            Window window = new Window { Width = 400, Height = 620, ShowInTaskbar = false, Content = panel };
+            try {
+                window.Show(); Drain();
+                Assert(Object.Equals(view.Tag, "quotes") && view.MaxWidth > tile.MaxWidth && indicator.MaxWidth < view.MaxWidth,
+                    "Widget identity or size hints missing");
+                Assert(Controls<TextBlock>(view).Exists(delegate(TextBlock t) { return t.Text == "<Button> literal & _text"; }) &&
+                    Controls<TextBlock>(view).Exists(delegate(TextBlock t) { return t.Text == "$200.00"; }),
+                    "Widget content was not rendered literally");
+                List<ProgressBar> bars = Controls<ProgressBar>(view);
+                Assert(bars.Count == 1 && bars[0].Value == 24 && bars[0].Maximum == 100, "Progress data missing");
+                Button primary = clickable.Child as Button;
+                Assert(primary != null && Controls<Button>(clickable).Count == 1 && primary.IsEnabled, "Indicator surface is not the only action");
+                Click(primary); Drain(); Assert(indicatorCalls == 1, "Indicator action not invoked");
+                List<Button> buttons = Controls<Button>(view);
+                Assert(buttons.Count == 2 && buttons[0].IsEnabled && !Controls<Button>(indicator)[0].IsEnabled,
+                    "Widget action availability wrong");
+                Click(buttons[0]); Click(buttons[1]);
+                Assert(command == "open" && calls == 1 && !buttons[0].IsEnabled && !buttons[1].IsEnabled,
+                    "Widget action was not routed or overlapping clicks were accepted");
+                pending.SetResult(true); Drain();
+                Stopwatch limit = Stopwatch.StartNew();
+                while (!buttons[0].IsEnabled && limit.ElapsedMilliseconds < 3000) { System.Threading.Thread.Sleep(10); Drain(); }
+                Assert(buttons[0].IsEnabled && buttons[1].IsEnabled, "Widget actions stayed busy after completion");
+                pending = new TaskCompletionSource<bool>();
+                Click(buttons[1]); pending.SetException(new InvalidOperationException("simulated")); Drain();
+                TextBlock error = Controls<TextBlock>(view).Find(delegate(TextBlock t) { return t.Text == "Не удалось выполнить команду."; });
+                limit.Restart();
+                while (error.Visibility != Visibility.Visible && limit.ElapsedMilliseconds < 3000) { System.Threading.Thread.Sleep(10); Drain(); }
+                Assert(calls == 2 && command == "refresh" && error.Visibility == Visibility.Visible &&
+                    buttons[1].IsEnabled, "Widget action failure was not contained");
+                panel.Width = 160; window.UpdateLayout(); Drain();
+                Assert(view.ActualWidth <= 160 && tile.ActualWidth <= 160 && indicator.ActualWidth <= 160,
+                    "Widget renderer overflowed a narrow host");
+                panel.Width = 320; window.UpdateLayout(); Drain();
+                Picture(panel, "plugin-widget-renderer");
+            } finally { window.Close(); }
+        });
         Case("release notes Markdown and safe links", delegate {
             StackPanel panel = new StackPanel { VerticalAlignment = VerticalAlignment.Top };
             string tick = ((char)96).ToString();
@@ -426,7 +758,7 @@ public static class Package6Tests
                     "Plain status message was parsed as Markdown");
             } finally { window.Close(); }
         });
-        Case("backup window uses the existing dark scrollbar", delegate {
+        Case("backup window uses dark dropdowns and scrollbar", delegate {
             Seed("normal", 1);
             MainWindow w = Open();
             try {
@@ -439,6 +771,21 @@ public static class Package6Tests
                     Click(Section(d, "backup-automatic")); Drain();
                     Assert(Body(d, "backup-automatic").Visibility == Visibility.Visible,
                         "Automatic backup section did not open");
+                    List<ComboBox> fields = Controls<ComboBox>(d);
+                    Assert(fields.Count == 3, "Expected cadence, retention and quota dropdowns");
+                    foreach (ComboBox field in fields)
+                    {
+                        field.ApplyTemplate();
+                        field.IsDropDownOpen = true;
+                        try {
+                            Drain();
+                            var popup = field.Template.FindName("PART_Popup", field)
+                                as System.Windows.Controls.Primitives.Popup;
+                            Assert(popup != null && popup.IsOpen && popup.Child is Border,
+                                "Backup dropdown did not render its popup");
+                            Dark(((Border)popup.Child).Background, "Backup dropdown popup");
+                        } finally { field.IsDropDownOpen = false; Drain(); }
+                    }
                     List<ScrollViewer> scrollers = Controls<ScrollViewer>(d);
                     Assert(scrollers.Count == 1, "Backup dialog scroll viewer missing");
                     ScrollViewer scroll = scrollers[0];
@@ -459,80 +806,6 @@ public static class Package6Tests
                 Assert(open != null, "Backup entry point missing");
                 open.Invoke(w, new object[0]);
             } finally { w.Close(); }
-        });
-        Case("network detailed report keeps dark vertical and horizontal scrolling", delegate {
-            HappDiagnosticsWindow diagnostics = new HappDiagnosticsWindow(new AppConfig());
-            TextBox report = (TextBox)typeof(HappDiagnosticsWindow)
-                .GetField("_report", Private).GetValue(diagnostics);
-            Assert(report != null, "Network report text box missing");
-                Expander owner = report.Parent as Expander;
-            Assert(owner != null, "Network report lost its detailed-report expander");
-                owner.IsExpanded = true;
-            List<string> lines = new List<string>();
-            for (int i = 0; i < 45; i++) lines.Add(i + ": " + new string('W', 220));
-            report.Text = String.Join(Environment.NewLine, lines.ToArray());
-                Window sample = diagnostics;
-                sample.Width = sample.MinWidth; sample.Height = sample.MinHeight;
-            try {
-                sample.Show(); Drain(); report.ApplyTemplate(); report.UpdateLayout(); Drain();
-                report.BringIntoView(); Drain();
-                ScrollViewer host = report.Template.FindName("PART_ContentHost", report) as ScrollViewer;
-                Assert(host != null, "Network report is missing its text input viewport");
-                host.ApplyTemplate(); host.UpdateLayout(); Drain();
-                System.Windows.Controls.Primitives.ScrollBar vertical =
-                    host.Template.FindName("PART_VerticalScrollBar", host)
-                        as System.Windows.Controls.Primitives.ScrollBar;
-                System.Windows.Controls.Primitives.ScrollBar horizontal =
-                    host.Template.FindName("PART_HorizontalScrollBar", host)
-                        as System.Windows.Controls.Primitives.ScrollBar;
-                Assert(vertical != null && horizontal != null,
-                    "Network report lost one of its scrollbars");
-                Assert(vertical.ActualWidth > 0 && vertical.ActualWidth <= 12.5 &&
-                    horizontal.ActualHeight > 0 && horizontal.ActualHeight <= 12.5,
-                    "Network report still uses a wide native scrollbar");
-                Dark(Visual<Border>(vertical).Background, "Network report vertical scrollbar");
-                Dark(Visual<Border>(horizontal).Background, "Network report horizontal scrollbar");
-                System.Windows.Shapes.Rectangle corner =
-                    Visual<System.Windows.Shapes.Rectangle>(host);
-                Assert(corner != null, "Network report scrollbar corner missing");
-                Dark(corner.Fill, "Network report scrollbar corner");
-                System.Windows.Controls.Primitives.Track track =
-                    horizontal.Template.FindName("PART_Track", horizontal)
-                        as System.Windows.Controls.Primitives.Track;
-                Assert(track != null && track.Orientation == Orientation.Horizontal,
-                    "Horizontal scrollbar track uses vertical orientation");
-                Assert(host.ScrollableWidth > 0 && host.ScrollableHeight > 0,
-                    "Network report does not overflow in both directions");
-                host.ScrollToRightEnd(); Drain();
-                Assert(host.HorizontalOffset > 0, "Network report could not scroll horizontally");
-                double right = host.HorizontalOffset;
-                // ScrollToEnd also resets HorizontalOffset to zero in WPF.
-                // Move only the vertical axis, then verify both positions together.
-                host.ScrollToVerticalOffset(host.ScrollableHeight); Drain();
-                Assert(Math.Abs(host.HorizontalOffset - right) < 0.5 && host.VerticalOffset > 0,
-                    "Network report could not scroll horizontally and vertically");
-                host.ScrollToHome(); Drain();
-                report.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120)
-                    { RoutedEvent = Mouse.MouseWheelEvent });
-                Drain();
-                Assert(host.VerticalOffset > 0, "Network report does not respond to the mouse wheel");
-                host.ScrollToHome(); Drain();
-                foreach (System.Windows.Controls.Primitives.ScrollBar bar in new[] { horizontal, vertical }) {
-                    System.Windows.Controls.Primitives.Track dragTrack =
-                        bar.Template.FindName("PART_Track", bar) as System.Windows.Controls.Primitives.Track;
-                    Assert(dragTrack != null && dragTrack.Thumb != null, "Network report drag thumb missing");
-                    bool across = bar.Orientation == Orientation.Horizontal;
-                    double before = across ? host.HorizontalOffset : host.VerticalOffset;
-                    dragTrack.Thumb.RaiseEvent(new System.Windows.Controls.Primitives.DragDeltaEventArgs(
-                        across ? 25 : 0, across ? 0 : 25)
-                        { RoutedEvent = System.Windows.Controls.Primitives.Thumb.DragDeltaEvent });
-                    Drain();
-                    Assert((across ? host.HorizontalOffset : host.VerticalOffset) > before,
-                        "Network report thumb does not scroll " + bar.Orientation);
-                }
-                Assert(host.HorizontalOffset > 0 && host.VerticalOffset > 0,
-                    "Network report thumb scrolling did not preserve both axes");
-            } finally { sample.Close(); diagnostics.Close(); }
         });
         Case("main tile list uses narrow dark scrollbar and remains scrollable", delegate {
             Seed("normal", 30);
@@ -712,7 +985,7 @@ public static class Package6Tests
                     Call(w, "SwapGroups", "Первая", "Вторая"); Drain(); Assert(Live(w).Groups[0] == "Вторая" && Load().Groups[0] == "Вторая", "Group reorder failed");
                 } finally { w.Close(); }
             });
-            Case("routed drag/drop to empty and collapsed groups " + m, delegate {
+            Case("routed tile drag/drop to empty and collapsed groups " + m, delegate {
                 Seed(m, 2); MainWindow w = Open(); try {
                     AppItem item = Live(w).Items[0]; DataObject data = new DataObject(); data.SetData("AppShelf.InternalTilePath", item.Path);
                     Expander destination = Group(w, 1); destination.IsExpanded = false; Drain();
@@ -720,9 +993,6 @@ public static class Package6Tests
                     Assert(Drag(header, data, DragDrop.PreviewDragOverEvent).Effects == DragDropEffects.Move, "Collapsed group does not accept tile drag");
                     Assert(Drag(header, data, DragDrop.PreviewDropEvent).Effects == DragDropEffects.Move && item.Group == "Вторая", "Routed tile drop failed");
                     destination = Group(w, 2); Assert(Drag((FrameworkElement)destination.Header, data, DragDrop.PreviewDropEvent).Effects == DragDropEffects.Move && item.Group == "Пустая", "Empty group drop failed");
-                    DataObject groupData = new DataObject(); groupData.SetData("AppShelf.InternalGroupName", "Первая");
-                    destination = Group(w, 1); Assert(Drag((FrameworkElement)destination.Header, groupData, DragDrop.PreviewDropEvent).Effects == DragDropEffects.Move, "Routed group drop failed");
-                    Assert(Live(w).Groups[0] == "Вторая" && Load().Groups[0] == "Вторая", "Group drop not saved");
                 } finally { w.Close(); }
             });
         }
@@ -762,7 +1032,8 @@ public static class Package6Tests
                     "Menu icons missing");
                 MenuItem panel = Menu(quick, "Нижняя панель");
                 Assert(panel.Items.Count == 3 && Menu(quick, "Режим плиток").Items.Count == 3 &&
-                    Menu(quick, "Размещение групп").Items.Count == 3,
+                    Menu(quick, "Сбросить расположение групп") != null &&
+                    !Controls<MenuItem>(quick).Exists(m => Convert.ToString(m.Header) == "Размещение групп" || Convert.ToString(m.Header) == "Расставить группы"),
                     "Quick mode choices incomplete");
                 Assert(Menu(quick, "Звук включён").IsCheckable &&
                     Menu(quick, "Группировка приложений").IsCheckable &&
@@ -780,76 +1051,18 @@ public static class Package6Tests
                 Assert(!Live(w).RdpKeepAwake, "RDP mode unexpectedly changed");
             } finally { w.Close(); }
         });
-        Case("quick group layout modes save, reflow and keep detailed options", delegate {
-            Seed("normal", 3);
-            AppConfig config = Load();
-            config.GroupWidthMode = "content";
-            config.GroupAlignment = "alternate";
-            config.GroupDefaultZone = "bottom-right";
-            config.GroupZoneOverrides = new Dictionary<string, string>
-                { { "Вторая", "middle-center" } };
-            ConfigStore.Save(config);
-            MainWindow w = Open(); try {
+        Case("only canvas reset remains in quick settings", delegate {
+            Seed("normal", 2); MainWindow w = Open(); try {
                 MenuItem quick = Menu(Tools(w), "Быстрые настройки");
-                MenuItem modes = Menu(quick, "Размещение групп");
-                MenuItem list = Menu(modes, "Список");
-                MenuItem grid = Menu(modes, "Автоматическая сетка");
-                MenuItem free = Menu(modes, "Свободное размещение");
-                OpenMenu(quick); OpenMenu(modes);
-                Assert(modes.IsEnabled && list.IsChecked && !grid.IsChecked && !free.IsChecked,
-                    "Legacy list mode checkmark is wrong");
-                Click(grid); OpenMenu(modes);
-                Assert(!list.IsChecked && grid.IsChecked && !free.IsChecked &&
-                    Live(w).GroupLayoutMode == "grid" && Load().GroupLayoutMode == "grid",
-                    "Grid quick switch did not persist or update checkmarks");
-                Assert(((StackPanel)Get(w, "_tileHost")).Children[0] is WrapPanel,
-                    "Grid quick switch did not rebuild the layout");
-                Click(free); OpenMenu(modes);
-                Assert(!list.IsChecked && !grid.IsChecked && free.IsChecked &&
-                    Load().GroupLayoutMode == "free" && Get(w, "_freeLayoutGrid") != null,
-                    "Free quick switch did not persist or rebuild zones");
-                Click(list); OpenMenu(modes);
-                Assert(list.IsChecked && !grid.IsChecked && !free.IsChecked &&
-                    Load().GroupLayoutMode == "vertical",
-                    "List quick switch did not restore list mode");
-                AppConfig saved = Load();
-                Assert(saved.GroupWidthMode == "content" &&
-                    saved.GroupAlignment == "alternate" &&
-                    saved.GroupDefaultZone == "bottom-right" &&
-                    saved.GroupZoneOverrides["Вторая"] == "middle-center",
-                    "Quick switching unexpectedly discarded detailed layout preferences");
-                Call(w, "SetGrouping", false);
                 OpenMenu(quick);
-                Assert(!modes.IsEnabled, "Group layout quick switch must be disabled when grouping is off");
-                Call(w, "SetGrouping", true);
-                OpenMenu(quick);
-                Assert(modes.IsEnabled && list.IsChecked,
-                    "Quick switch did not recover after enabling grouping");
-            } finally { w.Close(); }
-        });
-        Case("quick group layout checkmarks roll back on rejected saves", delegate {
-            Seed("normal", 2);
-            MainWindow w = Open(); try {
-                MenuItem modes = Menu(Menu(Tools(w), "Быстрые настройки"), "Размещение групп");
-                MenuItem list = Menu(modes, "Список");
-                MenuItem grid = Menu(modes, "Автоматическая сетка");
-                MenuItem free = Menu(modes, "Свободное размещение");
-                for (int attempt = 0; attempt < 2; attempt++) {
-                    Set(w, "_canSave", attempt == 0);
-                    string before = Snapshot(Live(w));
-                    string disk = File.ReadAllText(ConfigStore.FilePath);
-                    using (FileStream locked = new FileStream(ConfigStore.FilePath,
-                        FileMode.Open, FileAccess.Read, FileShare.Read)) {
-                        OpenMenu(modes);
-                        Click(attempt == 0 ? grid : free);
-                        Assert(Snapshot(Live(w)) == before &&
-                            File.ReadAllText(ConfigStore.FilePath) == disk,
-                            "Rejected quick group layout saved in memory or on disk");
-                        Assert(list.IsChecked && !grid.IsChecked && !free.IsChecked,
-                            "Rejected quick group layout leaves the wrong checkmark");
-                    }
-                }
-                Set(w, "_canSave", true);
+                Assert(Menu(quick, "Сбросить расположение групп").IsEnabled && Get(w, "_canvasBoard") != null,
+                    "Canvas reset unavailable");
+                Assert(!Controls<MenuItem>(quick).Exists(m => Convert.ToString(m.Header) == "Расставить группы" ||
+                    Convert.ToString(m.Header) == "Размещение групп"), "Legacy layout submenu remains");
+                Call(w, "SetGrouping", false); OpenMenu(quick);
+                Assert(!Menu(quick, "Сбросить расположение групп").IsEnabled, "Reset enabled without grouping");
+                Call(w, "SetGrouping", true); OpenMenu(quick);
+                Assert(Menu(quick, "Сбросить расположение групп").IsEnabled, "Reset not restored");
             } finally { w.Close(); }
         });
         Case("bottom indicator closes its own tool window only", delegate {
@@ -995,10 +1208,9 @@ public static class Package6Tests
                 DispatcherTimer[] timers = new DispatcherTimer[] {
                     new DispatcherTimer { Interval = TimeSpan.FromHours(1) },
                     new DispatcherTimer { Interval = TimeSpan.FromHours(1) },
-                    new DispatcherTimer { Interval = TimeSpan.FromHours(1) },
                     new DispatcherTimer { Interval = TimeSpan.FromHours(1) }
                 };
-                string[] fields = new string[] { "_networkTimer", "_weatherTimer", "_rdpTimer", "_pomodoroTimer" };
+                string[] fields = new string[] { "_weatherTimer", "_rdpTimer", "_pomodoroTimer" };
                 for (int i = 0; i < fields.Length; i++) { timers[i].Start(); Set(w, fields[i], timers[i]); }
                 Call(w, "UpdateCountdownAvailability");
                 Call(w, "ToggleBottomModuleWindow", "countdown"); Call(w, "ToggleCountdown");
@@ -1012,7 +1224,7 @@ public static class Package6Tests
                 Call(w, "ToggleBottomModuleWindow", "pomodoro");
                 Assert((bool)Get(w, "_pomodoroRunning") && (DateTime)Get(w, "_pomodoroDeadlineUtc") == deadline,
                     "Closing Pomodoro stopped/reset its countdown");
-                foreach (string key in new string[] { "weather", "reminders", "route" }) {
+                foreach (string key in new string[] { "weather", "reminders" }) {
                     Call(w, "ToggleBottomModuleWindow", key); Call(w, "ToggleBottomModuleWindow", key);
                 }
                 for (int i = 0; i < fields.Length; i++) Assert(timers[i].IsEnabled && Get(w, fields[i]) == timers[i],
@@ -1026,7 +1238,7 @@ public static class Package6Tests
                         d.Width = d.MinWidth * s; d.Height = d.MinHeight * s;
                         ((FrameworkElement)d.Content).LayoutTransform = new ScaleTransform(s, s); Drain();
                         ScrollViewer scroll = Controls<ScrollViewer>(d)[0];
-                        string[] keys = new string[] { "appearance", "network", "weather", "time", "windows", "collections", "data" };
+                        string[] keys = new string[] { "appearance", "network", "weather", "time", "windows", "collections", "plugins", "data" };
                         Click(ButtonNamed(d, "Свернуть всё"));
                         foreach (string key in keys)
                             Assert(Body(d, key).Visibility == Visibility.Collapsed, "Collapse all missed " + key);
@@ -1083,8 +1295,12 @@ public static class Package6Tests
         }
         Case("long dark menus scroll, preserve gestures and disabled items", delegate {
             Seed("normal", 1); MainWindow w = Open(); ContextMenu menu = new ContextMenu(); try {
-                Assert(!app.Resources.Contains(typeof(System.Windows.Controls.Primitives.ScrollBar)),
-                    "Menu scrollbar style leaked into unrelated windows");
+                Style sharedScroll = app.Resources[typeof(System.Windows.Controls.Primitives.ScrollBar)] as Style;
+                Assert(sharedScroll != null && sharedScroll.TargetType == typeof(System.Windows.Controls.Primitives.ScrollBar),
+                    "Shared application scrollbar style missing");
+                Assert(!app.Resources.Contains(SystemParameters.VerticalScrollBarWidthKey) &&
+                    !app.Resources.Contains(SystemParameters.HorizontalScrollBarHeightKey),
+                    "Menu-specific system scrollbar dimensions leaked into application resources");
                 MenuItem disabled = new MenuItem { Header = "Недоступно", IsEnabled = false };
                 MenuItem parent = new MenuItem { Header = "Длинное подменю" };
                 menu.Items.Add(disabled); menu.Items.Add(parent);
@@ -1108,141 +1324,175 @@ public static class Package6Tests
                 Assert(invoked == 1 && !menu.IsOpen, "Last menu command did not invoke/close normally");
             } finally { menu.IsOpen = false; w.Close(); }
         });
-        Case("network footer rejects old targets during a saved settings change", delegate {
-            Seed("normal", 1);
-            AppConfig config = Load();
-            config.ShowNetwork = true;
-            config.NetworkCheck1Mode = "https";
-            config.NetworkCheck1Target = "https://old.example/path";
-            config.NetworkCheck2Mode = "icmp";
-            config.NetworkCheck2Target = "127.0.0.2";
-            ConfigStore.Save(config);
-            TaskCompletionSource<string> old1 = new TaskCompletionSource<string>();
-            TaskCompletionSource<string> old2 = new TaskCompletionSource<string>();
-            TaskCompletionSource<string> fresh1 = new TaskCompletionSource<string>();
-            TaskCompletionSource<string> fresh2 = new TaskCompletionSource<string>();
-            int calls1 = 0, calls2 = 0;
-            NetworkProbeHook = delegate(NetworkChecks.Target target, int index) {
-                if (index == 1) {
-                    calls1++;
-                    if (calls1 == 1) {
-                        Assert(target.Mode == "https", "Old target did not start");
-                        return old1.Task;
-                    }
-                    Assert(target.Mode == "icmp" && target.Host == "127.0.0.1",
-                        "Restarted check used stale target 1");
-                    return fresh1.Task;
-                }
-                calls2++;
-                Assert(target.Mode == "icmp" && target.Host == "127.0.0.2",
-                    "Second slot changed unexpectedly");
-                return calls2 == 1 ? old2.Task : fresh2.Task;
-            };
-            MainWindow w = Open();
+        Case("plugin manager displays installed and invalid packages", delegate {
+            Seed("normal", 1); MainWindow w = Open();
+            string profile = Path.Combine(ConfigStore.DirectoryPath, "PluginUiCase");
+            Directory.CreateDirectory(profile);
+            // The main menu must read the same isolated profile as the manager.
+            PluginPackageStore store = new PluginPackageStore(ConfigStore.DirectoryPath);
+            PluginRuntime runtime = new PluginRuntime(store);
             try {
-                Call(w, "RefreshNetwork");
-                Assert(calls1 == 1 && calls2 == 1, "Expected two pending original probes");
-                settings = delegate(Window d) {
-                    NetworkMode(d, 1).SelectedIndex = 1; // ICMP
-                    NetworkAddress(d, 1).Text = "127.0.0.1";
-                    Click(ButtonNamed(d, "Сохранить"));
-                };
-                Call(w, "ShowSettings");
-                Assert(Load().NetworkCheck1Target == "127.0.0.1",
-                    "New network setting was not saved");
-                TextBlock indicator = (TextBlock)Get(w, "_pingInternational");
-                Assert(indicator.Text.Contains("обновление"), "Old footer was not cleared after save");
-                Assert(calls1 == 1 && calls2 == 1,
-                    "Overlapping probes began before the old request completed");
-
-                old1.SetResult("HTTPS https://old.example/path: 333 мс");
-                old2.SetResult("ICMP 127.0.0.2: 2 мс");
-                Drain();
-                Assert(!indicator.Text.Contains("old.example"), "Old network result overwrote new settings");
-                Assert(calls1 == 2 && calls2 == 2,
-                    "Latest targets were not rechecked after the old request completed");
-
-                fresh1.SetResult("ICMP 127.0.0.1: 1 мс");
-                fresh2.SetResult("ICMP 127.0.0.2: 1 мс");
-                Drain();
-                Assert(indicator.Text == "ICMP 127.0.0.1: 1 мс",
-                    "Newest network result not published after a saved settings change");
-                Assert(!((bool)Get(w, "_networkPending")), "Network pending flag remained set");
-            } finally {
-                NetworkProbeHook = null;
-                w.Close();
-            }
-        });
-        Case("network targets replace legacy values, survive save and cancel", delegate {
-            Seed("normal", 1); MainWindow w = Open(); try {
-                settings = delegate(Window d) {
-                    Assert(NetworkMode(d, 1).SelectedIndex == 0 &&
-                        NetworkMode(d, 2).SelectedIndex == 0,
-                        "Legacy network targets were not selected");
-                    bool hintFound = false;
-                    foreach (TextBlock hint in Controls<TextBlock>(d)) {
-                        if (!hint.Text.StartsWith("Две проверки вместо стандартных", StringComparison.Ordinal))
-                            continue;
-                        hintFound = true;
-                        Assert(hint.TextWrapping == TextWrapping.Wrap,
-                            "Long network settings description is clipped without wrapping");
+                ContextMenu tools = Tools(w);
+                MenuItem pluginMenu = Menu(tools, "Плагины");
+                Assert(pluginMenu.Visibility == Visibility.Collapsed, "Empty plugins menu should be hidden");
+                Assert(!Controls<MenuItem>(tools).Exists(delegate(MenuItem m) {
+                    return Convert.ToString(m.Header) == "Инструменты плагинов";
+                }), "Duplicate plugin menu still present");
+                PluginManagerWindow empty = new PluginManagerWindow(w, store, runtime);
+                empty.ShowInTaskbar = false; empty.Show(); Drain();
+                try {
+                    bool found = false;
+                    foreach (TextBlock block in Controls<TextBlock>(empty))
+                        if (block.Text == "Плагины пока не установлены.") found = true;
+                    Assert(found, "Empty list hint missing");
+                } finally { empty.Close(); }
+                string package = Path.Combine(profile, "hello.asplugin");
+                using (FileStream stream = File.Create(package))
+                using (System.IO.Compression.ZipArchive zip = new System.IO.Compression.ZipArchive(
+                    stream, System.IO.Compression.ZipArchiveMode.Create)) {
+                    using (StreamWriter writer = new StreamWriter(zip.CreateEntry("plugin.json").Open()))
+                        writer.Write("{\"schemaVersion\":1,\"apiVersion\":1,\"id\":\"example.hello\",\"name\":\"Hello\",\"version\":\"1.0.0\",\"entryPoint\":\"bin/Hello.exe\",\"capabilities\":[\"window\",\"widget\"],\"update\":{\"provider\":\"github\",\"repository\":\"example/hello\"}}");
+                    using (StreamWriter writer = new StreamWriter(zip.CreateEntry("bin/Hello.exe").Open()))
+                        writer.Write("not executed");
+                }
+                store.Install(package, delegate { return true; });
+                Directory.CreateDirectory(Path.Combine(ConfigStore.DirectoryPath, "Plugins", "Installed", "example.broken"));
+                int placements = 0; bool chosenIndicator = false; string placementId = null;
+                PluginManagerWindow manager = new PluginManagerWindow(w, store, runtime, null, null,
+                    delegate(Window owner, bool indicator, string id) { placements++; chosenIndicator = indicator; placementId = id; },
+                    delegate { return true; });
+                manager.ShowInTaskbar = false; manager.Show(); Drain();
+                try {
+                    CheckBox good = null, broken = null;
+                    foreach (CheckBox check in Controls<CheckBox>(manager)) {
+                        if (Object.Equals(check.Tag, "PluginEnabled:example.hello")) good = check;
+                        if (Object.Equals(check.Tag, "PluginEnabled:example.broken")) broken = check;
                     }
-                    Assert(hintFound, "Network settings description missing");
-                    Assert(NetworkAddress(d, 1).Text == "1.1.1.1" &&
-                        NetworkAddress(d, 2).Text == "ya.ru",
-                        "Old network hosts changed by default");
-                    Assert(FavoriteName(d, "network1") == "Проверка сети 1" &&
-                        FavoriteName(d, "network2") == "Проверка сети 2",
-                        "Legacy network favorite labels depend on hard-coded addresses");
-                    NetworkMode(d, 1).SelectedIndex = 1; // ICMP
-                    NetworkAddress(d, 1).Text = "192.168.1.1";
-                    NetworkMode(d, 2).SelectedIndex = 3; // TCP
-                    NetworkAddress(d, 2).Text = "server.company.local:8443";
-                    Click(ButtonNamed(d, "Сохранить"));
-                };
-                Call(w, "ShowSettings");
-                AppConfig saved = Load();
-                Assert(saved.NetworkCheck1Mode == "icmp" &&
-                    saved.NetworkCheck1Target == "192.168.1.1" &&
-                    saved.NetworkCheck2Mode == "tcp" &&
-                    saved.NetworkCheck2Target == "server.company.local:8443",
-                    "Network check choices were not saved");
+                    Assert(good != null && good.IsEnabled && good.IsChecked == false, "Installed row not disabled");
+                    Assert(broken != null && !broken.IsEnabled, "Broken package not disabled");
+                    good.ApplyTemplate();
+                    Border knob = good.Template.FindName("SwitchKnob", good) as Border;
+                    Assert(knob != null && knob.HorizontalAlignment == HorizontalAlignment.Left &&
+                        Convert.ToString(good.Content) == "Плагин выключен", "Disabled switch appearance or label missing");
+                    TextBlock process = Controls<TextBlock>(manager).Find(delegate(TextBlock block) {
+                        return Object.Equals(block.Tag, "PluginState:example.hello");
+                    });
+                    Assert(process != null && process.Text == "Состояние процесса: Остановлен", "Disabled process state missing");
+                    Assert(Controls<TextBlock>(manager).Exists(delegate(TextBlock block) {
+                        return block.Text == "Возможности: собственные окна, виджеты";
+                    }), "Capability not localized");
+                    Button disabledPlacement = Controls<Button>(manager).Find(button => Object.Equals(button.Tag, "PluginAddIndicator:example.hello"));
+                    Assert(disabledPlacement != null && !disabledPlacement.IsEnabled, "Disabled plugin offers widget placement");
+                    Assert(Controls<Button>(manager).Exists(button => Object.Equals(button.Tag, "PluginCheckUpdate:example.hello")), "GitHub check missing for declared source");
+                    good.IsChecked = true;
+                    good.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+                    // The enabled flag can reach disk before the manager refreshes its controls.
+                    Stopwatch limit = Stopwatch.StartNew();
+                    Button commandButton;
+                    do {
+                        Drain();
+                        commandButton = Controls<Button>(manager).Find(delegate(Button button) {
+                            return Object.Equals(button.Tag, "PluginCommands:example.hello");
+                        });
+                        if (commandButton != null && commandButton.IsEnabled) break;
+                        System.Threading.Thread.Sleep(10);
+                    } while (limit.ElapsedMilliseconds < 5000);
+                    bool enabled = false;
+                    foreach (InstalledPlugin plugin in store.List())
+                        if (plugin.Id == "example.hello") enabled = plugin.Enabled;
+                    Assert(enabled, "UI toggle did not persist enabled state");
+                    Assert(commandButton != null && commandButton.IsEnabled, "Command button did not become enabled after the UI toggle");
+                    Button placeIndicator = Controls<Button>(manager).Find(button => Object.Equals(button.Tag, "PluginAddIndicator:example.hello"));
+                    Button placeWidget = Controls<Button>(manager).Find(button => Object.Equals(button.Tag, "PluginAddWidget:example.hello"));
+                    Assert(placeIndicator != null && placeWidget != null && placeIndicator.IsEnabled && placeWidget.IsEnabled, "Placement buttons missing");
+                    Click(placeIndicator); Assert(placements == 1 && chosenIndicator && placementId == "example.hello", "Wrong indicator route");
+                    Click(placeWidget); Assert(placements == 2 && !chosenIndicator && placementId == "example.hello", "Wrong widget route");
+                    CheckBox refreshed = Controls<CheckBox>(manager).Find(delegate(CheckBox check) {
+                        return Object.Equals(check.Tag, "PluginEnabled:example.hello");
+                    });
+                    Assert(refreshed != null && refreshed.IsChecked == true && Convert.ToString(refreshed.Content) == "Плагин включён", "Enabled switch did not refresh");
+                    refreshed.ApplyTemplate();
+                    Border onKnob = refreshed.Template.FindName("SwitchKnob", refreshed) as Border;
+                    Assert(onKnob != null && onKnob.HorizontalAlignment == HorizontalAlignment.Right, "Enabled switch appearance missing");
+                    process = Controls<TextBlock>(manager).Find(delegate(TextBlock block) {
+                        return Object.Equals(block.Tag, "PluginState:example.hello");
+                    });
+                    Assert(process != null && process.Text == "Состояние процесса: Остановлен", "Enabled idle process state conflated with switch");
+                    MenuItem actionMenu = new MenuItem();
+                    Call(w, "PopulatePluginTools", actionMenu, store.List());
+                    Assert(actionMenu.Visibility == Visibility.Visible && actionMenu.Items.Count == 1 &&
+                        Convert.ToString(((MenuItem)actionMenu.Items[0]).Header) == "Hello",
+                        "Enabled plugin menu or broken package exclusion failed");
+                    MenuItem actionGroup = (MenuItem)actionMenu.Items[0];
+                    Assert(actionGroup.Items.Count == 0, "Idle plugin should offer direct activation, not an extra submenu");
+                    InstalledPlugin active = store.List().Find(delegate(InstalledPlugin p) { return p.Id == "example.hello"; });
+                    // Known commands: a single command is a leaf; multiple commands are nested.
+                    PluginRuntimeState known = new PluginRuntimeState { Status = "running", Version = active.Manifest.Version,
+                        Commands = new[] { new PluginCommand { Id = "open", Label = "Open" } } };
+                    MenuItem single = (MenuItem)Call(w, "CreatePluginMenuItem", active, known);
+                    Assert(single.Items.Count == 0, "Single command has an unnecessary submenu");
+                    known.Commands = new[] { new PluginCommand { Id = "open", Label = "Open" },
+                        new PluginCommand { Id = "other", Label = "Other" } };
+                    MenuItem multiple = (MenuItem)Call(w, "CreatePluginMenuItem", active, known);
+                    Assert(multiple.Items.Count == 2 && Convert.ToString(((MenuItem)multiple.Items[0]).Header) == "Open" &&
+                        Convert.ToString(((MenuItem)multiple.Items[1]).Header) == "Other", "Multiple commands not nested");
+                    // Exercise the real overflow-open event and its asynchronous refresh.
+                    Click(ToolsButton(w));
+                    limit.Restart();
+                    while (pluginMenu.Visibility != Visibility.Visible && limit.ElapsedMilliseconds < 5000)
+                    { System.Threading.Thread.Sleep(10); Drain(); }
+                    Assert(tools.IsOpen && pluginMenu.Visibility == Visibility.Visible && pluginMenu.Items.Count == 1 &&
+                        Convert.ToString(((MenuItem)pluginMenu.Items[0]).Header) == "Hello", "Real menu did not refresh enabled plugins");
+                    tools.IsOpen = false; Drain();
+                    Assert(runtime.State("example.hello").Status == "idle", "Menu discovery started plugin");
+                    Assert(((PluginRuntime)Call(w, "GetPluginRuntime")).State("example.hello").Status == "idle",
+                        "Opening the main menu launched a plugin");
+                    refreshed.IsChecked = false;
+                    refreshed.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+                    limit.Restart();
+                    do {
+                        Drain();
+                        commandButton = Controls<Button>(manager).Find(delegate(Button button) {
+                            return Object.Equals(button.Tag, "PluginCommands:example.hello");
+                        });
+                        good = Controls<CheckBox>(manager).Find(delegate(CheckBox check) {
+                            return Object.Equals(check.Tag, "PluginEnabled:example.hello");
+                        });
+                        if (good != null && good.IsEnabled && good.IsChecked == false &&
+                            commandButton != null && !commandButton.IsEnabled) break;
+                        System.Threading.Thread.Sleep(10);
+                    } while (limit.ElapsedMilliseconds < 5000);
+                    Assert(good != null && good.IsEnabled && good.IsChecked == false &&
+                        Convert.ToString(good.Content) == "Плагин выключен" &&
+                        commandButton != null && !commandButton.IsEnabled &&
+                        !store.List().Find(delegate(InstalledPlugin p) { return p.Id == "example.hello"; }).Enabled,
+                        "UI switch failed to disable the plugin");
+                    Call(w, "PopulatePluginTools", actionMenu, store.List());
+                    Assert(actionMenu.Items.Count == 0 && actionMenu.Visibility == Visibility.Collapsed,
+                        "Disabled plugin still in actions menu");
+                    Click(ToolsButton(w));
+                    Assert(tools.IsOpen && pluginMenu.Visibility == Visibility.Collapsed, "Previously enabled plugin menu not hidden on reopen");
+                    tools.IsOpen = false; Drain();
+                    Picture(manager, "plugin-manager");
+                } finally { manager.Close(); }
                 settings = delegate(Window d) {
-                    Assert(NetworkMode(d, 1).SelectedIndex == 1 &&
-                        NetworkMode(d, 2).SelectedIndex == 3 &&
-                        NetworkAddress(d, 1).Text == "192.168.1.1",
-                        "Network target selections were not restored");
-                    Assert(FavoriteName(d, "network1") == "Проверка сети 1" &&
-                        FavoriteName(d, "network2") == "Проверка сети 2",
-                        "Custom network addresses leaked into favorites labels");
-                    NetworkMode(d, 1).SelectedIndex = 2; // HTTPS
-                    NetworkAddress(d, 1).Text = "https://example.com/path";
+                    Button section = Controls<Button>(d).Find(delegate(Button button) { return Object.Equals(button.Tag, "plugins"); });
+                    Assert(section != null, "Plugin settings section missing");
+                    Button manage = ButtonNamed(d, "Управление плагинами…");
+                    if (!manage.IsVisible) Click(section);
+                    Assert(manage.IsVisible, "Plugin management not available in settings");
                     Click(ButtonNamed(d, "Отмена"));
                 };
                 Call(w, "ShowSettings");
-                Assert(Load().NetworkCheck1Mode == "icmp" &&
-                    Load().NetworkCheck1Target == "192.168.1.1",
-                    "Cancelled network values leaked into apps.json");
-                settings = delegate(Window d) {
-                    NetworkMode(d, 1).SelectedIndex = 0; // Original targets
-                    NetworkMode(d, 2).SelectedIndex = 0;
-                    Assert(!NetworkAddress(d, 1).IsEnabled &&
-                        !NetworkAddress(d, 2).IsEnabled,
-                        "Built-in mode must not allow arbitrary host overrides");
-                    Click(ButtonNamed(d, "Сохранить"));
-                };
-                Call(w, "ShowSettings");
-                Assert(Load().NetworkCheck1Mode == null &&
-                    Load().NetworkCheck1Target == null &&
-                    Load().NetworkCheck2Mode == null &&
-                    Load().NetworkCheck2Target == null,
-                    "Legacy defaults were not restored");
-            } finally { w.Close(); }
+            } finally { runtime.Dispose(); w.Close(); Directory.Delete(profile, true);
+                string pluginsRoot = Path.Combine(ConfigStore.DirectoryPath, "Plugins");
+                if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+            }
         });
         Case("settings accordion and saved navigation", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
                 settings = delegate(Window d) {
-                    string[] main = { "appearance", "network", "weather", "time", "windows", "collections", "data" };
+                    string[] main = { "appearance", "network", "weather", "time", "windows", "collections", "plugins", "data" };
                     string[] nested = { "appearance-tiles", "appearance-background", "appearance-panel" };
                     Dictionary<string, Button> headers = new Dictionary<string, Button>();
                     foreach (Button b in Controls<Button>(d))
@@ -1266,9 +1516,9 @@ public static class Package6Tests
                         "Main accordion is not using the reference dark fill");
                     StackPanel rows = frames[0].Child as StackPanel;
                     StackPanel nestedRows = subframes.Count == 1 ? subframes[0].Child as StackPanel : null;
-                    Assert(rows != null && rows.Children.Count == 13 && nestedRows != null &&
-                        nestedRows.Children.Count == 5 && dividers.Count == 8,
-                        "Expected seven main sections and three nested Appearance subsections");
+                    Assert(rows != null && rows.Children.Count == 15 && nestedRows != null &&
+                        nestedRows.Children.Count == 5 && dividers.Count == 9,
+                        "Expected eight main sections and three nested Appearance subsections");
                     foreach (string key in main) {
                         StackPanel caption = Section(d, key).Content as StackPanel;
                         System.Windows.Shapes.Path chevron = caption == null ? null :
@@ -1328,7 +1578,7 @@ public static class Package6Tests
                         "Reopen ignored the saved Bottom panel subsection");
                     Assert(Controls<CheckBox>(Body(d, "appearance-tiles")).Contains(Check(d, "Группировка приложений")) &&
                         Controls<CheckBox>(Body(d, "windows")).Contains(Check(d, "Не давать простаивать")) &&
-                        Controls<CheckBox>(Body(d, "network")).Contains(Check(d, "Показывать сетевые проверки")) &&
+                        Controls<Button>(Body(d, "network")).Contains(ButtonWithTag(d, "NetworkPluginSettings")) &&
                         Controls<CheckBox>(Body(d, "weather")).Contains(Check(d, "Показывать погоду")) &&
                         Controls<CheckBox>(Body(d, "time")).Contains(Check(d, "Включить звуки")) &&
                         Controls<CheckBox>(Body(d, "collections")).Contains(Check(d, "Включить модуль «Подборки»")) &&
@@ -1506,6 +1756,7 @@ public static class Package6Tests
             Seed("normal", 5); MainWindow w = Open(); try {
                 TextBox search = (TextBox)Get(w, "_search"); search.Text = "APP 2"; Drain(); Assert(Tiles(w).Count == 1, "Search failed"); search.Text = "unmatched"; Drain(); Assert(Tiles(w).Count == 0 && ((TextBlock)Get(w, "_empty")).IsVisible, "Empty search failed"); search.Text = "";
                 int calls = AddDialogCalls; Click(ButtonNamed(w, "+  Добавить")); Assert(AddMenu.IsOpen, "Add menu did not open"); Click(Menu(AddMenu, "Приложение или ярлык…")); AddMenu.IsOpen = false; Assert(AddDialogCalls == calls + 1, "Add menu did not reach file dialog");
+                Assert(Menu(AddMenu, "Виджет плагина…") != null, "Widget add menu missing");
                 Click(ToolsButton(w)); Assert(Tools(w).IsOpen, "Overflow did not open"); Tools(w).IsOpen = false;
                 ContextMenu menu = Tools(w); Assert(menu.Items.IndexOf(Menu(menu, "О программе")) == menu.Items.IndexOf(Menu(menu, "Настройки…")) + 1, "About menu order wrong");
             } finally { w.Close(); }
@@ -1555,9 +1806,11 @@ public static class Package6Tests
                         Assert(favorites.Children.Count == 2,
                             "Compact panel must show only enabled favorites in saved order");
                         Click((Button)compact.Children[0]);
-                        Assert(full.Visibility == Visibility.Visible, "Compact expand did not reveal details");
+                        Assert(full.Visibility == Visibility.Visible && favorites.Visibility == Visibility.Collapsed && full.Parent == compact,
+                            "Compact expand did not replace favorites with details");
                         Click((Button)compact.Children[0]);
-                        Assert(full.Visibility == Visibility.Collapsed, "Compact collapse did not restore short view");
+                        Assert(full.Visibility == Visibility.Collapsed && favorites.Visibility == Visibility.Visible && favorites.Children.Count == 2,
+                            "Compact collapse did not restore short view");
                     }
                     if (expectedMode == "categories")
                     {
@@ -1570,6 +1823,63 @@ public static class Package6Tests
                 finally { w.Close(); }
             });
         }
+        Case("plugin indicators share footer wrap layout without losing saved cards", delegate {
+            Seed("normal", 1);
+            AppConfig data = Load();
+            data.BottomPanelMode = "detailed";
+            data.ShowCountdownTimer = true;
+            data.BottomPanelFavorites = new List<string> { "countdown", "reminders" };
+            data.WidgetIndicators = new List<PluginWidgetPlacementConfig> { new PluginWidgetPlacementConfig {
+                PluginId = "example.test", WidgetId = "route", Version = "1.0.0",
+                Title = "Network", Size = "indicator" } };
+            ConfigStore.Save(data);
+            MainWindow w = Open(); try {
+                w.Width = 1050; w.Height = 700; Drain(); w.UpdateLayout();
+                PluginWidgetWorkspace workspace = (PluginWidgetWorkspace)Get(w, "_pluginWidgets");
+                WrapPanel full = (WrapPanel)Get(w, "_bottomFullMonitors");
+                WrapPanel favorites = (WrapPanel)Get(w, "_bottomCompactItems");
+                DockPanel compact = (DockPanel)Get(w, "_bottomCompactRow");
+                ContentControl indicator = (ContentControl)full.Children[full.Children.Count - 1];
+                Assert(workspace.IndicatorCount == 1 && workspace.IndicatorHost.Visibility == Visibility.Collapsed &&
+                    indicator.Parent == full, "Detailed footer has a separate plugin row");
+                FrameworkElement reminder = (FrameworkElement)Get(w, "_remindersChip");
+                Assert(Math.Abs(indicator.TranslatePoint(new Point(0,0), full).Y - reminder.TranslatePoint(new Point(0,0), full).Y) <= 1,
+                    "Indicator did not use spare space on detailed first row");
+                Live(w).BottomPanelMode = "compact";
+                Call(w, "ApplyBottomPanelMode"); Drain();
+                Assert(indicator.Parent == favorites && favorites.Children.Count == 3, "Compact indicator missing or duplicated");
+                Assert(Math.Abs(indicator.TranslatePoint(new Point(0,0), favorites).Y -
+                    ((FrameworkElement)favorites.Children[0]).TranslatePoint(new Point(0,0), favorites).Y) <= 1,
+                    "Compact indicator did not use spare first row");
+                Click((Button)compact.Children[0]);
+                Assert(indicator.Parent == full && favorites.Children.Count == 0, "Expanded compact lost or duplicated indicator");
+                Click((Button)compact.Children[0]);
+                Assert(indicator.Parent == favorites && favorites.Children.Count == 3, "Collapsed compact lost indicator");
+                Live(w).BottomPanelMode = "categories";
+                Call(w, "ApplyBottomPanelMode"); Drain();
+                Assert(indicator.Parent == workspace.IndicatorHost && workspace.IndicatorHost.Visibility == Visibility.Visible,
+                    "Category mode lost indicator host");
+                Live(w).BottomPanelMode = "detailed";
+                Call(w, "ApplyBottomPanelMode"); Drain();
+                Assert(indicator.Parent == full && workspace.IndicatorHost.Children.Count == 0 &&
+                    workspace.IndicatorCount == 1, "Mode switches duplicated or lost placement");
+                // Force a width-constrained wrap independently of the main window minimum.
+                WrapPanel narrow = new WrapPanel();
+                Border builtin = new Border { Width = 110, Height = 30 };
+                narrow.Children.Add(builtin);
+                workspace.AttachIndicatorPanel(narrow);
+                indicator.Width = 110;
+                narrow.Measure(new Size(160, Double.PositiveInfinity));
+                narrow.Arrange(new Rect(0, 0, 160, narrow.DesiredSize.Height));
+                Assert(indicator.TranslatePoint(new Point(0,0), narrow).Y >= 30, "Indicator did not wrap at narrow width");
+                indicator.ClearValue(FrameworkElement.WidthProperty);
+                workspace.AttachIndicatorPanel(full);
+                Assert(workspace.CaptureIndicators().Count == 1, "Layout reparenting changed saved placements");
+                Click((MenuItem)indicator.ContextMenu.Items[1]);
+                Assert(workspace.IndicatorCount == 0 && workspace.CaptureIndicators() == null &&
+                    full.Children.Contains(reminder) && full.Children.Count == 5, "Removal touched built-in indicators");
+            } finally { w.Close(); }
+        });
         Case("legacy configuration retains detailed bottom panel", delegate
         {
             Seed("normal", 1);
@@ -1659,14 +1969,14 @@ public static class Package6Tests
                     Click(ButtonNamed(d, "Сохранить"));
                 };
                 Call(w, "ShowSettings");
-                Assert(Load().BottomPanelMode == "compact" && Load().BottomPanelFavorites[0] == "route" &&
-                    !Load().BottomPanelFavorites.Contains("weather"), "Settings failed to persist favorites");
+                Assert(Load().BottomPanelMode == "compact" && Load().BottomPanelFavorites.Contains("route") && Load().BottomPanelFavorites.Contains("reminders") &&
+                    !Load().BottomPanelFavorites.Contains("countdown"), "Settings failed to persist favorites");
                 settings = delegate(Window d) {
                     ListBox list = Controls<ListBox>(Body(d, "appearance-panel"))[0];
                     Assert(BottomPanelMode(d).SelectedIndex == 0 &&
-                        (string)((CheckBox)((ListBoxItem)list.Items[0]).Content).Tag == "route", "Reopened favorites changed order");
+                        (string)((CheckBox)((ListBoxItem)list.Items[0]).Content).Tag == "weather", "Reopened favorites changed order");
                     foreach (ListBoxItem row in list.Items)
-                        if ((string)((CheckBox)row.Content).Tag == "weather")
+                        if ((string)((CheckBox)row.Content).Tag == "countdown")
                             Assert(((CheckBox)row.Content).IsChecked == false, "Unchecked favorite not persisted");
                 };
                 Call(w, "ShowSettings");
@@ -1677,10 +1987,10 @@ public static class Package6Tests
                 Seed("normal", 1); MainWindow w = Open(); try {
                     w.Width = w.MinWidth; w.Height = 580;
                     Live(w).BottomPanelMode = m;
-                    Live(w).ShowNetwork = true; Live(w).ShowWeather = true; Live(w).ShowPomodoro = true;
-                    Live(w).BottomPanelFavorites = new List<string> { "route", "weather", "countdown", "reminders" };
+                    Live(w).RdpKeepAwake = true; Live(w).ShowWeather = true; Live(w).ShowPomodoro = true;
+                    Live(w).BottomPanelFavorites = new List<string> { "rdp", "weather", "countdown", "reminders" };
                     // Fixture data verifies presentation bindings, not network/weather availability.
-                    ((TextBlock)Get(w, "_route")).Text = "Маршрут: Test interface";
+                    ((TextBlock)Get(w, "_rdpStatus")).Text = "RDP: Test interface";
                     ((TextBlock)Get(w, "_weather")).Text = "Погода · Test city: -7 °C · ощущается как -9 °C · Облачно";
                     ((TextBlock)Get(w, "_pomodoro")).Text = "Помодоро: Работа 04:32 ▶";
                     Call(w, "ApplyBottomPanelMode"); Drain();
@@ -1703,16 +2013,16 @@ public static class Package6Tests
                         Picture(w, "bottom-categories-min-fixture");
                         w.Width = 900; Drain(); foreach (Button card in cards.Children) Inside(card, panel, "Wide category card");
                         Picture(w, "bottom-categories-wide-fixture");
-                        ((TextBlock)Get(w, "_route")).Text = "Маршрут: Changed interface";
+                        ((TextBlock)Get(w, "_rdpStatus")).Text = "RDP: Changed interface";
                         ((TextBlock)Get(w, "_pomodoro")).Text = "Помодоро: Работа 04:31 ▶";
                         Drain();
                         Assert(labels.Exists(t => t.Text == "Changed interface") &&
                             labels.Exists(t => t.Text == "Работа 04:31 ▶"), "Network/time bindings stale");
                         AppConfig changed = Live(w).Copy();
-                        changed.ShowNetwork = false; changed.ShowWeather = false; changed.ShowPomodoro = false;
+                        changed.RdpKeepAwake = false; changed.ShowWeather = false; changed.ShowPomodoro = false;
                         changed.ShowCountdownTimer = false;
                         Call(w, "SaveConfigChanges", changed, true); Call(w, "ApplyBottomPanelMode"); Drain();
-                        Assert(labels.Exists(t => t.Text == "Мониторинг выключен") &&
+                        Assert(labels.Exists(t => t.Text == "RDP выключен") &&
                             labels.Exists(t => t.Text == "Погода выключена") &&
                             labels.Exists(t => t.Text == "Таймеры выключены"), "Saved visibility settings leave stale summaries");
                     } else if (m == "compact") {
@@ -1906,329 +2216,193 @@ public static class Package6Tests
                 }; Call(w, "ShowAboutWindow");
             } finally { w.Close(); }
         }); }
-        Case("legacy group layout fills the full viewport", delegate {
+        foreach (string oldMode in new string[] { null, "vertical", "grid", "free" }) { string legacyMode = oldMode;
+            Case("legacy layout migrates to canvas " + (legacyMode ?? "default"), delegate {
+                Seed("normal", 4);
+                AppConfig config = Load();
+                config.GroupLayoutMode = legacyMode;
+                config.GroupWidthMode = "content";
+                config.GroupAlignment = "alternate";
+                config.Items[3].Group = "Вторая";
+                config.GroupZoneOverrides = new Dictionary<string, string> { { "Вторая", "bottom-right" } };
+                ConfigStore.Save(config);
+                MainWindow w = Open(); try {
+                    AppConfig saved = Load();
+                    Assert(saved.GroupLayoutMode == "canvas" && saved.CanvasInitialized &&
+                        saved.Items.Count == 4 && saved.Groups.Count == 3 &&
+                        saved.Items[3].Group == "Вторая" && saved.GroupZoneOverrides["Вторая"] == "bottom-right",
+                        "Migration lost group data or old metadata");
+                    Assert(Get(w, "_canvasBoard") != null && Get(w, "_freeLayoutGrid") == null,
+                        "Legacy layout is still active");
+                    Assert(Tiles(w).Count == 4, "Migration lost application tiles");
+                    Assert(saved.CanvasPositions != null && saved.CanvasPositions.ContainsKey("app:Первая") &&
+                        saved.CanvasPositions.ContainsKey("app:Вторая"), "Legacy positions were not captured");
+                    if (legacyMode == "free")
+                    {
+                        double viewport = ((ScrollViewer)Get(w, "_tilesScroller")).ViewportHeight;
+                        double bottomGroupY = saved.CanvasPositions["app:Вторая"].Y * FreeCanvasLayout.NormalizeStep(saved.CanvasGridStep);
+                        Assert(viewport > 250 && bottomGroupY > viewport / 2,
+                            "Legacy bottom zone migrated near the top of the canvas");
+                    }
+                } finally { w.Close(); }
+            });
+        }
+        Case("enabling grouping during search migrates the unfiltered legacy layout", delegate {
             Seed("normal", 2);
-            Assert(Load().GroupWidthMode == null && Load().GroupLayoutMode == null &&
-                Load().GroupAlignmentOverrides == null, "Legacy group layout gained required fields");
+            AppConfig config = Load();
+            config.GroupingEnabled = false;
+            config.GroupLayoutMode = "free";
+            config.Items[1].Group = null;
+            ConfigStore.Save(config);
             MainWindow w = Open(); try {
-                StackPanel host = (StackPanel)Get(w, "_tileHost");
-                Assert(host.Children.Count == 3, "Legacy vertical group count changed");
-                foreach (Border card in host.Children)
-                    Assert(Double.IsNaN(card.Width) &&
-                        card.HorizontalAlignment == HorizontalAlignment.Stretch,
-                        "Legacy group no longer fills the available width");
+                TextBox search = (TextBox)Get(w, "_search");
+                search.Text = "non-matching filter";
+                Call(w, "SetGrouping", true);
+                Drain();
+                AppConfig saved = Load();
+                Assert(saved.CanvasInitialized && saved.CanvasPositions != null &&
+                    saved.CanvasPositions.ContainsKey("app:Первая") && saved.CanvasPositions.ContainsKey("app:"),
+                    "Search prevented migration of legacy group positions");
+                Assert(Tiles(w).Count == 0, "Migration cleared the active search");
+                search.Clear(); Drain();
+                Assert(Tiles(w).Count == 2, "Clearing search did not restore both shortcuts");
             } finally { w.Close(); }
         });
-        Case("content-sized groups honor alignment overrides and window resize", delegate {
-            Seed("normal", 6);
-            AppConfig c = Load();
-            c.Items[5].Group = "Вторая";
-            c.GroupWidthMode = "content";
-            c.GroupLayoutMode = "vertical";
-            c.GroupAlignment = "alternate";
-            c.GroupAlignmentOverrides = new Dictionary<string, string>
-                { { "Вторая", "center" } };
-            ConfigStore.Save(c);
+        Case("legacy ZIP migrates application groups and retains unselected widget geometry", delegate {
+            Seed("normal", 1);
+            AppConfig legacy = Load();
+            legacy.GroupLayoutMode = "free";
+            legacy.GroupZoneOverrides = new Dictionary<string, string> { { "Первая", "bottom-right" } };
+            string zip = Path.Combine(ConfigStore.DirectoryPath, "legacy-layout.zip");
+            using (var file = File.Create(zip))
+            using (var archive = new System.IO.Compression.ZipArchive(file, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                using (var entry = archive.CreateEntry("apps.json").Open())
+                    new DataContractJsonSerializer(typeof(AppConfig)).WriteObject(entry, legacy);
+                using (var entry = archive.CreateEntry("reminders.json").Open())
+                    new DataContractJsonSerializer(typeof(ReminderDocument)).WriteObject(entry, new ReminderDocument());
+            }
+            AppConfig current = legacy.Copy();
+            current.GroupLayoutMode = "canvas";
+            current.CanvasInitialized = true;
+            current.CanvasPositions = new Dictionary<string, FreeCanvasRect> {
+                { "widget:1", new FreeCanvasRect(0, 12, 12, 4) }
+            };
+            current.WidgetGroups = new List<PluginWidgetGroupConfig> {
+                new PluginWidgetGroupConfig { Number = 1, Title = "Existing widgets", Zone = "top-left", Collapsed = true,
+                    Widgets = new List<PluginWidgetPlacementConfig> {
+                        new PluginWidgetPlacementConfig { PluginId = "example.stocks", WidgetId = "quotes",
+                            Title = "Quotes", Version = "1.0.0", Size = "quarter" }
+                    } }
+            };
+            ConfigStore.Save(current);
+            BackupStore.RestoreAll(zip);
             MainWindow w = Open(); try {
-                w.Width = 980; Drain();
-                StackPanel host = (StackPanel)Get(w, "_tileHost");
-                Assert(host.Children.Count == 3, "Content layout changed group order");
-                Border first = (Border)host.Children[0];
-                Border second = (Border)host.Children[1];
-                Border empty = (Border)host.Children[2];
-                Assert(first.HorizontalAlignment == HorizontalAlignment.Left &&
-                    second.HorizontalAlignment == HorizontalAlignment.Center &&
-                    empty.HorizontalAlignment == HorizontalAlignment.Left,
-                    "Alternate/default and individual alignments were not applied");
-                Assert(first.Width > second.Width && !Double.IsNaN(first.Width) &&
-                    !Double.IsNaN(empty.Width), "Group width does not follow tile count");
-                w.Width = w.MinWidth; Drain();
-                ScrollViewer viewport = (ScrollViewer)Get(w, "_tilesScroller");
-                Assert(first.Width <= viewport.ViewportWidth + 0.5 &&
-                    second.Width <= viewport.ViewportWidth + 0.5,
-                    "Narrow viewport clips content-sized groups");
-                Assert(Load().GroupAlignmentOverrides["Вторая"] == "center",
-                    "Saved per-group alignment preference was lost");
-                DockPanel heading = (DockPanel)Group(w, 1).Header;
-                MenuItem alignment = Menu(heading.ContextMenu, "Выравнивание группы");
-                Click(Menu(alignment, "Справа"));
-                Assert(Load().GroupAlignmentOverrides["Вторая"] == "right" &&
-                    second.HorizontalAlignment == HorizontalAlignment.Right,
-                    "Per-group context menu did not persist/reflow the new alignment");
-                OpenMenu(alignment);
-                Assert(Menu(alignment, "Справа").IsChecked &&
-                    !Menu(alignment, "По центру").IsChecked,
-                    "Individual alignment checkmark became stale after changing it");
-                Click(Menu(alignment, "По общему правилу"));
-                Assert(Load().GroupAlignmentOverrides == null &&
-                    second.HorizontalAlignment == HorizontalAlignment.Right,
-                    "Inherited alternate alignment did not restore the correct position");
+                AppConfig saved = Load();
+                Assert(saved.GroupLayoutMode == "canvas" && saved.CanvasInitialized &&
+                    saved.CanvasPositions.ContainsKey("app:Первая") && saved.Items.Count == 1,
+                    "Retaining unselected widgets skipped legacy application migration");
+                FreeCanvasRect pos = saved.CanvasPositions["widget:1"];
+                Assert(pos.X == 0 && pos.Y == 12 && pos.Width == 12 && pos.Height == 4 &&
+                    saved.WidgetGroups[0].Collapsed && saved.WidgetGroups[0].Widgets[0].WidgetId == "quotes",
+                    "Restore replaced unselected widget geometry or content");
             } finally { w.Close(); }
         });
-        Case("compact grid wraps groups without stretching their cards", delegate {
-            Seed("normal", 5);
-            AppConfig c = Load();
-            c.Items[4].Group = "Вторая";
-            c.GroupLayoutMode = "grid";
-            c.GroupWidthMode = "full"; // Grid must use tile widths regardless.
-            ConfigStore.Save(c);
-            MainWindow w = Open(); try {
-                w.Width = 850; Drain();
-                StackPanel host = (StackPanel)Get(w, "_tileHost");
-                Assert(host.Children.Count == 1 && host.Children[0] is WrapPanel,
-                    "Compact grid host is missing");
-                WrapPanel grid = (WrapPanel)host.Children[0];
-                Assert(grid.Children.Count == 3, "Grid lost a group, including the empty target");
-                ScrollViewer viewport = (ScrollViewer)Get(w, "_tilesScroller");
-                foreach (Border card in grid.Children)
-                    Assert(!Double.IsNaN(card.Width) && card.Width > 0 &&
-                        card.Width <= viewport.ViewportWidth + 0.5,
-                        "Grid card did not size to the available viewport");
-                w.Width = w.MinWidth; Drain();
-                foreach (Border card in grid.Children)
-                    Assert(card.Width <= viewport.ViewportWidth + 0.5,
-                        "Grid card overflows after shrinking the window");
+        Case("Network plugin migration preserves legacy targets and existing plugin data", delegate {
+            AppConfig source = new AppConfig { ShowNetwork = true, NetworkCheck1Mode = "tcp",
+                NetworkCheck1Target = "localhost:443", NetworkCheck2Mode = "icmp",
+                NetworkCheck2Target = "127.0.0.1" };
+            string path = Path.Combine(ConfigStore.DirectoryPath, "network-migration-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(path);
+            try {
+                AppConfig next = NetworkPluginMigration.Prepare(source, "1.0.0",
+                    new[] { "network2", "weather", "route", "network2" }, path);
+                Assert(next.NetworkPluginMigrated && !source.NetworkPluginMigrated && source.WidgetIndicators == null,
+                    "Migration mutated source or did not mark completion");
+                Assert(next.WidgetIndicators.Count == 2 && next.WidgetIndicators[0].WidgetId == "network2" &&
+                    next.WidgetIndicators[1].WidgetId == "route", "Legacy indicator selection/order lost");
+                Assert(next.ShowNetwork && next.NetworkCheck1Target == source.NetworkCheck1Target,
+                    "Rollback targets not preserved");
+                string settings = Path.Combine(path, "network-settings.json");
+                string original = File.ReadAllText(settings);
+                Assert(original.Contains("localhost:443") && original.Contains("127.0.0.1"), "Seed missing targets");
+                File.WriteAllText(settings, "independent plugin settings");
+                AppConfig again = NetworkPluginMigration.Prepare(source, "1.0.0", new[] { "network1" }, path);
+                Assert(again.NetworkPluginMigrated && File.ReadAllText(settings) == "independent plugin settings",
+                    "Existing plugin data overwritten");
+                AppConfig repeated = NetworkPluginMigration.Prepare(next, "1.0.0", new[] { "network1" }, path);
+                Assert(repeated.WidgetIndicators.Count == 2, "Migration repeated after completion");
+                AppConfig crowded = source.Copy();
+                crowded.WidgetIndicators = new List<PluginWidgetPlacementConfig>();
+                for (int i = 0; i < 6; i++)
+                    crowded.WidgetIndicators.Add(new PluginWidgetPlacementConfig {
+                        PluginId = "example.test", WidgetId = "item" + i, Version = "1.0.0",
+                        Title = "Indicator " + i, Size = "indicator" });
+                bool refused = false;
+                try { NetworkPluginMigration.Prepare(crowded, "1.0.0", new[] { "network1" }, path); }
+                catch (InvalidOperationException) { refused = true; }
+                Assert(refused && !crowded.NetworkPluginMigrated && crowded.WidgetIndicators.Count == 6 &&
+                    File.ReadAllText(settings) == "independent plugin settings", "Capacity failure changed data");
+                source.ShowNetwork = false;
+                File.Delete(settings);
+                AppConfig disabled = NetworkPluginMigration.Prepare(source, "1.0.0", new string[0], path);
+                Assert(disabled.WidgetIndicators.Count == 0 && File.ReadAllText(settings).Contains("\"showNetwork\":false"),
+                    "Disabled legacy monitor was enabled or gained indicators");
+            } finally { Directory.Delete(path, true); }
+        });
+        Case("D03 heading wraps on canvas", delegate {
+            Seed("normal", 2); MainWindow w = Open(); try {
+                DockPanel header = (DockPanel)Group(w, 0).Header;
+                TextBlock heading = (TextBlock)header.Children[header.Children.Count - 1];
+                Assert(heading.TextWrapping == TextWrapping.Wrap && heading.TextTrimming == TextTrimming.None &&
+                    Convert.ToString(heading.ToolTip).Contains("Правая кнопка"), "D03 heading/hint missing");
             } finally { w.Close(); }
         });
-        Case("collapsed groups shrink and expand in compact grid", delegate {
-            Seed("normal", 6);
-            AppConfig c = Load();
-            c.GroupLayoutMode = "grid";
-            c.GroupWidthMode = "content";
-            ConfigStore.Save(c);
-            MainWindow w = Open(); try {
-                w.Width = 1000; Drain();
-                StackPanel host = (StackPanel)Get(w, "_tileHost");
-                WrapPanel grid = (WrapPanel)host.Children[0];
-                Border first = (Border)grid.Children[0];
-                Expander section = (Expander)first.Child;
-                double expanded = first.Width;
-                section.IsExpanded = false; Drain();
-                Assert(first.Width < expanded, "Collapsed grid group retained hidden tile width");
-                section.IsExpanded = true; Drain();
-                Assert(Math.Abs(first.Width - expanded) < 0.5,
-                    "Reexpanded grid group did not restore tile-sized width");
-            } finally { w.Close(); }
-        });
-        Case("free placement uses nine zones and resizes without horizontal clipping", delegate {
+        Case("existing canvas geometry wins migration and reset persists", delegate {
             Seed("normal", 4);
             AppConfig c = Load();
-            c.Items[3].Group = "Вторая";
-            c.GroupLayoutMode = "free";
-            c.GroupDefaultZone = "top-left";
-            c.GroupZoneOverrides = new Dictionary<string, string> { { "Вторая", "bottom-right" } };
+            c.GroupLayoutMode = "free"; c.GroupZoneOverrides = new Dictionary<string,string> { { "Вторая", "bottom-right" } };
+            c.CanvasInitialized = true;
+            c.CanvasPositions = new Dictionary<string,FreeCanvasRect> { { "app:Первая", new FreeCanvasRect(2, 3, 12, 10) } };
             ConfigStore.Save(c);
             MainWindow w = Open(); try {
-                w.Width = 1100; w.Height = 780; Drain();
-                Grid board = (Grid)Get(w, "_freeLayoutGrid");
-                Assert(board != null && board.Children.Count == 9,
-                    "Free placement board is missing one of its zones");
-                Dictionary<string, StackPanel> zones =
-                    (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
-                Assert(zones["top-left"].Children.Count == 2 &&
-                    zones["bottom-right"].Children.Count == 1,
-                    "Free placement did not honor a saved zone override");
-                Point topLeft = zones["top-left"].TranslatePoint(new Point(0, 0), board);
-                Point bottomRight = zones["bottom-right"].TranslatePoint(new Point(0, 0), board);
-                Assert(bottomRight.X > topLeft.X && bottomRight.Y > topLeft.Y,
-                    "Zones are not placed in distinct screen regions");
-                Assert((bool)Call(w, "SetGroupZoneOverride", "Первая", "middle-center"),
-                    "Could not move group to center zone");
-                Assert(Load().GroupZoneOverrides["Первая"] == "middle-center",
-                    "Manual group zone was not saved");
-                zones = (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
-                Assert(zones["middle-center"].Children.Count == 1,
-                    "Moved group was not rendered in center zone");
-                Assert((bool)Call(w, "SetGroupZoneOverride", "Первая", "inherit"),
-                    "Could not restore default group zone");
-                Assert(!Load().GroupZoneOverrides.ContainsKey("Первая") &&
-                    ((Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts"))
-                        ["top-left"].Children.Count == 2,
-                    "Restoring inherited zone did not move the group back");
-                w.Width = w.MinWidth; Drain();
-                List<Border> cells = (List<Border>)Get(w, "_freeZoneCells");
-                foreach (Border zone in cells)
-                    Assert(Grid.GetColumnSpan(zone) == 3,
-                        "Narrow free placement failed to stack zones vertically");
-                w.Width = 1100; Drain();
-                foreach (Border zone in cells)
-                    Assert(Grid.GetColumnSpan(zone) == 1,
-                        "Wide free placement did not restore three columns");
-            } finally { w.Close(); }
-        });
-        Case("free zones use content heights before scrolling a small viewport", delegate {
-            Seed("compact", 10);
-            AppConfig c = Load();
-            c.Groups.Clear();
-            c.Groups.AddRange(new string[] { "Первая", "Вторая" });
-            for (int i = 1; i < c.Items.Count; i++) c.Items[i].Group = "Вторая";
-            c.GroupLayoutMode = "free";
-            c.GroupDefaultZone = "top-left";
-            c.GroupZoneOverrides = new Dictionary<string, string> {
-                { "Вторая", "bottom-left" }
-            };
-            ConfigStore.Save(c);
-            MainWindow w = Open(); try {
-                w.Width = 1500; w.Height = 830; Drain();
-                Grid board = (Grid)Get(w, "_freeLayoutGrid");
-                ScrollViewer viewport = (ScrollViewer)Get(w, "_tilesScroller");
-                Dictionary<string, StackPanel> zones =
-                    (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
-                Border upper = (Border)zones["top-left"].Children[0];
-                Border lower = (Border)zones["bottom-left"].Children[0];
-                Assert(board.RowDefinitions[0].Height.IsAuto &&
-                    board.RowDefinitions[1].Height.IsAuto &&
-                    board.RowDefinitions[2].Height.IsAuto,
-                    "Free board rows must measure natural group heights under ScrollViewer");
-                double viewportHeight = viewport.ActualHeight -
-                    viewport.Padding.Top - viewport.Padding.Bottom;
-                List<Border> cells = (List<Border>)Get(w, "_freeZoneCells");
-                double topHeight = 0, bottomHeight = 0;
-                for (int i = 0; i < cells.Count; i++) {
-                    if (i < 3) topHeight = Math.Max(topHeight, cells[i].DesiredSize.Height);
-                    if (i >= 6) bottomHeight = Math.Max(bottomHeight, cells[i].DesiredSize.Height);
+                FreeCanvasRect saved = Load().CanvasPositions["app:Первая"];
+                Assert(saved.X == 2 && saved.Y == 3 && saved.Width == 12 && saved.Height == 10 &&
+                    Load().GroupLayoutMode == "canvas", "Existing canvas overwritten");
+                string before = File.ReadAllText(ConfigStore.PluginSettingsPath);
+                MenuItem reset = Menu(Menu(Tools(w), "Быстрые настройки"), "Сбросить расположение групп");
+                foreach (string answer in new[] { "Нет", "Да" })
+                {
+                    Exception error = null;
+                    w.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(delegate {
+                        Window confirmation = null;
+                        try {
+                            foreach (Window owned in w.OwnedWindows)
+                                if (owned.Title == "AppShelf — Свободное полотно") confirmation = owned;
+                            Assert(confirmation != null, "Canvas reset did not ask for confirmation");
+                            Click(ButtonNamed(confirmation, answer));
+                        } catch (Exception ex) { error = ex; }
+                        finally { if (confirmation != null && confirmation.IsVisible) confirmation.Close(); }
+                    }));
+                    reset.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    Drain();
+                    if (error != null) throw error;
+                    if (answer == "Нет")
+                        Assert(File.ReadAllText(ConfigStore.PluginSettingsPath) == before, "Declining reset changed canvas settings");
                 }
-                double expectedMiddle = Math.Max(26, viewportHeight - topHeight - bottomHeight);
-                Assert(Math.Abs(board.RowDefinitions[1].MinHeight - expectedMiddle) < 2,
-                    "Middle row did not reserve the actual remaining viewport height");
-                Assert(lower.ActualHeight > viewport.ViewportHeight / 3.0 &&
-                    upper.ActualHeight + lower.ActualHeight + 42 < viewport.ViewportHeight,
-                    "Free board test fixture must fit overall but overflow a fixed third: " +
-                    "top=" + upper.ActualHeight + ", bottom=" + lower.ActualHeight +
-                    ", viewport=" + viewport.ViewportHeight + ", grid=" + board.ActualHeight +
-                    ", scrollable=" + viewport.ScrollableHeight);
-                Assert(viewport.ScrollableHeight <= 1.5,
-                    "Free layout scrolls although its groups fit in the viewport");
-                Point lowerBottom = lower.TranslatePoint(new Point(0, lower.ActualHeight), board);
-                Assert(lowerBottom.Y <= board.ActualHeight + 0.5 &&
-                    board.ActualHeight - lowerBottom.Y < 23,
-                    "Bottom zone is not anchored to the bottom of the free board");
-                w.Height = w.MinHeight; Drain();
-                Assert(viewport.ScrollableHeight > 1,
-                    "Truly oversized group must remain scrollable instead of being clipped");
-                viewport.ScrollToBottom(); Drain();
-                Assert(viewport.VerticalOffset > 0,
-                    "Scrollbar cannot reach an oversized bottom group");
-                w.Height = 830; Drain();
-                Assert(viewport.ScrollableHeight <= 1.5,
-                    "Free layout did not relinquish its scrollbar after growing the window");
-                w.Width = w.MinWidth; Drain();
-                Assert(board.RowDefinitions[1].Height.IsAuto,
-                    "Narrow nine-zone layout must restore content-sized list rows");
-                w.Width = 1500; Drain();
-                Assert(board.RowDefinitions[1].Height.IsAuto &&
-                    board.RowDefinitions[1].MinHeight > 26 &&
-                    viewport.ScrollableHeight <= 1.5,
-                    "Wide free layout did not restore adaptive middle space");
+                Assert(Load().CanvasInitialized && Load().CanvasPositions == null && Tiles(w).Count == 4, "Reset lost data or did not clear geometry");
             } finally { w.Close(); }
-        });
-        Case("free placement context menu and empty-zone group drop", delegate {
-            Seed("normal", 2);
-            AppConfig c = Load();
-            c.GroupLayoutMode = "free";
-            ConfigStore.Save(c);
-            MainWindow w = Open(); try {
-                w.Width = 1200; Drain();
-                Dictionary<string, StackPanel> zones =
-                    (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
-                Border card = (Border)zones["top-left"].Children[0];
-                DockPanel header = (DockPanel)((Expander)card.Child).Header;
-                MenuItem placement = Menu(header.ContextMenu, "Размещение группы");
-                OpenMenu(placement);
-                Assert(Menu(placement, "По общему правилу").IsChecked,
-                    "New group must inherit default zone");
-                Click(Menu(placement, "По центру справа"));
-                Assert(Load().GroupZoneOverrides["Первая"] == "middle-right",
-                    "Context menu did not persist the selected zone");
-                zones = (Dictionary<string, StackPanel>)Get(w, "_freeZoneHosts");
-                Assert(zones["middle-right"].Children.Count == 1,
-                    "Context menu did not reflow the group");
-                List<Border> cells = (List<Border>)Get(w, "_freeZoneCells");
-                DataObject dragData = new DataObject();
-                dragData.SetData("AppShelf.InternalGroupName", "Первая");
-                DragEventArgs over = Drag(cells[6], dragData, DragDrop.PreviewDragOverEvent);
-                Assert(over.Effects == DragDropEffects.Move,
-                    "Empty free zone is not a group drop target");
-                DragEventArgs dropped = Drag(cells[6], dragData, DragDrop.PreviewDropEvent);
-                Assert(dropped.Effects == DragDropEffects.Move &&
-                    Load().GroupZoneOverrides["Первая"] == "bottom-left",
-                    "Drag-and-drop did not move group to the empty zone");
-            } finally { w.Close(); }
-        });
-        Case("free layout radio options and 3x3 zone picker save settings", delegate {
-            Seed("normal", 1);
-            MainWindow w = Open(); try {
-                settings = delegate(Window d) {
-                    RadioButton free = RadioWithTag(d, "GroupLayoutMode:free");
-                    RadioButton width = RadioWithTag(d, "GroupWidthMode:content");
-                    ComboBox align = ComboWithOption(d, "alternate");
-                    free.IsChecked = true; Drain();
-                    System.Windows.Controls.Primitives.UniformGrid grid = null;
-                    foreach (System.Windows.Controls.Primitives.UniformGrid panel
-                        in Controls<System.Windows.Controls.Primitives.UniformGrid>(d))
-                        if (Object.Equals(panel.Tag, "GroupZonePicker")) grid = panel;
-                    Assert(grid != null && grid.Columns == 3 && grid.Rows == 3 &&
-                        grid.Children.Count == 9,
-                        "Free mode must show 3x3 zone picker");
-                    Assert(!width.IsVisible && !align.IsVisible && grid.IsVisible,
-                        "Free mode exposes settings that are not applicable");
-                    Button zone = ButtonWithTag(d, "GroupZone:bottom-right");
-                    Click(zone);
-                    Assert(zone.BorderThickness.Left >= 2,
-                        "Selected zone does not receive an indicator");
-                    Click(ButtonNamed(d, "Сохранить"));
+            w = Open(); try {
+                Assert(Load().CanvasPositions == null && Get(w, "_canvasBoard") != null, "Reset was overwritten after restart");
+                settings = delegate(Window dialog) {
+                    Assert(!Controls<RadioButton>(dialog).Exists(r => Convert.ToString(r.Tag).StartsWith("GroupLayoutMode:", StringComparison.Ordinal) ||
+                        Convert.ToString(r.Tag).StartsWith("GroupWidthMode:", StringComparison.Ordinal)), "Legacy selectors remain");
+                    ComboBox viewport = ComboWithOption(dialog, "adaptive");
+                    Assert(viewport != null && viewport.Items.Count == 4, "Viewport strategies lost");
+                    Click(ButtonNamed(dialog, "Сохранить"));
                 };
                 Call(w, "ShowSettings");
-                Assert(Load().GroupLayoutMode == "free" &&
-                    Load().GroupDefaultZone == "bottom-right",
-                    "Free layout or global zone was not saved");
-            } finally { w.Close(); }
-        });
-        Case("group layout radio controls show only applicable options and persist", delegate {
-            Seed("normal", 1);
-            MainWindow w = Open(); try {
-                settings = delegate(Window d) {
-                    RadioButton list = RadioWithTag(d, "GroupLayoutMode:vertical");
-                    RadioButton grid = RadioWithTag(d, "GroupLayoutMode:grid");
-                    RadioButton free = RadioWithTag(d, "GroupLayoutMode:free");
-                    RadioButton width = RadioWithTag(d, "GroupWidthMode:content");
-                    ComboBox align = ComboWithOption(d, "alternate");
-                    Assert(list.IsChecked == true && grid.IsChecked == false &&
-                        free.IsChecked == false && width.Visibility == Visibility.Visible &&
-                        align.Visibility == Visibility.Collapsed,
-                        "Default list layout selection or dependent controls are wrong");
-                    width.IsChecked = true; Drain();
-                    Assert(align.Visibility == Visibility.Visible,
-                        "Content width did not reveal alignment");
-                    align.SelectedIndex = 3;
-                    grid.IsChecked = true; Drain();
-                    Assert(!width.IsVisible && !align.IsVisible,
-                        "Automatic grid still shows irrelevant controls");
-                    list.IsChecked = true; Drain();
-                    Assert(width.IsChecked == true && align.SelectedIndex == 3 &&
-                        align.Visibility == Visibility.Visible,
-                        "Switching back to list lost unsaved width/alignment choices");
-                    grid.IsChecked = true; Drain();
-                    Click(ButtonNamed(d, "Сохранить"));
-                };
-                Call(w, "ShowSettings");
-                AppConfig saved = Load();
-                Assert(saved.GroupLayoutMode == "grid" && saved.GroupWidthMode == "content" &&
-                    saved.GroupAlignment == "alternate",
-                    "Group layout selectors were not saved");
-                settings = delegate(Window d) {
-                    RadioButton list = RadioWithTag(d, "GroupLayoutMode:vertical");
-                    RadioButton grid = RadioWithTag(d, "GroupLayoutMode:grid");
-                    RadioButton width = RadioWithTag(d, "GroupWidthMode:content");
-                    ComboBox align = ComboWithOption(d, "alternate");
-                    Assert(grid.IsChecked == true && width.IsChecked == true &&
-                        align.SelectedIndex == 3, "Saved mode preferences were lost");
-                    list.IsChecked = true; Drain();
-                    Assert(width.Visibility == Visibility.Visible &&
-                        align.Visibility == Visibility.Visible,
-                        "Returning to list did not restore saved dependent settings");
-                };
-                Call(w, "ShowSettings");
+                Assert(Load().GroupLayoutMode == "canvas", "Settings reverted migration");
             } finally { w.Close(); }
         });
         Console.WriteLine("Package6 scenarios passed=" + passed + "; failed=" + failed);

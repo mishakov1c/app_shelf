@@ -196,12 +196,13 @@ namespace AppShelf
             return null; // Not every 403 is a rate limit.
         }
 
-        private static T ReadGithub<T>(string address)
+        private static T ReadGithub<T>(string address, bool allowRedirect = true)
         {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(address);
             request.Method = "GET";
             request.UserAgent = "AppShelf-update-check";
             request.Accept = "application/vnd.github+json";
+            request.AllowAutoRedirect = allowRedirect;
             request.Timeout = 15000;
             request.ReadWriteTimeout = 15000;
             try
@@ -473,6 +474,163 @@ namespace AppShelf
             {
                 byte[] value = sha.ComputeHash(input);
                 return BitConverter.ToString(value).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
+
+        // Independent plugin releases use numeric package versions, with the
+        // GitHub prerelease flag as an explicit publication channel.
+        internal sealed class PluginRelease
+        {
+            internal string Repository, Version, Tag, Asset, DownloadUrl, Sha256, Notes;
+            internal long Size;
+            internal bool Preview;
+        }
+
+        private const long MaxPluginDownload = 128L * 1024 * 1024;
+        internal static bool ValidPluginRepository(string repository)
+        {
+            return repository != null && Regex.IsMatch(repository,
+                @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\z",
+                RegexOptions.CultureInvariant) && !repository.EndsWith(".", StringComparison.Ordinal);
+        }
+
+        private static string PluginVersion(string tag)
+        {
+            if (tag == null) return null;
+            string version = tag.StartsWith("v", StringComparison.Ordinal) ? tag.Substring(1) : tag;
+            return Regex.IsMatch(version, @"\A(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\z",
+                RegexOptions.CultureInvariant) ? version : null;
+        }
+
+        private static bool ValidPluginAsset(string asset)
+        {
+            return asset != null && Regex.IsMatch(asset, @"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,119}\.asplugin\z",
+                RegexOptions.CultureInvariant);
+        }
+
+        private static bool ValidPluginDownload(string url, string repository, string tag, string asset)
+        {
+            Uri uri;
+            return ValidPluginRepository(repository) && PluginVersion(tag) != null && ValidPluginAsset(asset) &&
+                Uri.TryCreate(url, UriKind.Absolute, out uri) && uri.Scheme == Uri.UriSchemeHttps &&
+                uri.IsDefaultPort && String.IsNullOrEmpty(uri.UserInfo) && String.IsNullOrEmpty(uri.Query) &&
+                String.IsNullOrEmpty(uri.Fragment) && String.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase) &&
+                String.Equals(uri.AbsolutePath, "/" + repository + "/releases/download/" + tag + "/" + asset, StringComparison.Ordinal);
+        }
+
+        private static PluginRelease[] SelectPluginReleases(List<GithubRelease> entries, string repository, string installed)
+        {
+            if (!ValidPluginRepository(repository) || PluginVersion(installed) != installed || installed == null)
+                throw new InvalidDataException("Некорректный источник или установленная версия плагина.");
+            if (entries == null) throw new InvalidDataException("Некорректный список релизов.");
+            PluginRelease stable = null, preview = null;
+            foreach (GithubRelease entry in entries)
+            {
+                if (entry == null || entry.Draft) continue;
+                string version = PluginVersion(entry.Tag);
+                if (version == null || new Version(version).CompareTo(new Version(installed)) <= 0) continue;
+                GithubAsset selected = null;
+                int count = 0;
+                if (entry.Assets != null)
+                    foreach (GithubAsset asset in entry.Assets)
+                        if (asset != null && ValidPluginAsset(asset.Name)) { selected = asset; count++; }
+                if (count != 1 || selected.Size <= 0 || selected.Size > MaxPluginDownload ||
+                    !ValidPluginDownload(selected.DownloadUrl, repository, entry.Tag, selected.Name)) continue;
+                string hash = ExtractSha256(selected.Digest);
+                if (hash == null) continue;
+                PluginRelease release = new PluginRelease { Repository = repository, Version = version,
+                    Tag = entry.Tag, Asset = selected.Name, DownloadUrl = selected.DownloadUrl, Sha256 = hash,
+                    Size = selected.Size, Preview = entry.Prerelease,
+                    Notes = String.IsNullOrWhiteSpace(entry.Body) ? "Описание отсутствует." : entry.Body };
+                PluginRelease previous = entry.Prerelease ? preview : stable;
+                if (previous != null && new Version(previous.Version).CompareTo(new Version(version)) >= 0) continue;
+                if (entry.Prerelease) preview = release; else stable = release;
+            }
+            List<PluginRelease> result = new List<PluginRelease>();
+            if (stable != null) result.Add(stable);
+            if (preview != null && (stable == null || new Version(preview.Version).CompareTo(new Version(stable.Version)) > 0)) result.Add(preview);
+            return result.ToArray();
+        }
+
+        internal static PluginRelease[] SelectPluginReleasesFromJson(string json, string repository, string installed)
+        {
+            using (MemoryStream input = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                return SelectPluginReleases((List<GithubRelease>)new DataContractJsonSerializer(typeof(List<GithubRelease>)).ReadObject(input), repository, installed);
+        }
+
+        internal static PluginRelease[] CheckPluginReleases(string repository, string installed)
+        {
+            if (!ValidPluginRepository(repository)) throw new InvalidDataException("Некорректный репозиторий плагина.");
+            List<GithubRelease> all = new List<GithubRelease>();
+            bool complete = false;
+            for (int page = 1; page <= 5; page++)
+            {
+                List<GithubRelease> part = ReadGithub<List<GithubRelease>>("https://api.github.com/repos/" +
+                    repository + "/releases?per_page=100&page=" + page, false);
+                if (part == null) throw new InvalidDataException("Некорректный список релизов.");
+                all.AddRange(part);
+                if (part.Count < 100) { complete = true; break; }
+            }
+            if (!complete) throw new InvalidDataException("Слишком много релизов. Установите пакет вручную.");
+            return SelectPluginReleases(all, repository, installed);
+        }
+
+        internal static void DownloadPluginRelease(PluginRelease release, string path)
+        {
+            if (release == null || !ValidPluginDownload(release.DownloadUrl, release.Repository, release.Tag, release.Asset) ||
+                release.Version != PluginVersion(release.Tag) || release.Size <= 0 || release.Size > MaxPluginDownload ||
+                ExtractSha256("sha256:" + release.Sha256) == null)
+                throw new InvalidDataException("Нет проверенных данных релиза плагина.");
+            Uri address = new Uri(release.DownloadUrl);
+            bool created = false, success = false;
+            try
+            {
+                for (int hop = 0; hop <= 5; hop++)
+                {
+                    HttpWebRequest request = (HttpWebRequest)WebRequest.Create(address);
+                    request.UserAgent = "AppShelf-plugin-update";
+                    request.Timeout = 25000; request.ReadWriteTimeout = 25000; request.AllowAutoRedirect = false;
+                    using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                    {
+                        int status = (int)response.StatusCode;
+                        if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308)
+                        {
+                            Uri next;
+                            if (!Uri.TryCreate(address, response.Headers["Location"], out next) ||
+                                next.Scheme != Uri.UriSchemeHttps || !next.IsDefaultPort ||
+                                !String.IsNullOrEmpty(next.UserInfo) ||
+                                !(next.Host == "release-assets.githubusercontent.com" || next.Host == "objects.githubusercontent.com" ||
+                                  next.Host == "github-releases.githubusercontent.com"))
+                                throw new InvalidDataException("Недоверенный адрес загрузки пакета.");
+                            address = next; continue;
+                        }
+                        if (status != 200 || (response.ContentLength >= 0 && response.ContentLength != release.Size))
+                            throw new InvalidDataException("Размер или ответ сервера не соответствует релизу.");
+                        using (Stream input = response.GetResponseStream())
+                        using (FileStream output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                        {
+                            created = true;
+                            byte[] buffer = new byte[65536]; long received = 0; int count;
+                            while ((count = input.Read(buffer, 0, buffer.Length)) > 0)
+                            {
+                                received += count;
+                                if (received > release.Size) throw new InvalidDataException("Пакет больше заявленного размера.");
+                                output.Write(buffer, 0, count);
+                            }
+                            output.Flush(true);
+                            if (received != release.Size) throw new InvalidDataException("Пакет загружен не полностью.");
+                        }
+                        if (!String.Equals(FileHash(path), release.Sha256, StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidDataException("SHA-256 пакета не совпадает.");
+                        success = true; return;
+                    }
+                }
+                throw new InvalidDataException("Слишком много перенаправлений загрузки.");
+            }
+            finally
+            {
+                if (created && !success) try { File.Delete(path); } catch (Exception error) { ConfigStore.Log(error); }
             }
         }
 

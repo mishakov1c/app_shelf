@@ -16,6 +16,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="tests\**\*.cs" />
+    <Compile Remove="samples\**\*.cs" />
     <EmbeddedResource Include="Assets\AppShelf.png" LogicalName="AppShelf.Brand.png" />
   </ItemGroup>
 </Project>

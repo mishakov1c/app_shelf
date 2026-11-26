@@ -9,7 +9,7 @@ $env:APPSHELF_TEST_DATA = $temp
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
@@ -179,7 +179,7 @@ public static class SiteTests
         ConfigStore.Save(new AppConfig { TileDisplayMode = mode, GroupingEnabled = true, Groups = new List<string>(new string[] { "A", "B" }), ShowWeather = false, ShowNetwork = false, MinimizeToTray = false });
         ReminderStore.Save(new ReminderDocument()); MainWindow w = new MainWindow();
         w.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), w, typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(w, "_networkTimer", new DispatcherTimer()); w.ShowInTaskbar = false; w.Show(); Drain(); return w;
+        Set(w, "_weatherTimer", new DispatcherTimer()); w.ShowInTaskbar = false; w.Show(); Drain(); return w;
     }
     private static Uri Url(string value) { Uri uri; Assert(SiteLinks.TryNormalize(value, out uri), "Bad fixture URI"); return uri; }
     private static void Picture(FrameworkElement view, string name)
@@ -266,10 +266,10 @@ public static class SiteTests
                 Button add = ButtonNamed(w, "AddItemButton"); FrameworkElement contents = (FrameworkElement)add.Content; Point center = contents.TransformToAncestor(add).Transform(new Point(contents.ActualWidth / 2, contents.ActualHeight / 2));
                 Assert(Math.Abs(center.X - add.ActualWidth / 2) < 1 && Math.Abs(center.Y - add.ActualHeight / 2) < 1, "Add content is not centered");
                 Click(add);
-                Assert(AddMenu.IsOpen && AddMenu.Items.Count == 3 &&
+                Assert(AddMenu.IsOpen && AddMenu.Items.Count == 4 &&
                     Menu(AddMenu, "Приложение или ярлык…") != null &&
                     Menu(AddMenu, "Сайт по ссылке…") != null &&
-                    Menu(AddMenu, "Папку…") != null, "Add menu choices missing");
+                    Menu(AddMenu, "Папку…") != null && Menu(AddMenu, "Виджет плагина…") != null, "Add menu choices missing");
                 Picture(w, "header-" + s.ToString(CultureInfo.InvariantCulture)); if (s == 1) Picture(AddMenu, "add-menu");
                 drive = delegate(Window d) {
                     ((FrameworkElement)d.Content).LayoutTransform = new ScaleTransform(s, s); d.Width *= s; d.Height *= s; Drain();

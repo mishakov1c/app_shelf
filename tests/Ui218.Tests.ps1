@@ -9,24 +9,19 @@ $previous = $env:APPSHELF_TEST_DATA
 $env:APPSHELF_TEST_DATA = $temp
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
-    $sources = foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    $sources = foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
             if ($text.Split(@($anchor), [StringSplitOptions]::None).Length -ne 2) { throw 'Isolation anchor missing.' }
             $text = $text.Replace($anchor, 'Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"')
-            $text = $text.Replace('if (_networkTimer == null) StartMonitors();', '')
+            $text = $text.Replace('if (_weatherTimer == null) StartMonitors();', '')
             $text = $text.Replace('startupState = WindowsStartup.Read();', 'startupState = new WindowsStartup.State();')
             $text = $text.Replace('            ContextMenu tools = new ContextMenu();',
                 '            ContextMenu tools = new ContextMenu(); Ui218Probe.Tools = tools;')
             $errorDialog = 'MessageBox.Show\(this, title \+ "\\n\\n" \+ error.Message \+\s*"[^"\r\n]*" \+ ConfigStore.LogPath, "AppShelf", MessageBoxButton.OK, MessageBoxImage.Error\);'
             if ([regex]::Matches($text, $errorDialog).Count -ne 1) { throw 'Error boundary missing.' }
             $text = [regex]::Replace($text, $errorDialog, 'Ui218Probe.SaveErrors++;')
-        }
-        if ($file -eq 'AppShelfExtras.cs') {
-            $anchor = 'Loaded += async delegate { await RefreshReportAsync(); };'
-            if ($text.Split(@($anchor), [StringSplitOptions]::None).Length -ne 2) { throw 'Diagnostics isolation missing.' }
-            $text = $text.Replace($anchor, '')
         }
         $text = $text.Replace('dialog.ShowDialog()', 'Ui218Probe.Modal(dialog)')
         $text = $text.Replace('WindowsStartup.Apply(enable, hidden);', '').Replace('WindowsStartup.WriteRaw(previousRunValue);', '')

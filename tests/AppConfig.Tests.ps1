@@ -12,7 +12,8 @@ $env:APPSHELF_TEST_DATA = $testRoot
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
+        if ($Baseline -and $file -in @('PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) { continue }
         if ($Baseline -and $file -in @('AppUpdate.cs','AppUpdateWindow.cs')) { continue }
         $source = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($Baseline -and $file -in @('Collections.cs','CollectionsWindow.cs')) { continue }
@@ -149,7 +150,7 @@ public static class ConfigTests
         EventHandler sourceHandler = (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
         window.SourceInitialized -= sourceHandler;
-        Set(window, "_networkTimer", new DispatcherTimer());
+        Set(window, "_weatherTimer", new DispatcherTimer());
         window.Opacity = 0; window.ShowActivated = false; window.ShowInTaskbar = false;
         window.Show();
         window.Dispatcher.Invoke(DispatcherPriority.Loaded, new Action(delegate { }));
@@ -257,6 +258,9 @@ public static class ConfigTests
         Seed();
         bool safe; string warning;
         AppConfig config = Load(out safe, out warning);
+        // Keep the one-time group layout conversion out of this shortcut rollback scenario.
+        config.GroupLayoutMode = "canvas";
+        config.CanvasInitialized = true;
         config.Items[0].Path = External("First.url");
         config.Items[0].SourcePath = null;
         ConfigStore.Save(config);

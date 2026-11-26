@@ -930,6 +930,8 @@ namespace AppShelf
             app.Resources[typeof(CheckBox)] = CheckBoxStyle();
             app.Resources[typeof(Expander)] = ExpanderStyle();
             app.Resources.MergedDictionaries.Add(ContextMenuResources());
+            app.Resources.MergedDictionaries.Add(SelectionResources());
+            app.Resources[typeof(ScrollBar)] = (Style)SettingsScrollResources()[typeof(ScrollBar)];
         }
 
         private static ResourceDictionary ContextMenuResources()
@@ -1117,6 +1119,29 @@ namespace AppShelf
             return style;
         }
 
+        internal static Style GroupCollapseButtonStyle()
+        {
+            return (Style)XamlReader.Parse(@"
+<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+ xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='Button'>
+ <Setter Property='Width' Value='20'/><Setter Property='Height' Value='20'/>
+ <Setter Property='MinHeight' Value='0'/><Setter Property='Padding' Value='0'/>
+ <Setter Property='Cursor' Value='Hand'/><Setter Property='Foreground' Value='#192334'/>
+ <Setter Property='Background' Value='#F4F7FD'/>
+ <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='Button'>
+  <Grid><Ellipse x:Name='Circle' Fill='{TemplateBinding Background}' Stroke='Transparent' StrokeThickness='1'/>
+   <ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/>
+  </Grid>
+  <ControlTemplate.Triggers>
+   <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Circle' Property='Fill' Value='#B7D3FF'/></Trigger>
+   <Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Circle' Property='Stroke' Value='#6094D4'/></Trigger>
+   <Trigger Property='IsPressed' Value='True'><Setter TargetName='Circle' Property='Fill' Value='#88B8FF'/></Trigger>
+   <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.45'/></Trigger>
+  </ControlTemplate.Triggers>
+ </ControlTemplate></Setter.Value></Setter>
+</Style>");
+        }
+
         public static Style BottomCategoryButtonStyle()
         {
             Style style = new Style(typeof(Button), ButtonStyle());
@@ -1138,6 +1163,8 @@ namespace AppShelf
                 "M 3,4 L 15,4 M 3,9 L 15,9 M 3,14 L 15,14 M 7,2 L 7,6 M 12,7 L 12,11 M 6,12 L 6,16" :
                 kind == "tools" ?
                 "M 2,16 L 12,6 M 10,3 L 15,8 M 12,2 L 16,6 M 3,12 L 7,16" :
+                kind == "puzzle" ?
+                "M 2,5 L 6,5 C 5,3 6,1 8,1 C 10,1 11,3 10,5 L 15,5 L 15,9 C 17,8 18,9 18,11 C 18,13 17,14 15,13 L 15,17 L 10,17 C 11,15 10,13 8,13 C 6,13 5,15 6,17 L 2,17 Z" :
                 kind == "settings" ?
                 "M 9,2 L 11,4 L 14,4 L 14,7 L 16,9 L 14,11 L 14,14 L 11,14 L 9,16 L 7,14 L 4,14 L 4,11 L 2,9 L 4,7 L 4,4 L 7,4 Z M 12,9 A 3,3 0 1 1 6,9 A 3,3 0 1 1 12,9" :
                 "M 9,2 A 7,7 0 1 1 9,16 A 7,7 0 1 1 9,2 M 9,8 L 9,13 M 9,5 L 9,6";
@@ -1409,33 +1436,12 @@ namespace AppShelf
             return resources;
         }
 
-        public static void StyleBottomPanelInputs(ComboBox mode, ListBox favorites)
+        private static ResourceDictionary SelectionResources()
         {
             ResourceDictionary resources = (ResourceDictionary)XamlReader.Parse(@"
 <ResourceDictionary xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
  xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
  xmlns:p='clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework'>
- <Style TargetType='RepeatButton' x:Key='ScrollPart'>
-  <Setter Property='Focusable' Value='False'/>
-  <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='RepeatButton'>
-   <Border Background='#192334'><ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/></Border>
-  </ControlTemplate></Setter.Value></Setter>
- </Style>
- <Style TargetType='ScrollBar'>
-  <Setter Property='Width' Value='14'/><Setter Property='Foreground' Value='#AABAD0'/>
-  <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='ScrollBar'>
-   <Grid Background='#192334'>
-    <p:Track x:Name='PART_Track' IsDirectionReversed='True'>
-     <p:Track.DecreaseRepeatButton><RepeatButton Style='{StaticResource ScrollPart}' Command='ScrollBar.PageUpCommand'/></p:Track.DecreaseRepeatButton>
-     <p:Track.Thumb><Thumb><Thumb.Template><ControlTemplate TargetType='Thumb'>
-      <Border x:Name='Grip' Background='#607590' CornerRadius='5' Margin='3,1'/>
-      <ControlTemplate.Triggers><Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Grip' Property='Background' Value='#88B8FF'/></Trigger></ControlTemplate.Triggers>
-     </ControlTemplate></Thumb.Template></Thumb></p:Track.Thumb>
-     <p:Track.IncreaseRepeatButton><RepeatButton Style='{StaticResource ScrollPart}' Command='ScrollBar.PageDownCommand'/></p:Track.IncreaseRepeatButton>
-    </p:Track>
-   </Grid>
-  </ControlTemplate></Setter.Value></Setter>
- </Style>
  <Style TargetType='ComboBoxItem'>
   <Setter Property='Foreground' Value='#F4F7FD'/><Setter Property='Background' Value='#192334'/>
   <Setter Property='Padding' Value='10,7'/><Setter Property='VerticalContentAlignment' Value='Center'/>
@@ -1445,6 +1451,7 @@ namespace AppShelf
    </Border><ControlTemplate.Triggers>
     <Trigger Property='IsSelected' Value='True'><Setter TargetName='Chrome' Property='Background' Value='#30415C'/></Trigger>
     <Trigger Property='IsHighlighted' Value='True'><Setter TargetName='Chrome' Property='Background' Value='#30415C'/></Trigger>
+    <Trigger Property='IsEnabled' Value='False'><Setter TargetName='Chrome' Property='Opacity' Value='0.55'/></Trigger>
    </ControlTemplate.Triggers>
   </ControlTemplate></Setter.Value></Setter>
  </Style>
@@ -1472,6 +1479,7 @@ namespace AppShelf
     </Popup>
    </Grid><ControlTemplate.Triggers>
     <Trigger Property='IsKeyboardFocusWithin' Value='True'><Setter Property='BorderBrush' Value='#88B8FF'/></Trigger>
+    <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.55'/></Trigger>
    </ControlTemplate.Triggers>
   </ControlTemplate></Setter.Value></Setter>
  </Style>
@@ -1491,14 +1499,32 @@ namespace AppShelf
  </Style>
  <Style TargetType='ListBox'>
   <Setter Property='Background' Value='#192334'/><Setter Property='Foreground' Value='#F4F7FD'/>
+  <Setter Property='BorderBrush' Value='#34445B'/><Setter Property='BorderThickness' Value='1'/>
   <Setter Property='ScrollViewer.HorizontalScrollBarVisibility' Value='Disabled'/>
   <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='ListBox'>
-   <Border Background='{TemplateBinding Background}' BorderBrush='#34445B' BorderThickness='1' CornerRadius='6' Padding='3'>
+   <Border x:Name='ListChrome' Background='{TemplateBinding Background}' BorderBrush='{TemplateBinding BorderBrush}' BorderThickness='{TemplateBinding BorderThickness}' CornerRadius='6' Padding='3'>
     <ScrollViewer Focusable='False' CanContentScroll='True' HorizontalScrollBarVisibility='Disabled' VerticalScrollBarVisibility='Auto'><ItemsPresenter/></ScrollViewer>
    </Border>
+   <ControlTemplate.Triggers>
+    <Trigger Property='IsKeyboardFocusWithin' Value='True'><Setter TargetName='ListChrome' Property='BorderBrush' Value='#88B8FF'/></Trigger>
+    <Trigger Property='IsEnabled' Value='False'><Setter TargetName='ListChrome' Property='Opacity' Value='0.55'/></Trigger>
+   </ControlTemplate.Triggers>
   </ControlTemplate></Setter.Value></Setter>
  </Style>
 </ResourceDictionary>");
+            return resources;
+        }
+
+        public static void StyleComboBox(ComboBox field)
+        {
+            ResourceDictionary resources = SelectionResources();
+            field.Resources.MergedDictionaries.Add(resources);
+            field.Style = (Style)resources[typeof(ComboBox)];
+        }
+
+        public static void StyleBottomPanelInputs(ComboBox mode, ListBox favorites)
+        {
+            ResourceDictionary resources = SelectionResources();
             mode.Resources.MergedDictionaries.Add(resources);
             mode.Style = (Style)resources[typeof(ComboBox)];
             favorites.Resources.MergedDictionaries.Add(resources);

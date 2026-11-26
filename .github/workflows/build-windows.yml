@@ -28,6 +28,95 @@ jobs:
             throw "AppShelf.exe is empty."
           }
 
+      - name: Test plugin package storage (Windows PowerShell 5.1 STA)
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File tests\PluginPackages.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Plugin package regression failed" }
+
+      - name: Test plugin protocol (Windows PowerShell 5.1 STA)
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File tests\PluginProtocol.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Plugin protocol regression failed" }
+
+      - name: Test real plugin process lifecycle (Windows PowerShell 5.1 STA)
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File tests\PluginRuntime.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Plugin runtime regression failed" }
+
+      - name: Build demonstration plugin
+        shell: cmd
+        run: Build-Plugins.cmd --no-open --no-pause
+
+      - name: Upload demonstration plugin
+        uses: actions/upload-artifact@v6
+        with:
+          name: NotesPlugin-${{ github.sha }}
+          path: artifacts/plugins/NotesPlugin-1.0.1.asplugin
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload stocks widget demonstration plugin
+        uses: actions/upload-artifact@v6
+        with:
+          name: StocksPlugin-${{ github.sha }}
+          path: artifacts/plugins/StocksPlugin-1.0.0.asplugin
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Check out pinned independent NetworkPlugin for compatibility only
+        uses: actions/checkout@v5
+        with:
+          repository: mishakov1c/app_shelf_network
+          ref: 989d970f7d5637bb8ddf8906620d07e21d345b6e
+          path: .network-compat
+          persist-credentials: false
+
+      - name: Verify independent NetworkPlugin against this host
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File .network-compat/tests/NetworkRuntime.Tests.ps1 -HostSourceDirectory "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) { throw "Independent NetworkPlugin compatibility failed" }
+
+      - name: Run full isolated Windows PowerShell 5.1 STA regression tests
+        if: >-
+          ${{ github.event_name == 'pull_request' || startsWith(github.event.head_commit.message, 'test: run full regression') }}
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $tests = @(Get-ChildItem -LiteralPath tests -Filter '*.Tests.ps1' | Sort-Object Name)
+          if ($tests.Count -lt 15) { throw "Expected at least 15 regression test files" }
+          foreach ($test in $tests) {
+            Write-Host "START $($test.Name)"
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo.FileName = $exe
+            $process.StartInfo.Arguments = '-NoProfile -STA -ExecutionPolicy Bypass -File "' + $test.FullName + '"'
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.CreateNoWindow = $true
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            [void]$process.Start()
+            $out = $process.StandardOutput.ReadToEndAsync()
+            $err = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(180000)) {
+              $process.Kill()
+              $process.WaitForExit()
+              Write-Host $out.Result
+              Write-Host $err.Result
+              throw "TIMEOUT $($test.Name) after 180 seconds"
+            }
+            Write-Host $out.Result
+            Write-Host $err.Result
+            if ($process.ExitCode -ne 0) { throw "FAIL $($test.Name) (exit $($process.ExitCode))" }
+            Write-Host "PASS $($test.Name)"
+          }
+
       - name: Upload Windows application
         uses: actions/upload-artifact@v6
         with:

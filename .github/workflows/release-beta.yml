@@ -92,6 +92,21 @@ jobs:
             Write-Host "PASS $($test.Name)"
           }
 
+      - name: Check out pinned independent NetworkPlugin for compatibility only
+        uses: actions/checkout@v5
+        with:
+          repository: mishakov1c/app_shelf_network
+          ref: 989d970f7d5637bb8ddf8906620d07e21d345b6e
+          path: .network-compat
+          persist-credentials: false
+
+      - name: Verify independent NetworkPlugin against this host
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File .network-compat/tests/NetworkRuntime.Tests.ps1 -HostSourceDirectory "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) { throw "Independent NetworkPlugin compatibility failed" }
+
       - name: Verify release executable
         shell: pwsh
         run: |
@@ -103,13 +118,21 @@ jobs:
             throw "EXE product version is $actualVersion, expected $env:APP_RELEASE_VERSION"
           }
 
-      - name: Publish verified GitHub Release with EXE
+      - name: Build and verify demonstration packages
+        shell: cmd
+        run: Build-Plugins.cmd --no-open --no-pause
+
+      - name: Publish verified GitHub Release with EXE and demo packages
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = $env:APP_RELEASE_VERSION
-          gh release create "$version" "AppShelf.exe" `
+          $assets = @("AppShelf.exe", "artifacts/plugins/NotesPlugin-1.0.1.asplugin", "artifacts/plugins/StocksPlugin-1.0.0.asplugin")
+          foreach ($asset in $assets) {
+            if ((Get-Item -LiteralPath $asset -ErrorAction Stop).Length -le 0) { throw "Empty release asset: $asset" }
+          }
+          gh release create "$version" @assets `
             --prerelease --latest=false `
             --title "AppShelf $version" `
             --notes-file "release-notes.md" `

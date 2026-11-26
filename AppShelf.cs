@@ -6,7 +6,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
@@ -76,6 +75,656 @@ namespace AppShelf
         public string Kind;
     }
 
+    // Only placement metadata is persisted: no snapshots, commands or trust flags.
+    [DataContract]
+    public sealed class PluginWidgetPlacementConfig
+    {
+        [DataMember(Name = "pluginId")] public string PluginId;
+        [DataMember(Name = "widgetId")] public string WidgetId;
+        [DataMember(Name = "version")] public string Version;
+        [DataMember(Name = "title")] public string Title;
+        [DataMember(Name = "size")] public string Size;
+        [DataMember(Name = "row")] public int Row;
+        [DataMember(Name = "column")] public int Column;
+        internal PluginWidgetPlacementConfig Copy() { return (PluginWidgetPlacementConfig)MemberwiseClone(); }
+    }
+
+    [DataContract]
+    public sealed class PluginWidgetGroupConfig
+    {
+        [DataMember(Name = "number")] public int Number;
+        [DataMember(Name = "title")] public string Title;
+        [DataMember(Name = "zone")] public string Zone;
+        [DataMember(Name = "order")] public int Order;
+        [DataMember(Name = "collapsed", EmitDefaultValue = false)] public bool Collapsed;
+        [DataMember(Name = "widgets")] public List<PluginWidgetPlacementConfig> Widgets;
+        internal PluginWidgetGroupConfig Copy()
+        {
+            PluginWidgetGroupConfig copy = (PluginWidgetGroupConfig)MemberwiseClone();
+            copy.Widgets = Widgets == null ? null : Widgets.ConvertAll(delegate(PluginWidgetPlacementConfig p) { return p == null ? null : p.Copy(); });
+            return copy;
+        }
+        private static bool Valid(string text, int max)
+        {
+            return !String.IsNullOrWhiteSpace(text) && text.Length <= max && text.IndexOf('\0') < 0;
+        }
+        private static bool Match(string text, string pattern)
+        {
+            return text != null && System.Text.RegularExpressions.Regex.IsMatch(text, pattern,
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        }
+        private static bool ValidPlacementIdentity(PluginWidgetPlacementConfig p)
+        {
+            return p != null && Valid(p.PluginId, 100) &&
+                Match(p.PluginId, @"\A[a-z][a-z0-9-]{0,31}(?:\.[a-z][a-z0-9-]{0,31}){1,3}\z") &&
+                Match(p.WidgetId, @"\A[a-z][a-z0-9_.-]{0,63}\z") &&
+                Match(p.Version, @"\A(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\z") &&
+                Valid(p.Title, 100);
+        }
+
+        internal static void Validate(List<PluginWidgetGroupConfig> groups, List<PluginWidgetPlacementConfig> indicators = null)
+        {
+            HashSet<string> indicatorKeys = new HashSet<string>(StringComparer.Ordinal);
+            if (indicators != null)
+            {
+                if (indicators.Count > 6) throw new InvalidDataException("Слишком много индикаторов плагинов.");
+                foreach (PluginWidgetPlacementConfig p in indicators)
+                {
+                    if (!ValidPlacementIdentity(p) || p.Size != "indicator" || p.Row != 0 || p.Column != 0 ||
+                        !indicatorKeys.Add(p.PluginId + "\n" + p.WidgetId))
+                        throw new InvalidDataException("Некорректный индикатор плагина.");
+                }
+            }
+            if (groups == null) return;
+            if (groups.Count > 32) throw new InvalidDataException("Слишком много групп виджетов.");
+            HashSet<int> numbers = new HashSet<int>();
+            HashSet<string> keys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (PluginWidgetGroupConfig group in groups)
+            {
+                if (group == null || group.Number <= 0 || group.Number > 1000000000 || !numbers.Add(group.Number) ||
+                    !Valid(group.Title, 100) || !Match(group.Zone, @"\A(top|middle|bottom)-(left|center|right)\z") ||
+                    group.Order < 0 || group.Widgets == null || group.Widgets.Count < 1 || group.Widgets.Count > 4)
+                    throw new InvalidDataException("Некорректная группа виджетов.");
+                bool[,] cells = new bool[2, 2];
+                foreach (PluginWidgetPlacementConfig p in group.Widgets)
+                {
+                    if (!ValidPlacementIdentity(p) || !keys.Add(p.PluginId + "\n" + p.WidgetId) ||
+                        keys.Count > 32 || indicatorKeys.Contains(p.PluginId + "\n" + p.WidgetId) ||
+                        (p.Size != "full" && p.Size != "half-horizontal" && p.Size != "half-vertical" && p.Size != "quarter"))
+                        throw new InvalidDataException("Некорректное размещение виджета.");
+                    int rows = p.Size == "full" || p.Size == "half-vertical" ? 2 : 1;
+                    int columns = p.Size == "full" || p.Size == "half-horizontal" ? 2 : 1;
+                    if (p.Row < 0 || p.Row > 2 - rows || p.Column < 0 || p.Column > 2 - columns)
+                        throw new InvalidDataException("Виджет выходит за границы группы.");
+                    for (int row = p.Row; row < p.Row + rows; row++)
+                        for (int col = p.Column; col < p.Column + columns; col++)
+                        {
+                            if (cells[row, col]) throw new InvalidDataException("Виджеты пересекаются.");
+                            cells[row, col] = true;
+                        }
+                }
+            }
+        }
+    }
+
+
+    // Free canvas coordinates are measured in grid cells, not physical pixels.
+    // The same geometry is used for application and plugin widget cards.
+    [DataContract]
+    public sealed class FreeCanvasRect
+    {
+        [DataMember(Name = "x")] public int X;
+        [DataMember(Name = "y")] public int Y;
+        [DataMember(Name = "width")] public int Width;
+        [DataMember(Name = "height")] public int Height;
+        [DataMember(Name = "manualHeight", EmitDefaultValue = false)] public int ManualHeight;
+
+        public FreeCanvasRect(int x, int y, int width, int height)
+        { X = x; Y = y; Width = width; Height = height; }
+
+        public FreeCanvasRect Copy()
+        { return new FreeCanvasRect(X, Y, Width, Height) { ManualHeight = ManualHeight }; }
+    }
+
+    public static class FreeCanvasLayout
+    {
+        // Bound persisted coordinates and arithmetic even for malformed profiles.
+        public const int MaxCells = 4096;
+
+        public static bool IsValid(FreeCanvasRect rect)
+        {
+            return rect != null && rect.X >= 0 && rect.Y >= 0 &&
+                rect.Width > 0 && rect.Height > 0 && rect.ManualHeight >= 0 && rect.ManualHeight <= rect.Height &&
+                rect.Width <= MaxCells && rect.Height <= MaxCells &&
+                rect.X <= MaxCells - rect.Width && rect.Y <= MaxCells - rect.Height;
+        }
+
+        public static bool Intersects(FreeCanvasRect a, FreeCanvasRect b)
+        {
+            return IsValid(a) && IsValid(b) &&
+                a.X < b.X + b.Width && b.X < a.X + a.Width &&
+                a.Y < b.Y + b.Height && b.Y < a.Y + a.Height;
+        }
+
+        public static bool CanPlace(FreeCanvasRect candidate, IEnumerable<FreeCanvasRect> occupied)
+        {
+            if (!IsValid(candidate)) return false;
+            if (occupied != null)
+                foreach (FreeCanvasRect other in occupied)
+                    if (Intersects(candidate, other)) return false;
+            return true;
+        }
+
+        // Return the earliest free position, top to bottom, then left to right.
+        // It is sufficient to inspect y=0 and existing bottom edges: a free
+        // rectangle can be moved upwards until it touches one of those edges.
+        // Jump across intersecting rectangles instead of scanning every cell.
+        // Never mutate caller-owned positions (including on a failed placement).
+        public static FreeCanvasRect FindFirstFree(int width, int height, int columns,
+            IEnumerable<FreeCanvasRect> occupied)
+        {
+            if (columns <= 0 || columns > MaxCells || width <= 0 || width > columns ||
+                height <= 0 || height > MaxCells) return null;
+            List<FreeCanvasRect> cards = new List<FreeCanvasRect>();
+            SortedSet<int> rows = new SortedSet<int>();
+            rows.Add(0);
+            if (occupied != null)
+                foreach (FreeCanvasRect rect in occupied)
+                {
+                    if (!IsValid(rect)) continue;
+                    cards.Add(rect);
+                    if (rect.Y + rect.Height <= MaxCells - height)
+                        rows.Add(rect.Y + rect.Height);
+                }
+
+            foreach (int y in rows)
+            {
+                int x = 0;
+                while (x <= columns - width)
+                {
+                    FreeCanvasRect candidate = new FreeCanvasRect(x, y, width, height);
+                    int next = x;
+                    foreach (FreeCanvasRect other in cards)
+                        if (Intersects(candidate, other))
+                            next = Math.Max(next, other.X + other.Width);
+                    if (next == x) return candidate;
+                    x = next;
+                }
+            }
+            return null;
+        }
+
+        public static Dictionary<string, FreeCanvasRect> SelectPositions(Dictionary<string, FreeCanvasRect> source, bool widgets)
+        {
+            Dictionary<string, FreeCanvasRect> result = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            if (source != null)
+                foreach (KeyValuePair<string, FreeCanvasRect> item in source)
+                    if (item.Key.StartsWith(widgets ? "widget:" : "app:", StringComparison.OrdinalIgnoreCase) && IsValid(item.Value))
+                        result[item.Key] = item.Value.Copy();
+            return result;
+        }
+
+        public static Dictionary<string, FreeCanvasRect> MergePositions(
+            Dictionary<string, FreeCanvasRect> apps, int appStep,
+            Dictionary<string, FreeCanvasRect> widgets, int widgetStep, int targetStep)
+        {
+            Dictionary<string, FreeCanvasRect> result = SelectPositions(apps, false);
+            foreach (string key in new List<string>(result.Keys))
+                result[key] = ConvertStep(result[key], appStep, targetStep);
+            foreach (KeyValuePair<string, FreeCanvasRect> item in SelectPositions(widgets, true))
+                result[item.Key] = ConvertStep(item.Value, widgetStep, targetStep);
+            return result.Count == 0 ? null : result;
+        }
+
+        // Produce one atomic layout, never mutate input positions. Alignment
+        // keeps the original row when possible; otherwise moves down to avoid a collision.
+        public static string NormalizeViewportMode(string mode)
+        { return mode == "scroll" || mode == "scale" || mode == "collapse" ? mode : "adaptive"; }
+
+        public static int NormalizeStep(int? value)
+        { return value == 10 || value == 20 || value == 30 || value == 40 ? value.Value : 20; }
+
+        public static FreeCanvasRect ConvertStep(FreeCanvasRect rect, int oldStep, int newStep)
+        {
+            if (!IsValid(rect)) return null;
+            oldStep = NormalizeStep(oldStep); newStep = NormalizeStep(newStep);
+            if (oldStep == newStep) return rect.Copy();
+            int width = Math.Max(1, Snap((double)rect.Width * oldStep, newStep));
+            int height = Math.Max(1, Snap((double)rect.Height * oldStep, newStep));
+            return new FreeCanvasRect(Math.Min(MaxCells - width, Snap((double)rect.X * oldStep, newStep)),
+                Math.Min(MaxCells - height, Snap((double)rect.Y * oldStep, newStep)), width, height)
+            { ManualHeight = Math.Min(height, Snap((double)rect.ManualHeight * oldStep, newStep)) };
+        }
+
+        public static int Snap(double dip, int step)
+        {
+            if (step <= 0 || Double.IsNaN(dip) || Double.IsInfinity(dip))
+                throw new ArgumentOutOfRangeException(step <= 0 ? "step" : "dip");
+            return (int)Math.Min(MaxCells, Math.Max(0, Math.Round(dip / step,
+                MidpointRounding.AwayFromZero)));
+        }
+    }
+
+    // Shared board: both kinds of group are measured and packed by the same
+    // layout pass. Saved geometry is never rewritten by a measure/arrange pass.
+    internal sealed class FreeCanvasBoard : Panel
+    {
+        internal const int Step = 20;
+        internal int CellStep { get; private set; }
+        private int InitialColumns { get { return (int)Math.Ceiling(800.0 / CellStep); } }
+        private int MinimumColumns { get { return (int)Math.Ceiling(200.0 / CellStep); } }
+        private const double Gap = 8;
+        private sealed class Entry
+        {
+            internal string Key;
+            internal Border Card;
+            internal System.Windows.Controls.Primitives.Thumb Grip;
+            internal Button Compact;
+            internal bool TemporarilyExpanded;
+            internal Rect DisplayRect, CompactRect;
+            internal int Columns;
+            internal FreeCanvasRect Preferred, Effective;
+        }
+        private readonly List<Entry> entries = new List<Entry>();
+        private readonly Border preview;
+        private bool showGrid;
+        private FreeCanvasRect previewRect;
+        private string dragKey;
+        private Vector dragOffset;
+        private double viewportWidth = Double.PositiveInfinity;
+        private double viewportHeight;
+        private string viewportMode = "scroll";
+        private string activeMode = "scroll";
+        private double displayScale = 1;
+        internal bool IsTemporaryLayout { get { return activeMode == "adaptive" || activeMode == "collapse" || displayScale < 0.999; } }
+        internal double DisplayScale { get { return displayScale; } }
+        internal Func<string, FreeCanvasRect, bool> CommitPlacement;
+        internal Func<bool> CanEdit;
+
+        internal FreeCanvasBoard() : this(Step) { }
+
+        internal FreeCanvasBoard(int step)
+        {
+            CellStep = FreeCanvasLayout.NormalizeStep(step);
+            Background = Brushes.Transparent;
+            AllowDrop = true;
+            HorizontalAlignment = HorizontalAlignment.Left;
+            VerticalAlignment = VerticalAlignment.Top;
+            ClipToBounds = true;
+            preview = new Border { Visibility = Visibility.Collapsed, IsHitTestVisible = false,
+                BorderBrush = new SolidColorBrush(Color.FromRgb(106, 176, 255)),
+                BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(8),
+                Background = new SolidColorBrush(Color.FromArgb(45, 106, 176, 255)) };
+            SetZIndex(preview, 20);
+            Children.Add(preview);
+        }
+
+        internal void SetViewport(double width, string mode)
+        {
+            if (Double.IsNaN(width) || width <= 0) return;
+            mode = FreeCanvasLayout.NormalizeViewportMode(mode);
+            if (viewportMode == mode && (viewportWidth == width || Math.Abs(viewportWidth - width) < 0.5)) return;
+            viewportWidth = width; viewportMode = mode;
+            InvalidateMeasure();
+        }
+
+        internal void SetViewportHeight(double height)
+        {
+            if (Double.IsNaN(height) || Double.IsInfinity(height) || height <= 0 || Math.Abs(viewportHeight - height) < 0.5) return;
+            viewportHeight = height;
+            InvalidateMeasure();
+        }
+
+        internal void AddCard(string key, Border card, int columns, FreeCanvasRect saved)
+        {
+            card.Width = Double.NaN;
+            card.Height = Double.NaN;
+            card.Margin = new Thickness(0);
+            card.HorizontalAlignment = HorizontalAlignment.Stretch;
+            card.VerticalAlignment = VerticalAlignment.Stretch;
+            Entry entry = new Entry { Key = key, Card = card,
+                Columns = Math.Max(MinimumColumns, Math.Min(InitialColumns, columns)),
+                Preferred = FreeCanvasLayout.IsValid(saved) ? saved.Copy() : null };
+            entries.Add(entry);
+            Children.Add(card);
+            // Resize handles are siblings, not wrappers: existing tile/widget
+            // ownership, context menus and drop targets stay intact.
+            System.Windows.Controls.Primitives.Thumb grip = new System.Windows.Controls.Primitives.Thumb
+            {
+                Cursor = Cursors.SizeNWSE, ToolTip = "Изменить размер группы",
+                Background = Brushes.Transparent, Focusable = false
+            };
+            FrameworkElementFactory hit = new FrameworkElementFactory(typeof(Border));
+            hit.SetValue(Border.BackgroundProperty, Brushes.Transparent);
+            FrameworkElementFactory mark = new FrameworkElementFactory(typeof(TextBlock));
+            mark.SetValue(TextBlock.TextProperty, "◢");
+            mark.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(150, 168, 193)));
+            mark.SetValue(TextBlock.FontSizeProperty, 12.0);
+            mark.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Right);
+            mark.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Bottom);
+            ControlTemplate template = new ControlTemplate(typeof(System.Windows.Controls.Primitives.Thumb));
+            hit.AppendChild(mark);
+            template.VisualTree = hit;
+            grip.Template = template;
+            entry.Grip = grip;
+            SetZIndex(grip, 10);
+            Children.Add(grip);
+            string title = System.Windows.Automation.AutomationProperties.GetName(card);
+            if (String.IsNullOrWhiteSpace(title)) title = key;
+            Button compact = new Button { Content = title + "  ▸", Tag = title,
+                MinHeight = 34, Padding = new Thickness(8, 4, 8, 4),
+                Background = FluentUi.Surface, Foreground = FluentUi.Foreground,
+                BorderBrush = FluentUi.BorderColor, HorizontalContentAlignment = HorizontalAlignment.Left,
+                Visibility = Visibility.Hidden, ToolTip = "Временно раскрыть группу" };
+            entry.Compact = compact;
+            compact.Click += delegate { ToggleTemporaryGroup(key); };
+            Children.Add(compact);
+            FreeCanvasRect initial = null, candidate = null;
+            Point start = new Point();
+            grip.DragStarted += delegate
+            {
+                if (entry.Effective == null || IsTemporaryLayout || (CanEdit != null && !CanEdit())) return;
+                initial = entry.Effective.Copy(); candidate = initial.Copy();
+                start = Mouse.GetPosition(this);
+                ShowGrid(true);
+            };
+            grip.DragDelta += delegate
+            {
+                if (initial == null) return;
+                // Thumb can report a displacement from its unchanged starting
+                // geometry on every event. Never accumulate those values.
+                candidate = ResizeFromPointer(key, initial, start, Mouse.GetPosition(this));
+                ShowPreview(candidate);
+            };
+            grip.DragCompleted += delegate(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+            {
+                FreeCanvasRect result = candidate;
+                bool changed = initial != null && result != null &&
+                    (result.Width != initial.Width || result.Height != initial.Height);
+                initial = candidate = null; ShowGrid(false);
+                if (!e.Canceled && changed && CommitPlacement != null &&
+                    (CanEdit == null || CanEdit())) CommitPlacement(key, result);
+            };
+        }
+
+        private int WidthFor(Entry entry)
+        {
+            return Math.Min(FreeCanvasLayout.MaxCells, entry.Preferred == null ?
+                Math.Min(entry.Columns, Double.IsInfinity(viewportWidth) ? InitialColumns : Math.Max(MinimumColumns, (int)Math.Floor(viewportWidth / CellStep))) :
+                Math.Max(MinimumColumns, entry.Preferred.Width));
+        }
+
+        private static bool CardCollapsed(Entry entry)
+        {
+            Expander expander = entry.Card.Child as Expander;
+            if (expander != null) return !expander.IsExpanded;
+            // Widget cards contain the heading and a separately collapsible cell grid.
+            StackPanel body = entry.Key.StartsWith("widget:", StringComparison.Ordinal) ? entry.Card.Child as StackPanel : null;
+            return body != null && body.Children.Count == 2 && body.Children[1] is Grid &&
+                body.Children[1].Visibility == Visibility.Collapsed;
+        }
+
+        private int HeightFor(Entry entry, int width, int manual)
+        {
+            entry.Card.Measure(new Size(width * CellStep - Gap, Double.PositiveInfinity));
+            bool collapsed = CardCollapsed(entry);
+            return (int)Math.Min(FreeCanvasLayout.MaxCells, Math.Max(Math.Max(collapsed ? 1 : 2, collapsed ? 0 : manual),
+                Math.Ceiling((entry.Card.DesiredSize.Height + Gap) / CellStep)));
+        }
+
+        // Effective collapsed geometry must remain valid for collision detection,
+        // while the expanded manual height stays in the persisted preference.
+        internal FreeCanvasRect PreferenceForEdit(string key, FreeCanvasRect candidate)
+        {
+            Entry entry = Find(key);
+            if (entry == null || !FreeCanvasLayout.IsValid(candidate)) return null;
+            FreeCanvasRect result = candidate.Copy();
+            if (CardCollapsed(entry) && entry.Preferred != null)
+            {
+                result.ManualHeight = entry.Preferred.ManualHeight;
+                result.Height = Math.Max(result.Height, result.ManualHeight);
+            }
+            return FreeCanvasLayout.IsValid(result) ? result : null;
+        }
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            List<FreeCanvasRect> occupied = new List<FreeCanvasRect>();
+            int columns = 0, rows = 0;
+            foreach (Entry entry in entries)
+            {
+                int width = WidthFor(entry), manual = entry.Preferred == null || CardCollapsed(entry) ? 0 : entry.Preferred.ManualHeight;
+                int height = HeightFor(entry, width, manual);
+                entry.Grip.Measure(new Size(18, 18));
+                entry.Effective = null;
+                if (entry.Preferred == null) continue;
+                FreeCanvasRect candidate = new FreeCanvasRect(entry.Preferred.X, entry.Preferred.Y, width, height) { ManualHeight = manual };
+                if (FreeCanvasLayout.CanPlace(candidate, occupied))
+                {
+                    entry.Effective = candidate;
+                    occupied.Add(candidate);
+                }
+            }
+            foreach (Entry entry in entries)
+            {
+                if (entry.Effective != null) continue;
+                int width = WidthFor(entry), manual = entry.Preferred == null || CardCollapsed(entry) ? 0 : entry.Preferred.ManualHeight;
+                int height = HeightFor(entry, width, manual);
+                int availableColumns = Double.IsInfinity(viewportWidth) ? InitialColumns : Math.Max(1, (int)Math.Floor(viewportWidth / CellStep));
+                entry.Effective = FreeCanvasLayout.FindFirstFree(width, height, Math.Max(availableColumns, width), occupied);
+                if (entry.Effective != null)
+                {
+                    entry.Effective.ManualHeight = manual;
+                    occupied.Add(entry.Effective);
+                }
+            }
+            foreach (FreeCanvasRect rect in occupied)
+            {
+                columns = Math.Max(columns, rect.X + rect.Width);
+                rows = Math.Max(rows, rect.Y + rect.Height);
+            }
+            double contentWidth = columns * CellStep;
+            double naturalWidth = Math.Min(FreeCanvasLayout.MaxCells, Math.Max(InitialColumns, columns) + 4) * CellStep;
+            double naturalHeight = Math.Min(FreeCanvasLayout.MaxCells, Math.Max((int)Math.Ceiling(400.0 / CellStep), rows) + 4) * CellStep;
+            bool finite = !Double.IsInfinity(viewportWidth);
+            bool overflow = finite && contentWidth > viewportWidth + 0.5;
+            string next = overflow ? viewportMode : "scroll";
+            if (activeMode == "collapse" && next != "collapse")
+                foreach (Entry entry in entries) entry.TemporarilyExpanded = false;
+            activeMode = next;
+            displayScale = next == "scale" ? Math.Max(0.75, Math.Min(1, viewportWidth / Math.Max(1, contentWidth))) : 1;
+            if (finite)
+                naturalWidth = Math.Max(viewportWidth, viewportMode == "scroll" ? naturalWidth : contentWidth);
+            if (activeMode == "adaptive" || activeMode == "collapse")
+                return MeasureTemporary(Math.Max(1, viewportWidth));
+            foreach (Entry entry in entries)
+            {
+                entry.Card.Visibility = Visibility.Visible;
+                entry.Compact.Visibility = Visibility.Hidden;
+                entry.Grip.Visibility = IsTemporaryLayout || CardCollapsed(entry) ? Visibility.Hidden : Visibility.Visible;
+            }
+            return new Size(naturalWidth * displayScale, Math.Max(viewportHeight, naturalHeight * displayScale));
+        }
+
+        private Size MeasureTemporary(double width)
+        {
+            // Sort by the original visual order, not by creation order.
+            List<Entry> ordered = new List<Entry>(entries);
+            ordered.Sort(delegate(Entry a, Entry b) {
+                if (a.Effective == null) return b.Effective == null ? 0 : 1;
+                if (b.Effective == null) return -1;
+                int y = a.Effective.Y.CompareTo(b.Effective.Y);
+                return y != 0 ? y : a.Effective.X.CompareTo(b.Effective.X);
+            });
+            double top = 0, cardWidth = Math.Max(1, width - Gap);
+            foreach (Entry entry in ordered)
+            {
+                bool collapse = activeMode == "collapse";
+                entry.Grip.Visibility = Visibility.Hidden;
+                entry.Compact.Visibility = collapse ? Visibility.Visible : Visibility.Hidden;
+                entry.Card.Visibility = !collapse || entry.TemporarilyExpanded ? Visibility.Visible : Visibility.Hidden;
+                entry.CompactRect = new Rect(0, 0, 0, 0);
+                entry.DisplayRect = new Rect(0, 0, 0, 0);
+                if (collapse)
+                {
+                    entry.Compact.Content = (string)entry.Compact.Tag + (entry.TemporarilyExpanded ? "  ▾" : "  ▸");
+                    entry.Compact.Measure(new Size(cardWidth, Double.PositiveInfinity));
+                    double height = Math.Max(34, entry.Compact.DesiredSize.Height);
+                    entry.CompactRect = new Rect(0, top, cardWidth, height);
+                    top += height + Gap;
+                }
+                if (entry.Card.Visibility == Visibility.Visible)
+                {
+                    entry.Card.Measure(new Size(cardWidth, Double.PositiveInfinity));
+                    double height = Math.Max(1, entry.Card.DesiredSize.Height);
+                    entry.DisplayRect = new Rect(0, top, cardWidth, height);
+                    top += height + Gap;
+                }
+            }
+            return new Size(width, Math.Max(1, top));
+        }
+
+        internal bool ToggleTemporaryGroup(string key)
+        {
+            Entry entry = Find(key);
+            if (activeMode != "collapse" || entry == null) return false;
+            entry.TemporarilyExpanded = !entry.TemporarilyExpanded;
+            InvalidateMeasure();
+            return true;
+        }
+
+        private Rect PixelRect(FreeCanvasRect rect)
+        {
+            return rect == null ? new Rect(0, 0, 0, 0) :
+                new Rect(rect.X * CellStep, rect.Y * CellStep, rect.Width * CellStep - Gap, rect.Height * CellStep - Gap);
+        }
+
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            bool stacked = activeMode == "adaptive" || activeMode == "collapse";
+            foreach (Entry entry in entries)
+            {
+                Rect rect = PixelRect(entry.Effective);
+                // Scale only the visual tree; the saved geometry stays in unscaled cells.
+                entry.Card.RenderTransform = displayScale < 0.999
+                    ? (Transform)new ScaleTransform(displayScale, displayScale) : Transform.Identity;
+                entry.Card.Arrange(stacked ? entry.DisplayRect : new Rect(rect.X * displayScale,
+                    rect.Y * displayScale, rect.Width, rect.Height));
+                entry.Compact.Arrange(stacked ? entry.CompactRect : new Rect(0, 0, 0, 0));
+                entry.Grip.Arrange(IsTemporaryLayout || entry.Effective == null || CardCollapsed(entry) ? new Rect(0, 0, 0, 0) :
+                    new Rect(rect.Right - 18, rect.Bottom - 18, 18, 18));
+            }
+            Rect target = IsTemporaryLayout ? new Rect(0, 0, 0, 0) : PixelRect(previewRect);
+            preview.Measure(target.Size);
+            preview.Arrange(target);
+            return finalSize;
+        }
+
+        private Entry Find(string key)
+        { return entries.Find(delegate(Entry item) { return String.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase); }); }
+
+        private bool CanPlace(Entry entry, FreeCanvasRect rect)
+        {
+            List<FreeCanvasRect> occupied = new List<FreeCanvasRect>();
+            foreach (Entry other in entries)
+                if (other != entry && other.Effective != null) occupied.Add(other.Effective);
+            return FreeCanvasLayout.CanPlace(rect, occupied);
+        }
+
+        internal void BeginGroupDrag(string key, Point point)
+        {
+            Entry entry = Find(key);
+            if (IsTemporaryLayout || entry == null || entry.Effective == null) return;
+            dragKey = key;
+            dragOffset = point - new Point(entry.Effective.X * CellStep, entry.Effective.Y * CellStep);
+            ShowGrid(true);
+        }
+
+        internal void EndGroupDrag()
+        { dragKey = null; dragOffset = new Vector(); ShowGrid(false); }
+
+        internal FreeCanvasRect MoveCandidate(string key, Point point)
+        {
+            Entry entry = Find(key);
+            if (IsTemporaryLayout || entry == null || entry.Effective == null || point.X < 0 || point.Y < 0 ||
+                point.X > ActualWidth || point.Y > ActualHeight) return null;
+            if (String.Equals(key, dragKey, StringComparison.OrdinalIgnoreCase)) point -= dragOffset;
+            FreeCanvasRect rect = new FreeCanvasRect(FreeCanvasLayout.Snap(point.X, CellStep),
+                FreeCanvasLayout.Snap(point.Y, CellStep), entry.Effective.Width, entry.Effective.Height)
+            { ManualHeight = entry.Effective.ManualHeight };
+            // In non-scroll strategies an edit must not create horizontal overflow and
+            // unexpectedly switch every group into a temporary layout.
+            if (viewportMode != "scroll" && !Double.IsInfinity(viewportWidth) &&
+                (rect.X + rect.Width) * CellStep > viewportWidth + 0.5) return null;
+            return CanPlace(entry, rect) ? rect : null;
+        }
+
+        internal FreeCanvasRect ResizeFromPointer(string key, FreeCanvasRect initial, Point start, Point current)
+        {
+            if (!FreeCanvasLayout.IsValid(initial)) return null;
+            Vector delta = current - start;
+            return ResizeCandidate(key, initial.Width * CellStep + delta.X, initial.Height * CellStep + delta.Y);
+        }
+
+        internal FreeCanvasRect ResizeCandidate(string key, double widthDip, double heightDip)
+        {
+            Entry entry = Find(key);
+            if (IsTemporaryLayout || entry == null || entry.Effective == null || CardCollapsed(entry)) return null;
+            int width = Math.Max(MinimumColumns, FreeCanvasLayout.Snap(widthDip, CellStep));
+            int manual = Math.Max(2, FreeCanvasLayout.Snap(heightDip, CellStep));
+            // Measure the content at the proposed width, then restore the
+            // current measure immediately; rejected previews cannot reflow cards.
+            int height = HeightFor(entry, width, manual);
+            HeightFor(entry, entry.Effective.Width, entry.Effective.ManualHeight);
+            FreeCanvasRect rect = new FreeCanvasRect(entry.Effective.X, entry.Effective.Y, width, height)
+            { ManualHeight = manual };
+            if (viewportMode != "scroll" && !Double.IsInfinity(viewportWidth) &&
+                (rect.X + rect.Width) * CellStep > viewportWidth + 0.5) return null;
+            return CanPlace(entry, rect) ? rect : null;
+        }
+
+        internal Dictionary<string, FreeCanvasRect> Capture()
+        {
+            Dictionary<string, FreeCanvasRect> result = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            foreach (Entry entry in entries)
+                if (entry.Effective != null) result[entry.Key] = entry.Effective.Copy();
+            return result;
+        }
+
+        internal void SetPreferred(string key, FreeCanvasRect rect)
+        {
+            Entry entry = Find(key);
+            if (entry != null) entry.Preferred = FreeCanvasLayout.IsValid(rect) ? rect.Copy() : null;
+            InvalidateMeasure();
+        }
+
+        internal void ShowPreview(FreeCanvasRect rect)
+        {
+            previewRect = rect;
+            preview.Visibility = rect == null ? Visibility.Collapsed : Visibility.Visible;
+            InvalidateArrange();
+        }
+
+        internal void ShowGrid(bool visible)
+        {
+            if (!visible) ShowPreview(null);
+            if (showGrid == visible) return;
+            showGrid = visible;
+            InvalidateVisual();
+        }
+
+        protected override void OnRender(DrawingContext dc)
+        {
+            base.OnRender(dc);
+            if (!showGrid) return;
+            Pen pen = new Pen(new SolidColorBrush(Color.FromArgb(45, 160, 180, 210)), 1);
+            for (int x = CellStep; x < ActualWidth; x += CellStep)
+                dc.DrawLine(pen, new Point(x, 0), new Point(x, ActualHeight));
+            for (int y = CellStep; y < ActualHeight; y += CellStep)
+                dc.DrawLine(pen, new Point(0, y), new Point(ActualWidth, y));
+        }
+    }
+
     [DataContract]
     public sealed class AppConfig
     {
@@ -87,6 +736,14 @@ namespace AppShelf
                 new Dictionary<string, string>(GroupAlignmentOverrides, StringComparer.OrdinalIgnoreCase);
             copy.GroupZoneOverrides = GroupZoneOverrides == null ? null :
                 new Dictionary<string, string>(GroupZoneOverrides, StringComparer.OrdinalIgnoreCase);
+            if (CanvasPositions != null)
+            {
+                copy.CanvasPositions = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+                foreach (KeyValuePair<string, FreeCanvasRect> item in CanvasPositions)
+                    if (FreeCanvasLayout.IsValid(item.Value)) copy.CanvasPositions[item.Key] = item.Value.Copy();
+            }
+            copy.WidgetGroups = WidgetGroups == null ? null : WidgetGroups.ConvertAll(delegate(PluginWidgetGroupConfig g) { return g == null ? null : g.Copy(); });
+            copy.WidgetIndicators = WidgetIndicators == null ? null : WidgetIndicators.ConvertAll(delegate(PluginWidgetPlacementConfig p) { return p == null ? null : p.Copy(); });
             copy.SnoozeQuickMinutes = SnoozeQuickMinutes == null ? null : (int[])SnoozeQuickMinutes.Clone();
             copy.BottomPanelFavorites = BottomPanelFavorites == null ? null : new List<string>(BottomPanelFavorites);
             copy.BottomPanelCategories = BottomPanelCategories == null ? null : new List<string>(BottomPanelCategories);
@@ -128,6 +785,18 @@ namespace AppShelf
         [DataMember(Name = "groupLayoutMode", EmitDefaultValue = false)]
         public string GroupLayoutMode;
 
+        [DataMember(Name = "canvasPositions", EmitDefaultValue = false)]
+        public Dictionary<string, FreeCanvasRect> CanvasPositions;
+
+        [DataMember(Name = "canvasGridStep", EmitDefaultValue = false)]
+        public int? CanvasGridStep;
+
+        [DataMember(Name = "canvasViewportMode", EmitDefaultValue = false)]
+        public string CanvasViewportMode;
+
+        [DataMember(Name = "canvasInitialized", EmitDefaultValue = false)]
+        public bool CanvasInitialized;
+
         [DataMember(Name = "groupAlignment", EmitDefaultValue = false)]
         public string GroupAlignment;
 
@@ -145,8 +814,18 @@ namespace AppShelf
         [DataMember(Name = "groups")]
         public List<string> Groups = new List<string>();
 
+        [DataMember(Name = "widgetGroups", EmitDefaultValue = false)]
+        public List<PluginWidgetGroupConfig> WidgetGroups;
+
+        [DataMember(Name = "widgetIndicators", EmitDefaultValue = false)]
+        public List<PluginWidgetPlacementConfig> WidgetIndicators;
+
         [DataMember(Name = "showNetwork")]
         public bool ShowNetwork = true;
+
+        // Retain the legacy targets for rollback; migrated profiles no longer run built-in probes.
+        [DataMember(Name = "networkPluginMigrated", EmitDefaultValue = false)]
+        public bool NetworkPluginMigrated;
 
         // Two fixed slots, never extra background requests. Null means original
         // ICMP+HTTPS targets 1.1.1.1 and ya.ru, compatible with older apps.json.
@@ -229,6 +908,32 @@ namespace AppShelf
         [DataMember(Name = "automaticBackupQuotaMb", EmitDefaultValue = false)]
         public int AutomaticBackupQuotaMb = 1024;
 
+        [DataMember(Name = "backupExecutable", EmitDefaultValue = false)]
+        public bool? BackupExecutable = true;
+
+        [DataMember(Name = "backupPluginPackages", EmitDefaultValue = false)]
+        public bool? BackupPluginPackages = true;
+
+        [DataMember(Name = "backupReminders", EmitDefaultValue = false)]
+        public bool? BackupReminders;
+        [DataMember(Name = "backupCollections", EmitDefaultValue = false)]
+        public bool? BackupCollections;
+        [DataMember(Name = "backupCovers", EmitDefaultValue = false)]
+        public bool? BackupCovers;
+        [DataMember(Name = "backupBackgrounds", EmitDefaultValue = false)]
+        public bool? BackupBackgrounds;
+        [DataMember(Name = "backupWidgetLayout", EmitDefaultValue = false)]
+        public bool? BackupWidgetLayout;
+        [DataMember(Name = "backupPluginData", EmitDefaultValue = false)]
+        public bool? BackupPluginData;
+
+        // Portable archives use an explicit marker so empty widget layouts can
+        // be distinguished from backups made by releases without plugins.
+        [DataMember(Name = "pluginSettingsIncluded", EmitDefaultValue = false)]
+        public bool PluginSettingsIncluded;
+        [DataMember(Name = "archiveComponents", EmitDefaultValue = false)]
+        public int? ArchiveComponents;
+
         // Nullable fields retain legacy defaults when absent from older apps.json.
         [DataMember(Name = "soundsEnabled", EmitDefaultValue = false)]
         public bool? SoundsEnabled = true;
@@ -298,11 +1003,79 @@ namespace AppShelf
         public List<AppItem> Items = new List<AppItem>();
     }
 
+    [DataContract]
+    internal sealed class PluginSettingsDocument
+    {
+        [DataMember(Name = "version", IsRequired = true)]
+        public int Version = 1;
+        [DataMember(Name = "canvasPositions", EmitDefaultValue = false)] public Dictionary<string, FreeCanvasRect> CanvasPositions;
+        [DataMember(Name = "canvasGridStep", EmitDefaultValue = false)] public int? CanvasGridStep;
+        [DataMember(Name = "canvasViewportMode", EmitDefaultValue = false)] public string CanvasViewportMode;
+        [DataMember(Name = "canvasInitialized", EmitDefaultValue = false)] public bool CanvasInitialized;
+        [DataMember(Name = "widgetGroups", EmitDefaultValue = false)]
+        public List<PluginWidgetGroupConfig> WidgetGroups;
+        [DataMember(Name = "widgetIndicators", EmitDefaultValue = false)]
+        public List<PluginWidgetPlacementConfig> WidgetIndicators;
+        [DataMember(Name = "backupExecutable", EmitDefaultValue = false)]
+        public bool? BackupExecutable;
+        [DataMember(Name = "backupPluginPackages", EmitDefaultValue = false)]
+        public bool? BackupPluginPackages;
+        [DataMember(Name = "backupReminders", EmitDefaultValue = false)]
+        public bool? BackupReminders;
+        [DataMember(Name = "backupCollections", EmitDefaultValue = false)]
+        public bool? BackupCollections;
+        [DataMember(Name = "backupCovers", EmitDefaultValue = false)]
+        public bool? BackupCovers;
+        [DataMember(Name = "backupBackgrounds", EmitDefaultValue = false)]
+        public bool? BackupBackgrounds;
+        [DataMember(Name = "backupWidgetLayout", EmitDefaultValue = false)]
+        public bool? BackupWidgetLayout;
+        [DataMember(Name = "backupPluginData", EmitDefaultValue = false)]
+        public bool? BackupPluginData;
+
+        internal static PluginSettingsDocument Capture(AppConfig c)
+        {
+            return new PluginSettingsDocument {
+                CanvasPositions = c.CanvasPositions, CanvasGridStep = c.CanvasGridStep, CanvasViewportMode = c.CanvasViewportMode,
+                CanvasInitialized = c.CanvasInitialized,
+                WidgetGroups = c.WidgetGroups, WidgetIndicators = c.WidgetIndicators,
+                BackupExecutable = c.BackupExecutable, BackupPluginPackages = c.BackupPluginPackages,
+                BackupReminders = c.BackupReminders, BackupCollections = c.BackupCollections,
+                BackupCovers = c.BackupCovers, BackupBackgrounds = c.BackupBackgrounds,
+                BackupWidgetLayout = c.BackupWidgetLayout, BackupPluginData = c.BackupPluginData
+            };
+        }
+
+        internal void Apply(AppConfig c)
+        {
+            if (Version != 1) throw new InvalidDataException("Неподдерживаемая версия настроек плагинов.");
+            PluginWidgetGroupConfig.Validate(WidgetGroups, WidgetIndicators);
+            c.CanvasPositions = FreeCanvasLayout.MergePositions(CanvasPositions, FreeCanvasLayout.NormalizeStep(CanvasGridStep),
+                CanvasPositions, FreeCanvasLayout.NormalizeStep(CanvasGridStep), FreeCanvasLayout.NormalizeStep(CanvasGridStep));
+            c.CanvasGridStep = CanvasGridStep; c.CanvasViewportMode = CanvasViewportMode;
+            c.CanvasInitialized = CanvasInitialized;
+            c.WidgetGroups = WidgetGroups; c.WidgetIndicators = WidgetIndicators;
+            c.BackupExecutable = BackupExecutable; c.BackupPluginPackages = BackupPluginPackages;
+            c.BackupReminders = BackupReminders; c.BackupCollections = BackupCollections;
+            c.BackupCovers = BackupCovers; c.BackupBackgrounds = BackupBackgrounds;
+            c.BackupWidgetLayout = BackupWidgetLayout; c.BackupPluginData = BackupPluginData;
+        }
+
+        internal static void Clear(AppConfig c)
+        {
+            new PluginSettingsDocument().Apply(c);
+            c.PluginSettingsIncluded = false;
+            c.ArchiveComponents = null;
+        }
+    }
+
     public static class ConfigStore
     {
         public static readonly string DirectoryPath = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf");
         public static readonly string FilePath = System.IO.Path.Combine(DirectoryPath, "apps.json");
+        internal const string PluginSettingsName = "plugins-settings.json";
+        internal static readonly string PluginSettingsPath = System.IO.Path.Combine(DirectoryPath, PluginSettingsName);
         public static readonly string LogPath = System.IO.Path.Combine(DirectoryPath, "error.log");
         public static readonly string ShortcutsDirectory = System.IO.Path.Combine(DirectoryPath, "Shortcuts");
 
@@ -364,6 +1137,7 @@ namespace AppShelf
                 if (data == null) throw new InvalidDataException("Пустой файл настроек.");
                 if (data.Items == null) data.Items = new List<AppItem>();
                 if (data.Groups == null) data.Groups = new List<string>();
+                PluginWidgetGroupConfig.Validate(data.WidgetGroups, data.WidgetIndicators);
                 if (data.Version < 3)
                 {
                     // Features introduced in 1.2 should be enabled for existing users.
@@ -425,7 +1199,65 @@ namespace AppShelf
                 width >= 300 && width <= 20000 && height >= 250 && height <= 20000;
         }
 
+        private static byte[] EncodePluginSettings(AppConfig config)
+        {
+            PluginWidgetGroupConfig.Validate(config.WidgetGroups, config.WidgetIndicators);
+            using (MemoryStream stream = new MemoryStream())
+            {
+                new DataContractJsonSerializer(typeof(PluginSettingsDocument)).WriteObject(stream, PluginSettingsDocument.Capture(config));
+                return stream.ToArray();
+            }
+        }
+
+        private static void WritePluginSettings(byte[] bytes)
+        {
+            Directory.CreateDirectory(DirectoryPath);
+            string temp = PluginSettingsPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using (FileStream output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                { output.Write(bytes, 0, bytes.Length); output.Flush(true); }
+                if (File.Exists(PluginSettingsPath)) File.Replace(temp, PluginSettingsPath, PluginSettingsPath + ".bak", true);
+                else File.Move(temp, PluginSettingsPath);
+            }
+            finally { if (File.Exists(temp)) File.Delete(temp); }
+        }
+
         public static AppConfig Load(out string warning, out bool safeToSave)
+        {
+            AppConfig config = LoadShared(out warning, out safeToSave);
+            if (!safeToSave) return config;
+            try
+            {
+                if (File.Exists(PluginSettingsPath))
+                {
+                    using (FileStream input = File.OpenRead(PluginSettingsPath))
+                    {
+                        if (input.Length > 16L * 1024 * 1024) throw new InvalidDataException("Слишком большой файл настроек плагинов.");
+                        PluginSettingsDocument extension = (PluginSettingsDocument)new DataContractJsonSerializer(typeof(PluginSettingsDocument)).ReadObject(input);
+                        if (extension == null) throw new InvalidDataException("Пустой файл настроек плагинов.");
+                        extension.Apply(config);
+                    }
+                }
+                else if (File.Exists(PluginSettingsPath + ".bak"))
+                    throw new InvalidDataException("Основной файл настроек плагинов отсутствует. Сохраните резервную копию и восстановите файл.");
+                else if (File.Exists(FilePath) && (config.WidgetGroups != null || config.WidgetIndicators != null ||
+                    config.BackupExecutable.HasValue || config.BackupPluginPackages.HasValue))
+                {
+                    // Migrate early development builds without rewriting their original apps.json.
+                    WritePluginSettings(EncodePluginSettings(config));
+                }
+            }
+            catch (Exception ex)
+            {
+                Log(ex); safeToSave = false;
+                warning = "Не удалось прочитать или перенести настройки плагинов. Сохранение отключено.\n" +
+                    PluginSettingsPath + "\n" + ex.Message;
+            }
+            return config;
+        }
+
+        private static AppConfig LoadShared(out string warning, out bool safeToSave)
         {
             warning = null;
             safeToSave = true;
@@ -530,16 +1362,28 @@ namespace AppShelf
 
         internal static void Save(AppConfig config, bool cleanupShortcuts)
         {
+            PluginWidgetGroupConfig.Validate(config.WidgetGroups, config.WidgetIndicators);
             List<string> retired = cleanupShortcuts ? RetiredShortcutCandidates() : null;
             System.IO.Directory.CreateDirectory(DirectoryPath);
             config.Version = 5;
             string tempPath = FilePath + ".tmp";
+            byte[] extension = EncodePluginSettings(config);
+            byte[] oldExtension = File.Exists(PluginSettingsPath) ? File.ReadAllBytes(PluginSettingsPath) : null;
+            bool changedExtension = oldExtension == null || !System.Linq.Enumerable.SequenceEqual(oldExtension, extension);
+            bool extensionWritten = false;
+            AppConfig shared = config.Copy();
+            PluginSettingsDocument.Clear(shared);
             try
             {
                 using (FileStream output = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 {
-                    NewSerializer().WriteObject(output, config);
+                    NewSerializer().WriteObject(output, shared);
                     output.Flush(true);
+                }
+                if (changedExtension)
+                {
+                    WritePluginSettings(extension);
+                    extensionWritten = true;
                 }
                 if (File.Exists(FilePath))
                 {
@@ -549,6 +1393,19 @@ namespace AppShelf
                 {
                     File.Move(tempPath, FilePath);
                 }
+            }
+            catch
+            {
+                if (extensionWritten)
+                {
+                    try
+                    {
+                        if (oldExtension == null) File.Delete(PluginSettingsPath);
+                        else WritePluginSettings(oldExtension);
+                    }
+                    catch (Exception error) { Log(error); }
+                }
+                throw;
             }
             finally
             {
@@ -1511,6 +2368,7 @@ namespace AppShelf
         private ScrollViewer _tilesScroller;
         private readonly List<GroupLayoutCard> _groupLayoutCards = new List<GroupLayoutCard>();
         private Grid _freeLayoutGrid;
+        private FreeCanvasBoard _canvasBoard;
         private readonly Dictionary<string, StackPanel> _freeZoneHosts =
             new Dictionary<string, StackPanel>(StringComparer.Ordinal);
         private readonly List<Border> _freeZoneCells = new List<Border>();
@@ -1524,9 +2382,6 @@ namespace AppShelf
         private DispatcherTimer _statusMessageTimer;
         private string _defaultStatusText = "";
         private bool _statusMessageVisible;
-        private TextBlock _pingInternational;
-        private TextBlock _pingRussian;
-        private TextBlock _route;
         private TextBlock _weather;
         private TextBlock _pomodoro;
         private TextBlock _rdpStatus;
@@ -1542,9 +2397,6 @@ namespace AppShelf
         private WrapPanel _bottomCategoryDetails;
         private string _bottomOpenCategory;
         private bool _bottomCompactExpanded;
-        private Border _pingInternationalChip;
-        private Border _pingRussianChip;
-        private Border _routeChip;
         private Border _weatherChip;
         private Border _pomodoroChip;
         private Border _countdownChip;
@@ -1570,7 +2422,6 @@ namespace AppShelf
         private TextBlock _pomodoroClock;
         private TextBlock _pomodoroStage;
         private Button _pomodoroToggle;
-        private HappDiagnosticsWindow _happWindow;
         private MenuItem _groupMenuItem;
         private MenuItem _newGroupMenuItem;
         private MenuItem _collectionsMenuItem;
@@ -1579,9 +2430,7 @@ namespace AppShelf
         private MenuItem _tileModeLabeledMenuItem;
         private MenuItem _pinMenuItem;
         private TextBox _search;
-        private DispatcherTimer _networkTimer;
         private DispatcherTimer _weatherTimer;
-        private bool _networkPending;
         private bool _weatherPending;
         private WeatherSnapshot _lastWeather;
         private bool _lastWeatherIsCached;
@@ -1668,9 +2517,6 @@ namespace AppShelf
                 Zone = zone;
             }
         }
-
-        [DllImport("iphlpapi.dll")]
-        private static extern uint GetBestInterface(uint destination, out uint interfaceIndex);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool RegisterHotKey(IntPtr windowHandle, int id, uint modifiers, uint virtualKey);
@@ -1782,6 +2628,8 @@ namespace AppShelf
             // Wait for the first Loaded event so fast HTTP failures are always visible.
             Loaded += delegate
             {
+                if (_config.GroupingEnabled && NormalizeGroupLayoutMode(_config.GroupLayoutMode) != "canvas")
+                    RenderTiles();
                 _windowPlacementTrackingReady = true;
                 if (_startupHidePending)
                 {
@@ -1798,8 +2646,9 @@ namespace AppShelf
                         Activate();
                     }
                 }
-                if (_networkTimer == null) StartMonitors();
+                if (_weatherTimer == null) StartMonitors();
                 StartAutomaticBackupMonitor();
+                StartPluginRuntime();
             };
             SourceInitialized += OnWindowSourceInitialized;
             StateChanged += OnWindowStateChanged;
@@ -1971,7 +2820,7 @@ namespace AppShelf
             addContent.Children.Add(plusIcon);
             addContent.Children.Add(addLabel);
             add.Content = addContent;
-            add.ToolTip = "Добавить приложение или сайт (Ctrl+O — выбрать файл)";
+            add.ToolTip = "Добавить приложение, сайт или виджет (Ctrl+O — выбрать файл)";
             ContextMenu addMenu = new ContextMenu();
             MenuItem addProgram = new MenuItem { Header = "Приложение или ярлык…" };
             addProgram.Click += delegate { AddFromDialog(); };
@@ -1982,6 +2831,10 @@ namespace AppShelf
             MenuItem addFolder = new MenuItem { Header = "Папку…" };
             addFolder.Click += delegate { AddFolderFromDialog(); };
             addMenu.Items.Add(addFolder);
+            MenuItem addWidget = new MenuItem { Header = "Виджет плагина…", Icon = FluentUi.MenuGlyph("puzzle") };
+            addWidget.Click += delegate { ShowAddPluginWidget(); };
+            addMenu.Items.Add(addWidget);
+            addMenu.Opened += delegate { addWidget.IsEnabled = _canSave && WidgetsInFreeLayout(); };
             add.Click += delegate
             {
                 addMenu.PlacementTarget = add;
@@ -2054,6 +2907,7 @@ namespace AppShelf
             };
             _collectionsMenuItem.Click += delegate { ShowCollectionsWindow(); };
             tools.Items.Add(_collectionsMenuItem);
+            tools.Items.Add(CreatePluginToolsMenu(tools));
             _newGroupMenuItem = new MenuItem
             {
                 Header = "Создать группу", Icon = FluentUi.MenuGlyph("folder"),
@@ -2086,38 +2940,17 @@ namespace AppShelf
             tileModes.Items.Add(_tileModeLabeledMenuItem);
             quick.Items.Add(tileModes);
             UpdateTileModeMenu();
-            // Only the three layout modes are quick actions; detailed options
-            // (width, alignment and nine-zone positions) belong in Settings.
-            MenuItem groupLayoutModes = new MenuItem { Header = "Размещение групп" };
-            Dictionary<string, MenuItem> groupLayoutChoices =
-                new Dictionary<string, MenuItem>(StringComparer.Ordinal);
-            Action refreshGroupLayoutChoices = delegate
+            MenuItem resetCanvas = new MenuItem { Header = "Сбросить расположение групп" };
+            resetCanvas.Click += delegate
             {
-                string currentMode = NormalizeGroupLayoutMode(_config.GroupLayoutMode);
-                foreach (KeyValuePair<string, MenuItem> pair in groupLayoutChoices)
-                    pair.Value.IsChecked = pair.Key == currentMode;
-                groupLayoutModes.IsEnabled = _config.GroupingEnabled;
+                if (!_canSave || _canvasBoard == null) return;
+                if (AppDialog.Show(this, "Сбросить расположение и размеры групп? Ярлыки и виджеты сохранятся.",
+                    "AppShelf — Свободное полотно", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+                    ArrangeCanvas("reset");
             };
-            foreach (string layoutMode in new[] { "vertical", "grid", "free" })
-            {
-                string chosen = layoutMode;
-                MenuItem option = new MenuItem
-                {
-                    Header = chosen == "vertical" ? "Список" :
-                        chosen == "grid" ? "Автоматическая сетка" : "Свободное размещение",
-                    IsCheckable = true
-                };
-                option.Click += delegate
-                {
-                    SetGroupLayoutMode(chosen);
-                    refreshGroupLayoutChoices();
-                };
-                groupLayoutModes.Items.Add(option);
-                groupLayoutChoices.Add(chosen, option);
-            }
-            groupLayoutModes.SubmenuOpened += delegate { refreshGroupLayoutChoices(); };
-            refreshGroupLayoutChoices();
-            quick.Items.Add(groupLayoutModes);
+            quick.Items.Add(resetCanvas);
+            quick.SubmenuOpened += delegate { resetCanvas.IsEnabled = _canSave && _canvasBoard != null &&
+                (_search == null || String.IsNullOrWhiteSpace(_search.Text)); };
             _pinMenuItem = new MenuItem { Header = "Поверх остальных окон",
                 IsCheckable = true, IsChecked = _config.AlwaysOnTop };
             _pinMenuItem.Click += delegate
@@ -2155,7 +2988,6 @@ namespace AppShelf
                 _groupMenuItem.IsChecked = _config.GroupingEnabled;
                 _pinMenuItem.IsChecked = _config.AlwaysOnTop;
                 UpdateTileModeMenu();
-                refreshGroupLayoutChoices();
                 foreach (KeyValuePair<string, MenuItem> pair in panelChoices)
                     pair.Value.IsChecked = pair.Key == NormalizeBottomPanelMode(_config.BottomPanelMode);
                 sound.IsChecked = _config.SoundsEnabled != false;
@@ -2238,9 +3070,6 @@ namespace AppShelf
             footerStack.Children.Add(_monitorBorder);
             WrapPanel monitors = new WrapPanel { Orientation = Orientation.Horizontal };
             _monitorBorder.Child = monitors;
-            _pingInternational = Text("1.1.1.1: проверяем…", 12, WhiteBrush);
-            _pingRussian = Text("ya.ru: проверяем…", 12, WhiteBrush);
-            _route = Text("Маршрут: проверяем…", 12, MutedBrush);
             _weather = Text("Погода: укажи город", 12, WhiteBrush);
             // The detailed weather chip must also keep full conditions visible.
             _weather.TextWrapping = TextWrapping.Wrap;
@@ -2248,16 +3077,11 @@ namespace AppShelf
             _pomodoro = Text("Помодоро: 25:00", 12, WhiteBrush);
             _countdownText = Text("Таймер: 00:05:00", 12, WhiteBrush);
             _rdpStatus = Text("RDP: проверяем…", 12, MutedBrush);
-            _pingInternationalChip = FluentUi.Chip(_pingInternational, FluentUi.Green, false);
-            _pingRussianChip = FluentUi.Chip(_pingRussian, FluentUi.Green, false);
-            _routeChip = FluentUi.Chip(_route, AccentBrush, true);
             _weatherChip = FluentUi.Chip(_weather, FluentUi.Amber, true);
             _pomodoroChip = FluentUi.Chip(_pomodoro, FluentUi.Green, true);
             _countdownChip = FluentUi.Chip(_countdownText, FluentUi.Amber, true);
             _rdpChip = FluentUi.Chip(_rdpStatus, AccentBrush, true);
             CreateRemindersChip();
-            _routeChip.ToolTip = "Открыть диагностику сети Windows, DNS, HTTPS и прокси.";
-            _routeChip.MouseLeftButtonUp += delegate { ToggleBottomModuleWindow("route"); };
             _pomodoroChip.ToolTip = "Нажми, чтобы открыть Помодоро.";
             _pomodoroChip.MouseLeftButtonUp += delegate { ToggleBottomModuleWindow("pomodoro"); };
             _countdownChip.ToolTip = "Нажми, чтобы открыть обычный таймер.";
@@ -2267,9 +3091,6 @@ namespace AppShelf
             _weatherChip.ToolTip = "Нажми для прогноза на 7 дней. Правая кнопка — параметры.";
             _weatherChip.MouseLeftButtonUp += delegate { ToggleBottomModuleWindow("weather"); };
             AttachWeatherContextMenu(_weatherChip);
-            monitors.Children.Add(_pingInternationalChip);
-            monitors.Children.Add(_pingRussianChip);
-            monitors.Children.Add(_routeChip);
             monitors.Children.Add(_weatherChip);
             monitors.Children.Add(_pomodoroChip);
             monitors.Children.Add(_countdownChip);
@@ -2277,6 +3098,8 @@ namespace AppShelf
             monitors.Children.Add(_remindersChip);
             _bottomFullMonitors = monitors;
             InitializeBottomPanelLayouts();
+            CreatePluginWidgetSurface();
+            _bottomPanelLayout.Children.Add(_pluginWidgets.IndicatorHost);
             _status = Text("", 11.5, WhiteBrush);
             _status.TextTrimming = TextTrimming.CharacterEllipsis;
             _status.ToolTip = "Ctrl+O — добавить · Ctrl+F — поиск · Перетащи плитки, чтобы изменить порядок или группу";
@@ -2318,12 +3141,14 @@ namespace AppShelf
             scroller.SizeChanged += delegate { UpdateGroupWidths(); };
             scroller.ScrollChanged += delegate(object sender, ScrollChangedEventArgs e)
             {
-                if (Math.Abs(e.ViewportWidthChange) > 0.5) UpdateGroupWidths();
+                if (Math.Abs(e.ViewportWidthChange) > 0.5 || Math.Abs(e.ViewportHeightChange) > 0.5) UpdateGroupWidths();
             };
             _tileHost = new StackPanel { AllowDrop = true };
             scroller.AllowDrop = true;
             contentGrid.AllowDrop = true;
-            scroller.Content = _tileHost;
+            StackPanel workspace = new StackPanel();
+            workspace.Children.Add(_tileHost);
+            scroller.Content = workspace;
             contentGrid.Children.Add(scroller);
             _empty = Text("Здесь пока нет приложений.\n\nПеретащи ярлык из Проводника\nили нажми «Добавить приложение».", 16, MutedBrush);
             _empty.TextAlignment = TextAlignment.Center;
@@ -2563,12 +3388,12 @@ namespace AppShelf
 
         private void OnClosed(object sender, EventArgs e)
         {
+            StopPluginRuntime();
             if (Application.Current != null)
                 Application.Current.SessionEnding -= OnApplicationSessionEnding;
             if (_windowPlacementSaveTimer != null) _windowPlacementSaveTimer.Stop();
             if (_automaticBackupTimer != null) _automaticBackupTimer.Stop();
             if (_statusMessageTimer != null) _statusMessageTimer.Stop();
-            if (_networkTimer != null) _networkTimer.Stop();
             if (_weatherTimer != null) _weatherTimer.Stop();
             if (_weatherCacheExpiryTimer != null) _weatherCacheExpiryTimer.Stop();
             if (_pomodoroTimer != null) _pomodoroTimer.Stop();
@@ -2591,9 +3416,6 @@ namespace AppShelf
 
         private void StartMonitors()
         {
-            _networkTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
-            _networkTimer.Tick += delegate { RefreshNetwork(); };
-            _networkTimer.Start();
             _weatherTimer = new DispatcherTimer { Interval = WeatherRefreshInterval() };
             _weatherTimer.Tick += delegate { RefreshWeather(); };
             _weatherTimer.Start();
@@ -2608,15 +3430,11 @@ namespace AppShelf
             UpdatePomodoroUi();
             UpdateCountdownUi();
             UpdateRdpStatus();
-            RefreshNetwork();
             RefreshWeather();
         }
 
         private void UpdateMonitorVisibility()
         {
-            _pingInternationalChip.Visibility = _config.ShowNetwork ? Visibility.Visible : Visibility.Collapsed;
-            _pingRussianChip.Visibility = _config.ShowNetwork ? Visibility.Visible : Visibility.Collapsed;
-            _routeChip.Visibility = _config.ShowNetwork ? Visibility.Visible : Visibility.Collapsed;
             _weatherChip.Visibility = _config.ShowWeather ? Visibility.Visible : Visibility.Collapsed;
             _pomodoroChip.Visibility = _config.ShowPomodoro ? Visibility.Visible : Visibility.Collapsed;
             _countdownChip.Visibility = _config.ShowCountdownTimer != false ? Visibility.Visible : Visibility.Collapsed;
@@ -2635,9 +3453,6 @@ namespace AppShelf
         {
             switch (key)
             {
-                case "network1": return NetworkChecks.Label(NetworkChecks.Resolve(_config, 1), 1);
-                case "network2": return NetworkChecks.Label(NetworkChecks.Resolve(_config, 2), 2);
-                case "route": return "Сеть";
                 case "weather": return "Погода";
                 case "pomodoro": return "Помодоро";
                 case "countdown": return "Таймер";
@@ -2646,14 +3461,9 @@ namespace AppShelf
             }
         }
 
-        // Favorites identify stable network slots, not today's configurable addresses.
-        // The actual target still appears in the live check result and diagnostics.
-        private static string BottomFavoriteName(string key)
-        {
-            if (key == "network1") return "Проверка сети 1";
-            if (key == "network2") return "Проверка сети 2";
-            return null;
-        }
+        // Legacy favorite IDs remain serialized for migration and downgrade.
+        private static bool IsLegacyNetworkKey(string key)
+        { return key == "network1" || key == "network2" || key == "route"; }
 
         private static string NormalizeBottomPanelMode(string value)
         {
@@ -2690,7 +3500,7 @@ namespace AppShelf
         {
             switch (key)
             {
-                case "network1": case "network2": case "route": return _config.ShowNetwork;
+                case "network1": case "network2": case "route": return false;
                 case "weather": return _config.ShowWeather;
                 case "pomodoro": return _config.ShowPomodoro;
                 case "countdown": return _config.ShowCountdownTimer != false;
@@ -2703,9 +3513,6 @@ namespace AppShelf
         {
             switch (key)
             {
-                case "network1": return _pingInternational;
-                case "network2": return _pingRussian;
-                case "route": return _route;
                 case "weather": return _weather;
                 case "pomodoro": return _pomodoro;
                 case "countdown": return _countdownText;
@@ -2721,15 +3528,14 @@ namespace AppShelf
             Window opened = key == "weather" ? (Window)_forecastWindow :
                 key == "pomodoro" ? _pomodoroWindow :
                 key == "countdown" ? _countdownWindow :
-                key == "reminders" ? _remindersWindow :
-                key == "route" || key == "network1" || key == "network2" ? (Window)_happWindow : null;
+                key == "reminders" ? _remindersWindow : null;
             if (opened != null && opened.IsVisible)
             {
                 opened.Close();
                 return;
             }
-            if (key == "route" || key == "network1" || key == "network2") ShowHappDiagnostics();
-            else if (key == "weather") ShowForecastWindow();
+            if (IsLegacyNetworkKey(key)) return;
+            if (key == "weather") ShowForecastWindow();
             else if (key == "pomodoro") ShowPomodoroWindow();
             else if (key == "countdown") ShowCountdownWindow();
             else if (key == "rdp") ShowSettingsSection("windows");
@@ -2775,7 +3581,7 @@ namespace AppShelf
         {
             if (_bottomExpandButton == null || _bottomCompactItems == null) return;
             double height = 0;
-            foreach (UIElement child in _bottomCompactItems.Children)
+            foreach (UIElement child in (_bottomCompactExpanded ? _bottomFullMonitors : _bottomCompactItems).Children)
             {
                 FrameworkElement item = child as FrameworkElement;
                 if (item != null && item.ActualHeight > height)
@@ -2830,7 +3636,7 @@ namespace AppShelf
                 card.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                 card.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                 card.Children.Add(FluentUi.BottomCategoryIcon(category));
-                TextBlock title = Text(category == "network" ? "Сеть" : category == "weather" ? "Погода" : "Время", 12, WhiteBrush);
+                TextBlock title = Text(category == "network" ? "RDP" : category == "weather" ? "Погода" : "Время", 12, WhiteBrush);
                 title.TextAlignment = TextAlignment.Center;
                 title.Margin = new Thickness(0, 3, 0, 3);
                 Grid.SetRow(title, 1);
@@ -2843,7 +3649,7 @@ namespace AppShelf
                     Converter = new BottomCategorySummary(this, category),
                     Mode = System.Windows.Data.BindingMode.OneWay
                 };
-                foreach (TextBlock source in new TextBlock[] { _route, _weather, _countdownText, _pomodoro })
+                foreach (TextBlock source in new TextBlock[] { _rdpStatus, _weather, _countdownText, _pomodoro })
                     binding.Bindings.Add(new System.Windows.Data.Binding("Text") { Source = source });
                 // The configuration object is replaced when settings are saved.
                 binding.Bindings.Add(new System.Windows.Data.Binding("Tag") { Source = _bottomCategoryTabs });
@@ -2851,7 +3657,7 @@ namespace AppShelf
                 Grid.SetRow(summary, 2);
                 card.Children.Add(summary);
                 button.Content = card;
-                button.ToolTip = category == "network" ? "Сетевые инструменты" :
+                button.ToolTip = category == "network" ? "Антипростой RDP" :
                     category == "weather" ? "Прогноз погоды" : "Таймер, Помодоро и напоминания";
                 if (category == "weather") AttachWeatherContextMenu(button);
                 button.Click += delegate
@@ -2864,6 +3670,7 @@ namespace AppShelf
             _bottomCategoryDetails = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
             _bottomPanelLayout.Children.Add(_bottomCategoryDetails);
             _bottomPanelLayout.Children.Add(_bottomFullMonitors);
+            _bottomFullMonitors.SizeChanged += delegate { if (_bottomCompactExpanded) AlignCompactExpandButton(); };
 
             ContextMenu menu = new ContextMenu();
             foreach (string mode in new string[] { "compact", "categories", "detailed" })
@@ -2884,6 +3691,10 @@ namespace AppShelf
             MenuItem configure = new MenuItem { Header = "Настроить нижнюю панель…" };
             configure.Click += delegate { ShowSettingsSection("appearance-panel"); };
             menu.Items.Add(configure);
+            MenuItem indicator = new MenuItem { Header = "Добавить индикатор плагина…" };
+            indicator.Click += delegate { ShowAddPluginIndicator(); };
+            menu.Items.Add(indicator);
+            menu.Opened += delegate { indicator.IsEnabled = _canSave; };
             _monitorBorder.ContextMenu = menu;
         }
 
@@ -2896,7 +3707,7 @@ namespace AppShelf
             {
                 AppConfig config = _window._config;
                 if (_category == "network")
-                    return config.ShowNetwork ? System.Convert.ToString(values[0]).Replace("Маршрут: ", "") : "Мониторинг выключен";
+                    return config.RdpKeepAwake ? System.Convert.ToString(values[0]).Replace("RDP: ", "") : "RDP выключен";
                 if (_category == "weather")
                 {
                     if (!config.ShowWeather) return "Погода выключена";
@@ -2931,7 +3742,7 @@ namespace AppShelf
             foreach (string key in BottomPanelKeys)
             {
                 bool categoryMatch = _bottomOpenCategory == "network"
-                    ? (key == "network1" || key == "network2" || key == "route" || key == "rdp")
+                    ? key == "rdp"
                     : _bottomOpenCategory == "weather" ? key == "weather"
                     : (key == "pomodoro" || key == "countdown" || key == "reminders");
                 if (categoryMatch && BottomIndicatorEnabled(key))
@@ -2962,193 +3773,36 @@ namespace AppShelf
             _bottomCategoryTabs.Visibility = mode == "categories" ? Visibility.Visible : Visibility.Collapsed;
             _bottomFullMonitors.Visibility = mode == "detailed" ||
                 (mode == "compact" && _bottomCompactExpanded) ? Visibility.Visible : Visibility.Collapsed;
+            bool expanded = mode == "compact" && _bottomCompactExpanded;
+            // Keep the toggle visible, but show exactly one set of built-in indicators.
+            if (expanded && _bottomFullMonitors.Parent != _bottomCompactRow)
+            {
+                _bottomPanelLayout.Children.Remove(_bottomFullMonitors);
+                _bottomCompactRow.Children.Add(_bottomFullMonitors);
+            }
+            else if (!expanded && _bottomFullMonitors.Parent == _bottomCompactRow)
+            {
+                _bottomCompactRow.Children.Remove(_bottomFullMonitors);
+                _bottomPanelLayout.Children.Insert(_bottomPanelLayout.Children.IndexOf(_bottomCategoryDetails) + 1, _bottomFullMonitors);
+            }
+            _bottomCompactItems.Visibility = expanded ? Visibility.Collapsed : Visibility.Visible;
+            // Temporarily detach plugin cards before rebuilding the compact favorites.
+            if (_pluginWidgets != null) _pluginWidgets.AttachIndicatorPanel(null);
             _bottomCompactItems.Children.Clear();
-            if (mode == "compact")
+            if (mode == "compact" && !expanded)
             {
                 foreach (string key in BottomPanelFavorites(_config))
                     if (BottomIndicatorEnabled(key))
                         _bottomCompactItems.Children.Add(BottomIndicatorButton(key, true));
-                if (_bottomCompactItems.Children.Count == 0)
+                if (_bottomCompactItems.Children.Count == 0 && (_pluginWidgets == null || _pluginWidgets.IndicatorCount == 0))
                     _bottomCompactItems.Children.Add(Text("Нет выбранных показателей", 12, MutedBrush));
-                AlignCompactExpandButton();
             }
+            if (_pluginWidgets != null)
+                _pluginWidgets.AttachIndicatorPanel(mode == "categories" ? null :
+                    mode == "compact" && !expanded ? _bottomCompactItems : _bottomFullMonitors);
+            if (mode == "compact") AlignCompactExpandButton();
             if (mode != "categories") _bottomCategoryDetails.Visibility = Visibility.Collapsed;
             else RefreshBottomCategoryDetails();
-        }
-
-        private bool NetworkTargetsCurrent(NetworkChecks.Target first, NetworkChecks.Target second)
-        {
-            if (!_config.ShowNetwork) return false;
-            NetworkChecks.Target currentFirst = NetworkChecks.Resolve(_config, 1);
-            NetworkChecks.Target currentSecond = NetworkChecks.Resolve(_config, 2);
-            return String.Equals(first.Mode, currentFirst.Mode, StringComparison.Ordinal) &&
-                String.Equals(first.Value, currentFirst.Value, StringComparison.Ordinal) &&
-                String.Equals(second.Mode, currentSecond.Mode, StringComparison.Ordinal) &&
-                String.Equals(second.Value, currentSecond.Value, StringComparison.Ordinal);
-        }
-
-        private async void RefreshNetwork()
-        {
-            if (_networkPending || !_config.ShowNetwork) return;
-            _networkPending = true;
-            // Keep the targets that actually started these asynchronous probes.
-            NetworkChecks.Target firstTarget = NetworkChecks.Resolve(_config, 1);
-            NetworkChecks.Target secondTarget = NetworkChecks.Resolve(_config, 2);
-            try
-            {
-                Task<string> first = NetworkChecks.ProbeAsync(firstTarget, 1);
-                Task<string> second = NetworkChecks.ProbeAsync(secondTarget, 2);
-                await Task.WhenAll(first, second);
-                // A settings save may replace the targets while these probes run.
-                // Never publish a result belonging to the previous configuration.
-                if (!IsLoaded || !NetworkTargetsCurrent(firstTarget, secondTarget)) return;
-                _pingInternational.Text = first.Result;
-                _pingRussian.Text = second.Result;
-                _route.Text = RouteSummary();
-            }
-            catch (Exception ex)
-            {
-                if (!IsLoaded || !NetworkTargetsCurrent(firstTarget, secondTarget)) return;
-                ConfigStore.Log(ex);
-                _pingInternational.Text = "Проверка 1: ошибка";
-                _pingRussian.Text = "Проверка 2: ошибка";
-                _route.Text = RouteSummary();
-            }
-            finally
-            {
-                _networkPending = false;
-                // A RefreshNetwork call during the old request was skipped by
-                // _networkPending. Start one check for the latest saved targets.
-                if (IsLoaded && _config.ShowNetwork &&
-                    !NetworkTargetsCurrent(firstTarget, secondTarget))
-                    RefreshNetwork();
-            }
-        }
-
-        private static string RouteSummary()
-        {
-            // Reports Windows' selected interface, not the VPN app's toggle state.
-            try
-            {
-                uint index;
-                uint dest = BitConverter.ToUInt32(IPAddress.Parse("1.1.1.1").GetAddressBytes(), 0);
-                if (GetBestInterface(dest, out index) != 0) return "Маршрут: неизвестен";
-                foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
-                {
-                    try
-                    {
-                        IPv4InterfaceProperties properties = nic.GetIPProperties().GetIPv4Properties();
-                        if (properties != null && properties.Index == (int)index)
-                        {
-                            if (nic.Name.IndexOf("happ", StringComparison.OrdinalIgnoreCase) >= 0)
-                                return "Маршрут: Happ TUN";
-                            string shortName = nic.Name.Length > 24 ? nic.Name.Substring(0, 24) + "…" : nic.Name;
-                            return "Маршрут: " + shortName;
-                        }
-                    }
-                    catch (NetworkInformationException) { }
-                }
-                return "Маршрут: интерфейс #" + index;
-            }
-            catch { return "Маршрут: неизвестен"; }
-        }
-
-        internal static async Task<string> ProbeEndpoint(string host, string httpsUrl)
-        {
-            // Run tests simultaneously. HTTPS measures the HTTP request, not ICMP latency.
-            Task<long?> icmp = TryIcmp(host);
-            Task<long?> https = TryHttps(httpsUrl);
-            await Task.WhenAll(icmp, https);
-            string icmpText = icmp.Result.HasValue ? "ICMP " + icmp.Result.Value + " мс" : "ICMP —";
-            string connectionText;
-            if (https.Result.HasValue)
-                connectionText = "HTTPS " + https.Result.Value + " мс";
-            else
-            {
-                // An HTTPS failure may be due to TLS or HTTP policy, not routing.
-                long? tcp = await TryTcp(host);
-                connectionText = tcp.HasValue ? "TCP 443 " + (tcp.Value == 0 ? "<1" : tcp.Value.ToString()) +
-                    " мс (HTTPS сбой)" : "HTTPS/TCP —";
-            }
-            return host + ": " + icmpText + " · " + connectionText;
-        }
-
-        private static Task<long?> TryTcp(string host)
-        {
-            return TryTcp(host, 443);
-        }
-
-        internal static async Task<long?> TryTcp(string host, int port)
-        {
-            try
-            {
-                using (TcpClient client = new TcpClient())
-                {
-                    Stopwatch watch = Stopwatch.StartNew();
-                    Task connect = client.ConnectAsync(host, port);
-                    if (await Task.WhenAny(connect, Task.Delay(1800)) != connect) return null;
-                    await connect;
-                    watch.Stop();
-                    return watch.ElapsedMilliseconds;
-                }
-            }
-            catch { return null; }
-        }
-
-        internal static async Task<long?> TryIcmp(string host)
-        {
-            try
-            {
-                using (Ping ping = new Ping())
-                {
-                    PingReply result = await ping.SendPingAsync(host, 1500);
-                    if (result.Status == IPStatus.Success) return result.RoundtripTime;
-                }
-            }
-            catch { /* ICMP can be blocked: not a network failure by itself. */ }
-            return null;
-        }
-
-        internal static async Task<long?> TryHttps(string url)
-        {
-            HttpWebRequest request = null;
-            try
-            {
-                request = (HttpWebRequest)WebRequest.Create(url);
-                request.Method = "HEAD";
-                request.UserAgent = "AppShelf/1.4 (network check)";
-                request.Timeout = 3500;
-                request.ReadWriteTimeout = 3500;
-                request.AllowAutoRedirect = true;
-                Stopwatch watch = Stopwatch.StartNew();
-                Task<WebResponse> responseTask = request.GetResponseAsync();
-                if (await Task.WhenAny(responseTask, Task.Delay(3500)) != responseTask)
-                {
-                    request.Abort();
-                    return null;
-                }
-                try
-                {
-                    using (WebResponse response = await responseTask)
-                    {
-                        watch.Stop();
-                        return watch.ElapsedMilliseconds;
-                    }
-                }
-                catch (WebException ex)
-                {
-                    // A valid HTTP error (e.g. 403/405) still proves TLS/HTTP reachability.
-                    HttpWebResponse response = ex.Response as HttpWebResponse;
-                    if (response != null)
-                    {
-                        response.Dispose();
-                        watch.Stop();
-                        return watch.ElapsedMilliseconds;
-                    }
-                    return null;
-                }
-            }
-            catch { return null; }
         }
 
         // Network availability is an expected state of a weather widget. Do
@@ -3670,9 +4324,118 @@ namespace AppShelf
             return DragDropEffects.None;
         }
 
+        private FreeCanvasRect CanvasPosition(string key)
+        {
+            if (_config.CanvasPositions != null)
+                foreach (KeyValuePair<string, FreeCanvasRect> item in _config.CanvasPositions)
+                    if (String.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase)) return item.Value;
+            return null;
+        }
+
+        private string CanvasDragKey(IDataObject data)
+        {
+            if (_canvasBoard == null) return null;
+            string group = InternalDraggedGroup(data);
+            if (group != null) return "app:" + group;
+            return _pluginWidgets == null ? null : _pluginWidgets.CanvasDragKey(data);
+        }
+
+        private bool CanEditCanvas()
+        { return _canSave && (_canvasBoard == null || !_canvasBoard.IsTemporaryLayout) && (_search == null || String.IsNullOrWhiteSpace(_search.Text)); }
+
+        private void ArrangeCanvas(string command)
+        {
+            if (command != "reset" || _canvasBoard == null || !_canSave ||
+                (_search != null && !String.IsNullOrWhiteSpace(_search.Text))) return;
+            AppConfig pending = _config.Copy();
+            pending.CanvasInitialized = true;
+            pending.CanvasPositions = null;
+            if (SaveConfigChanges(pending)) RenderTiles();
+        }
+
+        private void MigrateCanvasLayout(AppConfig pending)
+        {
+            if (pending.GroupLayoutMode != "canvas" || pending.CanvasInitialized || !_config.GroupingEnabled ||
+                NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "canvas") return;
+            int step = FreeCanvasLayout.NormalizeStep(pending.CanvasGridStep);
+            // Selective backup restore can retain canvas positions for widgets
+            // while restoring application groups from a legacy layout.
+            Dictionary<string, FreeCanvasRect> positions = pending.CanvasPositions ??
+                new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            List<FreeCanvasRect> occupied = new List<FreeCanvasRect>(positions.Values);
+            List<KeyValuePair<string, Border>> cards = new List<KeyValuePair<string, Border>>();
+            foreach (GroupLayoutCard group in _groupLayoutCards)
+                cards.Add(new KeyValuePair<string, Border>("app:" + group.Group, group.Card));
+            if (_pluginWidgets != null) cards.AddRange(_pluginWidgets.CanvasCards());
+            foreach (KeyValuePair<string, Border> item in cards)
+            {
+                if (positions.ContainsKey(item.Key)) continue;
+                Border card = item.Value;
+                if (card.ActualWidth <= 0 || card.ActualHeight <= 0 || !card.IsDescendantOf(_tileHost)) continue;
+                Point origin;
+                try { origin = card.TransformToAncestor(_tileHost).Transform(new Point()); }
+                catch (InvalidOperationException) { continue; }
+                int width = Math.Max((int)Math.Ceiling(200.0 / step), (int)Math.Ceiling((card.ActualWidth + 8) / step));
+                int height = Math.Max(2, (int)Math.Ceiling((card.ActualHeight + 8) / step));
+                FreeCanvasRect rect = new FreeCanvasRect(FreeCanvasLayout.Snap(origin.X, step), FreeCanvasLayout.Snap(origin.Y, step), width, height);
+                if (!FreeCanvasLayout.CanPlace(rect, occupied))
+                    rect = FreeCanvasLayout.FindFirstFree(width, height, Math.Max(width, (int)Math.Ceiling(Math.Max(800, _tileHost.ActualWidth) / step)), occupied);
+                if (rect == null) continue;
+                positions.Add(item.Key, rect); occupied.Add(rect);
+            }
+            if (positions.Count != 0) pending.CanvasPositions = positions;
+            pending.CanvasInitialized = true;
+        }
+
+        private bool SaveCanvasPlacement(string key, FreeCanvasRect candidate)
+        {
+            if (_canvasBoard == null || !CanEditCanvas() || !FreeCanvasLayout.IsValid(candidate)) return false;
+            AppConfig pending = _config.Copy();
+            pending.CanvasInitialized = true;
+            if (pending.CanvasPositions == null)
+                pending.CanvasPositions = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, FreeCanvasRect> positions = _canvasBoard.Capture();
+            // Do not turn temporary collision reflow into permanent geometry.
+            // Initialize unsaved cards; change only the explicitly edited card.
+            Dictionary<string, FreeCanvasRect> changes = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            foreach (KeyValuePair<string, FreeCanvasRect> item in positions)
+                if (!pending.CanvasPositions.ContainsKey(item.Key)) changes[item.Key] = item.Value;
+            FreeCanvasRect preference = _canvasBoard.PreferenceForEdit(key, candidate);
+            if (preference == null) return false;
+            changes[key] = preference;
+            foreach (KeyValuePair<string, FreeCanvasRect> item in changes)
+                pending.CanvasPositions[item.Key] = item.Value.Copy();
+            if (!SaveConfigChanges(pending)) return false;
+            foreach (KeyValuePair<string, FreeCanvasRect> item in changes)
+                _canvasBoard.SetPreferred(item.Key, item.Value);
+            return true;
+        }
+
+        private bool HandleCanvasGroupDrag(DragEventArgs e, bool drop)
+        {
+            string key = CanvasDragKey(e.Data);
+            if (key == null) return false;
+            e.Effects = DragDropEffects.None;
+            if (!CanEditCanvas()) { e.Handled = true; return true; }
+            _canvasBoard.ShowGrid(true);
+            FreeCanvasRect candidate = _canvasBoard.MoveCandidate(key, e.GetPosition(_canvasBoard));
+            _canvasBoard.ShowPreview(candidate);
+            if (candidate != null && (!drop || SaveCanvasPlacement(key, candidate))) e.Effects = DragDropEffects.Move;
+            if (drop) _canvasBoard.EndGroupDrag();
+            e.Handled = true;
+            return true;
+        }
+
         private void OnDragOver(object sender, DragEventArgs e)
         {
             e.Effects = DragDropEffects.None;
+            if (HandleCanvasGroupDrag(e, false)) return;
+            if (_pluginWidgets != null && _pluginWidgets.IsWidgetDrag(e.Data))
+            {
+                ClearDropHighlight();
+                if (_canSave && _pluginWidgets.PreviewWidgetDrop(e)) e.Effects = DragDropEffects.Move;
+                e.Handled = true; return;
+            }
             AppItem targetItem;
             Button targetButton;
             string group;
@@ -3684,6 +4447,12 @@ namespace AppShelf
             Border freeSurface;
             bool hasFreeZone = ResolveFreeGroupZone(e.OriginalSource,
                 out freeZone, out freeSurface);
+            if (_pluginWidgets != null && _pluginWidgets.IsGroupDrag(e.Data))
+            {
+                if (hasFreeZone && _pluginWidgets.CanDropGroup(e.Data, freeZone)) e.Effects = DragDropEffects.Move;
+                HighlightDropZone(e.Effects == DragDropEffects.Move ? freeSurface : null);
+                e.Handled = true; return;
+            }
             if (_canSave && draggedGroup != null && hasFreeZone)
             {
                 bool movingZone = !String.Equals(GroupZoneFor(draggedGroup),
@@ -3707,6 +4476,8 @@ namespace AppShelf
 
         private void OnDragLeave(object sender, DragEventArgs e)
         {
+            if (_canvasBoard != null) _canvasBoard.ShowGrid(false);
+            if (_pluginWidgets != null) _pluginWidgets.ClearWidgetDropPreview();
             ClearDropHighlight();
         }
 
@@ -3715,6 +4486,12 @@ namespace AppShelf
             ClearDropHighlight();
             e.Effects = DragDropEffects.None;
             if (!_canSave) { ShowSaveDisabled(); e.Handled = true; return; }
+            if (HandleCanvasGroupDrag(e, true)) return;
+            if (_pluginWidgets != null && _pluginWidgets.IsWidgetDrag(e.Data))
+            {
+                if (_pluginWidgets.DropWidget(e)) e.Effects = DragDropEffects.Move;
+                e.Handled = true; return;
+            }
 
             AppItem targetItem;
             Button targetButton;
@@ -3728,6 +4505,11 @@ namespace AppShelf
             Border freeSurface;
             bool hasFreeZone = ResolveFreeGroupZone(e.OriginalSource,
                 out freeZone, out freeSurface);
+            if (_pluginWidgets != null && _pluginWidgets.IsGroupDrag(e.Data))
+            {
+                if (hasFreeZone && _pluginWidgets.DropGroup(e.Data, freeZone)) e.Effects = DragDropEffects.Move;
+                e.Handled = true; return;
+            }
             if (draggedGroup != null && hasFreeZone)
             {
                 bool sameZone = String.Equals(GroupZoneFor(draggedGroup),
@@ -4402,7 +5184,7 @@ namespace AppShelf
 
         private static string NormalizeGroupLayoutMode(string value)
         {
-            return value == "grid" || value == "free" ? value : "vertical";
+            return value == "grid" || value == "free" || value == "canvas" ? value : "vertical";
         }
 
         private static readonly string[] FreeGroupZones = {
@@ -4496,10 +5278,68 @@ namespace AppShelf
                 hint.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         }
 
-        // Nine independent drop targets. In a vertically scrolling host, star
-        // rows may be measured with unbounded height and cannot reliably absorb
-        // the remaining viewport. Keep all rows Auto and explicitly reserve only
-        // the space left between the measured top and bottom rows.
+        // Nine independent drop targets with a common column width and
+        // independent vertical tracks. A tall group
+        // in one column must not push down groups in the other columns.
+        internal sealed class FreeZoneBoard : Grid
+        {
+            private bool narrow;
+            private double viewport;
+            private readonly double[] heights = new double[9];
+
+            internal void SetViewport(bool stack, double height)
+            {
+                if (narrow == stack && Math.Abs(viewport - height) < 0.1) return;
+                narrow = stack; viewport = height;
+                InvalidateMeasure();
+            }
+
+            protected override Size MeasureOverride(Size constraint)
+            {
+                double width = Double.IsInfinity(constraint.Width) ? 600 : Math.Max(0, constraint.Width);
+                double columnWidth = narrow ? width : width / 3;
+                double desiredHeight = 0;
+                for (int i = 0; i < InternalChildren.Count; i++)
+                {
+                    UIElement cell = InternalChildren[i];
+                    cell.Measure(new Size(columnWidth, Double.PositiveInfinity));
+                    heights[i] = Math.Max(i / 3 == 1 || narrow ? 26 : 0, cell.DesiredSize.Height);
+                    if (narrow) desiredHeight += heights[i];
+                }
+                if (!narrow)
+                    for (int col = 0; col < 3; col++)
+                        desiredHeight = Math.Max(desiredHeight, heights[col] + heights[3 + col] + heights[6 + col]);
+                return new Size(width, Math.Max(viewport, desiredHeight));
+            }
+
+            protected override Size ArrangeOverride(Size finalSize)
+            {
+                if (narrow)
+                {
+                    double y = 0;
+                    for (int i = 0; i < InternalChildren.Count; i++)
+                    {
+                        InternalChildren[i].Arrange(new Rect(0, y, finalSize.Width, heights[i]));
+                        y += heights[i];
+                    }
+                }
+                else
+                {
+                    double width = finalSize.Width / 3;
+                    for (int col = 0; col < 3; col++)
+                    {
+                        double top = heights[col], bottom = heights[6 + col];
+                        double total = Math.Max(viewport, top + heights[3 + col] + bottom);
+                        double middle = Math.Max(0, total - top - bottom);
+                        InternalChildren[col].Arrange(new Rect(col * width, 0, width, top));
+                        InternalChildren[3 + col].Arrange(new Rect(col * width, top, width, middle));
+                        InternalChildren[6 + col].Arrange(new Rect(col * width, top + middle, width, bottom));
+                    }
+                }
+                return finalSize;
+            }
+        }
+
         private void UpdateFreeBoardLayout(double available)
         {
             if (_freeLayoutGrid == null) return;
@@ -4507,7 +5347,7 @@ namespace AppShelf
             double viewportHeight = _tilesScroller.ActualHeight -
                 _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
             if (Double.IsNaN(viewportHeight) || viewportHeight < 0) viewportHeight = 0;
-            _freeLayoutGrid.MinHeight = Math.Max(0, viewportHeight);
+            ((FreeZoneBoard)_freeLayoutGrid).SetViewport(narrow, viewportHeight);
             for (int i = 0; i < FreeGroupZones.Length; i++)
             {
                 int row = i / 3;
@@ -4522,40 +5362,22 @@ namespace AppShelf
                     col == 1 ? HorizontalAlignment.Center : HorizontalAlignment.Right;
                 stack.VerticalAlignment = narrow || row == 0 ? VerticalAlignment.Top :
                     row == 1 ? VerticalAlignment.Center : VerticalAlignment.Bottom;
-                RowDefinition definition = _freeLayoutGrid.RowDefinitions[i];
-                definition.Height = GridLength.Auto;
-                definition.MinHeight = narrow ? (stack.Children.Count == 0 ? 26 : 70) :
-                    i == 1 ? 26 : 0;
             }
-        }
-
-        private void FitFreeBoardToViewport(double available)
-        {
-            if (_freeLayoutGrid == null || available < 600) return;
-            double viewportHeight = _tilesScroller.ActualHeight -
-                _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
-            if (Double.IsNaN(viewportHeight) || viewportHeight <= 0) return;
-            double topHeight = 0;
-            double bottomHeight = 0;
-            double columnWidth = Math.Max(1, available / 3);
-            // All card widths have already been updated. Measure unconstrained
-            // card heights at the real zone width so wrapped rows are included.
-            for (int i = 0; i < FreeGroupZones.Length; i++)
-            {
-                if (i >= 3 && i < 6) continue;
-                Border cell = _freeZoneCells[i];
-                cell.Measure(new Size(columnWidth, Double.PositiveInfinity));
-                if (i < 3) topHeight = Math.Max(topHeight, cell.DesiredSize.Height);
-                else bottomHeight = Math.Max(bottomHeight, cell.DesiredSize.Height);
-            }
-            // An Auto middle row may grow beyond this minimum when it contains
-            // taller cards; ScrollViewer can then scroll to the entire content.
-            _freeLayoutGrid.RowDefinitions[1].MinHeight =
-                Math.Max(26, viewportHeight - topHeight - bottomHeight);
         }
 
         private void UpdateGroupWidths()
         {
+            if (_canvasBoard != null)
+            {
+                double outer = _tilesScroller.ActualWidth > 1 ? _tilesScroller.ActualWidth : Width;
+                double viewport = outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
+                _canvasBoard.SetViewport(Math.Max(1, viewport), _config.CanvasViewportMode);
+                double height = _tilesScroller.ViewportHeight;
+                if (height <= 0 || Double.IsInfinity(height)) height = _tilesScroller.ActualHeight - _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
+                _canvasBoard.SetViewportHeight(height);
+                _canvasBoard.InvalidateMeasure();
+                return;
+            }
             if (_updatingGroupWidths || _tilesScroller == null ||
                 (_groupLayoutCards.Count == 0 && _freeLayoutGrid == null)) return;
             // Reserve scrollbar room even while hidden: otherwise the scrollbar
@@ -4596,7 +5418,7 @@ namespace AppShelf
                         card.HorizontalAlignment = align == "right" ? HorizontalAlignment.Right :
                             align == "center" ? HorizontalAlignment.Center : HorizontalAlignment.Left;
                         card.Margin = new Thickness(0, 0, grid ? 9 : 0, 8);
-                        group.Heading.MaxWidth = Math.Max(85, width - 84);
+                        group.Heading.MaxWidth = Math.Max(1, width - 84);
                     }
                     else
                     {
@@ -4606,7 +5428,11 @@ namespace AppShelf
                         group.Heading.MaxWidth = Double.PositiveInfinity;
                     }
                 }
-                if (free) FitFreeBoardToViewport(available);
+                if (free)
+                {
+                    if (_pluginWidgets != null) _pluginWidgets.FitBoard(available < 600 ? available - 12 : available / 3 - 16);
+                    _freeLayoutGrid.InvalidateMeasure();
+                }
             }
             finally { _updatingGroupWidths = false; }
         }
@@ -4618,6 +5444,7 @@ namespace AppShelf
             if (_tileHost == null) return;
             Brush groupBrush = FluentUi.MainGroupBackground(preset, opacity);
             Brush borderBrush = FluentUi.MainGroupBorder(preset);
+            if (_pluginWidgets != null) _pluginWidgets.ApplyAppearance(groupBrush, borderBrush);
             foreach (GroupLayoutCard group in _groupLayoutCards)
             {
                 group.Card.Background = groupBrush;
@@ -4628,9 +5455,42 @@ namespace AppShelf
         private void RenderTiles()
         {
             if (_tileHost == null) return;
+            // Legacy renderers are used exclusively for the one-time geometry conversion.
+            // No layout selector or normal rendering path can activate them after conversion.
+            if (_config.GroupingEnabled && NormalizeGroupLayoutMode(_config.GroupLayoutMode) != "canvas")
+            {
+                AppConfig pending = _config.Copy();
+                pending.GroupLayoutMode = "canvas";
+                if (!pending.CanvasInitialized)
+                {
+                    RenderTilesCore(true);
+                    // The nine-zone layout anchors groups to the measured viewport.
+                    // At startup its first real height is available in Loaded.
+                    if (NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "free" && !IsLoaded) return;
+                    if (IsLoaded) _tilesScroller.UpdateLayout();
+                    double outer = _tilesScroller.ActualWidth > 1 ? _tilesScroller.ActualWidth : Width;
+                    double width = Math.Max(200, outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth);
+                    _tileHost.Measure(new Size(width, Double.PositiveInfinity));
+                    _tileHost.Arrange(new Rect(0, 0, width, Math.Max(1, _tileHost.DesiredSize.Height)));
+                    MigrateCanvasLayout(pending);
+                }
+                pending.CanvasInitialized = true;
+                // Read-only or temporarily unwritable profiles still get the new layout in memory;
+                // no legacy setting or user content is deleted by this conversion.
+                if (!_canSave || !SaveConfigChanges(pending, false)) _config = pending;
+            }
+            RenderTilesCore();
+        }
+
+        private void RenderTilesCore(bool ignoreSearch = false)
+        {
+            if (_tileHost == null) return;
+            if (_pluginWidgets != null) _pluginWidgets.DetachBoard();
             _tileHost.Children.Clear();
             _groupLayoutCards.Clear();
             _freeLayoutGrid = null;
+            _canvasBoard = null;
+            _tilesScroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
             _freeZoneHosts.Clear();
             _freeZoneCells.Clear();
             _freeZoneHints.Clear();
@@ -4642,7 +5502,7 @@ namespace AppShelf
                 _tileHost.Children.Add(zone);
                 foreach (AppItem item in _config.Items)
                 {
-                    if (!Matches(item)) continue;
+                    if (!ignoreSearch && !Matches(item)) continue;
                     list.Children.Add(MakeTile(item));
                     count++;
                 }
@@ -4653,7 +5513,16 @@ namespace AppShelf
                 string layoutMode = NormalizeGroupLayoutMode(_config.GroupLayoutMode);
                 bool gridMode = layoutMode == "grid";
                 bool freeMode = layoutMode == "free";
+                bool canvasMode = layoutMode == "canvas";
                 WrapPanel gridHost = null;
+                if (canvasMode)
+                {
+                    _canvasBoard = new FreeCanvasBoard(FreeCanvasLayout.NormalizeStep(_config.CanvasGridStep));
+                    _canvasBoard.CommitPlacement = SaveCanvasPlacement;
+                    _canvasBoard.CanEdit = CanEditCanvas;
+                    _tilesScroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+                    _tileHost.Children.Add(_canvasBoard);
+                }
                 if (gridMode)
                 {
                     gridHost = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -4661,7 +5530,7 @@ namespace AppShelf
                 }
                 if (freeMode)
                 {
-                    _freeLayoutGrid = new Grid
+                    _freeLayoutGrid = new FreeZoneBoard
                     {
                         HorizontalAlignment = HorizontalAlignment.Stretch,
                         VerticalAlignment = VerticalAlignment.Top
@@ -4705,7 +5574,7 @@ namespace AppShelf
                 // visible applications. Keep it last, after the user-defined groups.
                 bool hasUngrouped = false;
                 foreach (AppItem item in _config.Items)
-                    if (Matches(item) && GroupOf(item).Length == 0)
+                    if (GroupOf(item).Length == 0 && (ignoreSearch || Matches(item)))
                     {
                         hasUngrouped = true;
                         break;
@@ -4717,7 +5586,8 @@ namespace AppShelf
                     int inGroup = 0;
                     foreach (AppItem item in _config.Items)
                     {
-                        if (!Matches(item) || !String.Equals(GroupOf(item), group, StringComparison.OrdinalIgnoreCase))
+                        if (!String.Equals(GroupOf(item), group, StringComparison.OrdinalIgnoreCase) ||
+                            (!ignoreSearch && !Matches(item)))
                             continue;
                         list.Children.Add(MakeTile(item));
                         inGroup++;
@@ -4734,7 +5604,9 @@ namespace AppShelf
                         "  ·  " + inGroup, 15, WhiteBrush);
                     heading.FontWeight = FontWeights.SemiBold;
                     heading.Margin = new Thickness(5, 0, 0, 4);
-                    heading.TextTrimming = TextTrimming.CharacterEllipsis;
+                    heading.TextTrimming = TextTrimming.None;
+                    heading.TextWrapping = TextWrapping.Wrap;
+                    heading.ToolTip = heading.Text;
                     DockPanel headerPanel = new DockPanel { LastChildFill = true };
                     if (group.Length != 0)
                     {
@@ -4830,27 +5702,40 @@ namespace AppShelf
                             groupMenu.Items.Add(zoneMenu);
                         }
                         headerPanel.ContextMenu = groupMenu;
-                        heading.ToolTip = freeMode
+                        heading.ToolTip = heading.Text + "\n" + (freeMode
                             ? "Правая кнопка — размещение группы и другие действия"
-                            : "Правая кнопка — порядок, переименование, удаление";
+                            : "Правая кнопка — порядок, переименование, удаление");
 
                         // Drag by the dedicated handle, never by an application tile.
                         // A normal click on the heading still expands/collapses.
                         TextBlock grip = Text("⋮⋮", 19, MutedBrush);
                         grip.Margin = new Thickness(12, 0, 5, 4);
                         grip.Cursor = Cursors.SizeAll;
-                        grip.ToolTip = freeMode
+                        grip.ToolTip = canvasMode ? "Перетащи группу по свободному полотну" : freeMode
                             ? "Перетащи в одну из девяти зон или на группу в той же зоне"
                             : "Перетащи на заголовок другой группы, чтобы поменять группы местами";
                         DockPanel.SetDock(grip, Dock.Right);
                         headerPanel.Children.Add(grip);
+                        Point canvasDragStart = new Point();
                         grip.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
                         {
-                            _groupDragCandidate = selectedGroup;
+                            if (!_canSave || _groupDragInProgress || (canvasMode && !CanEditCanvas())) return;
                             _groupDragStart = e.GetPosition(this);
+                            if (_canvasBoard != null) canvasDragStart = e.GetPosition(_canvasBoard);
+                            _groupDragCandidate = grip.CaptureMouse() ? selectedGroup : null;
                             e.Handled = true;
                         };
-                        section.PreviewMouseMove += delegate(object sender, MouseEventArgs e)
+                        grip.PreviewMouseLeftButtonUp += delegate
+                        {
+                            _groupDragCandidate = null;
+                            if (grip.IsMouseCaptured) grip.ReleaseMouseCapture();
+                        };
+                        grip.LostMouseCapture += delegate
+                        {
+                            if (String.Equals(_groupDragCandidate, selectedGroup, StringComparison.OrdinalIgnoreCase))
+                                _groupDragCandidate = null;
+                        };
+                        grip.PreviewMouseMove += delegate(object sender, MouseEventArgs e)
                         {
                             if (!_canSave || _groupDragInProgress ||
                                 !String.Equals(_groupDragCandidate, selectedGroup,
@@ -4861,11 +5746,13 @@ namespace AppShelf
                                 Math.Abs(current.Y - _groupDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
                             _groupDragCandidate = null;
                             _groupDragInProgress = true;
+                            if (grip.IsMouseCaptured) grip.ReleaseMouseCapture();
                             try
                             {
                                 DataObject data = new DataObject();
                                 data.SetData(GroupDragFormat, selectedGroup);
                                 if (freeMode) ShowFreeGroupZoneHints(true);
+                                if (_canvasBoard != null) _canvasBoard.BeginGroupDrag("app:" + selectedGroup, canvasDragStart);
                                 DragDrop.DoDragDrop(grip, data, DragDropEffects.Move);
                             }
                             catch (Exception ex)
@@ -4876,6 +5763,7 @@ namespace AppShelf
                             {
                                 _groupDragInProgress = false;
                                 ShowFreeGroupZoneHints(false);
+                                if (_canvasBoard != null) _canvasBoard.EndGroupDrag();
                                 ClearDropHighlight();
                             }
                             e.Handled = true;
@@ -4900,16 +5788,34 @@ namespace AppShelf
                     };
                     _groupLayoutCards.Add(new GroupLayoutCard(groupCard, group, inGroup,
                         _groupLayoutCards.Count, heading));
-                    if (gridHost != null) gridHost.Children.Add(groupCard);
+                    if (canvasMode)
+                    {
+                        string key = "app:" + group;
+                        System.Windows.Automation.AutomationProperties.SetName(groupCard, group.Length == 0 ? "Без группы" : group);
+                        int columns = (int)Math.Ceiling(NaturalGroupWidth(inGroup, 400) / _canvasBoard.CellStep);
+                        _canvasBoard.AddCard(key, groupCard, columns, CanvasPosition(key));
+                    }
+                    else if (gridHost != null) gridHost.Children.Add(groupCard);
                     else if (freeMode) _freeZoneHosts[GroupZoneFor(group)].Children.Add(groupCard);
                     else _tileHost.Children.Add(groupCard);
                 }
             }
+            if (WidgetsInFreeLayout() && _pluginWidgets != null)
+            {
+                if (_canvasBoard != null)
+                    foreach (KeyValuePair<string, Border> card in _pluginWidgets.AttachCanvas())
+                        _canvasBoard.AddCard(card.Key, card.Value, (int)Math.Ceiling(400.0 / _canvasBoard.CellStep), CanvasPosition(card.Key));
+                else _pluginWidgets.AttachBoard(_freeZoneHosts, NormalizeGroupZone(_config.GroupDefaultZone));
+            }
             UpdateGroupWidths();
+            if (_pluginWidgets != null) _pluginWidgets.ApplyAppearance(
+                FluentUi.MainGroupBackground(_config.MainBackgroundPreset, FluentUi.NormalizeGroupOpacity(_config.GroupOpacity)),
+                FluentUi.MainGroupBorder(_config.MainBackgroundPreset));
             _empty.Text = _config.Items.Count == 0
                 ? "Пока здесь пусто.\n\nПеретащи EXE или ярлык из Проводника\nили нажми «+ Добавить»."
                 : "Ничего не найдено.";
-            _empty.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            _empty.Visibility = count == 0 && (!WidgetsInFreeLayout() || _pluginWidgets == null || !_pluginWidgets.HasWidgets)
+                ? Visibility.Visible : Visibility.Collapsed;
             ShowDefaultStatus(count);
         }
 
@@ -5190,17 +6096,6 @@ namespace AppShelf
             _groupMenuItem.IsChecked = _config.GroupingEnabled;
             _newGroupMenuItem.IsEnabled = _config.GroupingEnabled;
             if (saved) RenderTiles();
-        }
-
-        private void SetGroupLayoutMode(string mode)
-        {
-            if (mode != "vertical" && mode != "grid" && mode != "free") return;
-            if (!_canSave) { ShowSaveDisabled(); return; }
-            if (!_config.GroupingEnabled || NormalizeGroupLayoutMode(_config.GroupLayoutMode) == mode)
-                return;
-            AppConfig pending = _config.Copy();
-            pending.GroupLayoutMode = mode;
-            if (SaveConfigChanges(pending)) RenderTiles();
         }
 
         private string CurrentTileDisplayMode()
@@ -5525,6 +6420,17 @@ namespace AppShelf
                     pending.Groups[i] = newName;
             foreach (AppItem item in pending.Items)
                 if (String.Equals(GroupOf(item), name, StringComparison.OrdinalIgnoreCase)) item.Group = newName;
+            if (pending.CanvasPositions != null)
+            {
+                foreach (string key in new List<string>(pending.CanvasPositions.Keys))
+                    if (String.Equals(key, "app:" + name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        FreeCanvasRect rect = pending.CanvasPositions[key];
+                        pending.CanvasPositions.Remove(key);
+                        pending.CanvasPositions["app:" + newName] = rect;
+                        break;
+                    }
+            }
             if (pending.GroupZoneOverrides != null)
             {
                 foreach (string key in new List<string>(pending.GroupZoneOverrides.Keys))
@@ -5563,6 +6469,10 @@ namespace AppShelf
             { return String.Equals(group, name, StringComparison.OrdinalIgnoreCase); });
             foreach (AppItem item in pending.Items)
                 if (String.Equals(GroupOf(item), name, StringComparison.OrdinalIgnoreCase)) item.Group = "";
+            if (pending.CanvasPositions != null)
+                foreach (string key in new List<string>(pending.CanvasPositions.Keys))
+                    if (String.Equals(key, "app:" + name, StringComparison.OrdinalIgnoreCase))
+                        pending.CanvasPositions.Remove(key);
             if (pending.GroupZoneOverrides != null)
             {
                 foreach (string key in new List<string>(pending.GroupZoneOverrides.Keys))
@@ -5643,21 +6553,6 @@ namespace AppShelf
             RenderTiles();
         }
 
-        private void ShowHappDiagnostics()
-        {
-            if (_happWindow != null)
-            {
-                if (_happWindow.WindowState == WindowState.Minimized)
-                    _happWindow.WindowState = WindowState.Normal;
-                _happWindow.Activate();
-                return;
-            }
-            _happWindow = new HappDiagnosticsWindow(_config.Copy());
-            _happWindow.Owner = this;
-            _happWindow.Closed += delegate { _happWindow = null; };
-            _happWindow.Show();
-        }
-
         // Package #11: one independent countdown, never linked to Pomodoro.
         private void UpdateCountdownAvailability()
         {
@@ -5670,7 +6565,7 @@ namespace AppShelf
                 UpdateCountdownUi();
                 return;
             }
-            if (_countdownTimer == null && _networkTimer != null)
+            if (_countdownTimer == null && _weatherTimer != null)
             {
                 _countdownTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
                 _countdownTimer.Tick += delegate { TickCountdown(); };
@@ -6117,51 +7012,6 @@ namespace AppShelf
             layout.Children.Add(section);
         }
 
-        private static void AddNetworkTargetRow(StackPanel parent, int index,
-            string savedMode, string savedTarget, out ComboBox mode, out TextBox address)
-        {
-            parent.Children.Add(Text("Проверка " + index, 12, WhiteBrush));
-            mode = new ComboBox { Tag = "NetworkTargetMode" + index,
-                MinHeight = 33, Margin = new Thickness(0, 4, 0, 5) };
-            mode.Items.Add(new ComboBoxItem { Content = "По умолчанию — ICMP + HTTPS", Tag = "default" });
-            mode.Items.Add(new ComboBoxItem { Content = "ICMP — ping узла", Tag = "icmp" });
-            mode.Items.Add(new ComboBoxItem { Content = "HTTPS — проверка сайта", Tag = "https" });
-            mode.Items.Add(new ComboBoxItem { Content = "TCP — подключение к порту", Tag = "tcp" });
-            string selected = String.IsNullOrWhiteSpace(savedMode) ? "default" : savedMode;
-            mode.SelectedIndex = selected == "icmp" ? 1 : selected == "https" ? 2 :
-                selected == "tcp" ? 3 : 0;
-            parent.Children.Add(mode);
-            address = new TextBox
-            {
-                Text = selected == "default" ? NetworkChecks.DefaultHost(index) : savedTarget ?? "",
-                MinHeight = 31, Padding = new Thickness(8, 5, 8, 5),
-                Tag = "NetworkTargetAddress" + index,
-                Background = TileBrush, BorderBrush = StrokeBrush,
-                Foreground = WhiteBrush,
-                Margin = new Thickness(0, 0, 0, 12)
-            };
-            parent.Children.Add(address);
-            ComboBox selectedMode = mode;
-            TextBox input = address;
-            selectedMode.SelectionChanged += delegate
-            {
-                string type = (string)((ComboBoxItem)selectedMode.SelectedItem).Tag;
-                bool builtIn = type == "default";
-                input.IsEnabled = !builtIn;
-                if (builtIn) input.Text = NetworkChecks.DefaultHost(index);
-                else if (String.IsNullOrWhiteSpace(input.Text) ||
-                         String.Equals(input.Text, NetworkChecks.DefaultHost(index),
-                             StringComparison.OrdinalIgnoreCase))
-                {
-                    string host = NetworkChecks.DefaultHost(index);
-                    input.Text = type == "https" ? (index == 1
-                        ? "https://1.1.1.1/cdn-cgi/trace" : "https://ya.ru/") :
-                        type == "tcp" ? host + ":443" : host;
-                }
-            };
-            address.IsEnabled = mode.SelectedIndex != 0;
-        }
-
         // The gallery only selects an existing wallpaper. Import and deletion remain
         // in Settings, so the two entry points share one library and saved preset.
         private static Brush BackgroundGalleryThumbnail(string preset)
@@ -6352,7 +7202,7 @@ namespace AppShelf
             layout.Children.Add(Text("Режим отображения:", 12, MutedBrush));
             ComboBox panelMode = new ComboBox { MinHeight = 34, Margin = new Thickness(0, 5, 0, 9) };
             panelMode.Items.Add(new ComboBoxItem { Content = "Компактный — избранные показатели", Tag = "compact" });
-            panelMode.Items.Add(new ComboBoxItem { Content = "Категории — Сеть, Погода, Время", Tag = "categories" });
+            panelMode.Items.Add(new ComboBoxItem { Content = "Категории — RDP, Погода, Время", Tag = "categories" });
             panelMode.Items.Add(new ComboBoxItem { Content = "Подробный — все показатели", Tag = "detailed" });
             string currentPanelMode = NormalizeBottomPanelMode(_config.BottomPanelMode);
             panelMode.SelectedIndex = currentPanelMode == "compact" ? 0 : currentPanelMode == "categories" ? 1 : 2;
@@ -6367,7 +7217,7 @@ namespace AppShelf
             {
                 CheckBox check = new CheckBox
                 {
-                    Content = category == "network" ? "Сеть" : category == "weather" ? "Погода" : "Время",
+                    Content = category == "network" ? "RDP" : category == "weather" ? "Погода" : "Время",
                     IsChecked = enabledCategories.Contains(category),
                     Tag = category, Foreground = WhiteBrush, Margin = new Thickness(0, 0, 18, 0)
                 };
@@ -6379,7 +7229,7 @@ namespace AppShelf
             layout.Children.Add(favoritesLabel);
             ListBox favoriteList = new ListBox
             {
-                Height = 191, Background = TileBrush, Foreground = WhiteBrush,
+                Height = 120, Background = TileBrush, Foreground = WhiteBrush,
                 BorderBrush = StrokeBrush, BorderThickness = new Thickness(1),
                 Margin = new Thickness(0, 6, 0, 5)
             };
@@ -6390,9 +7240,10 @@ namespace AppShelf
                 if (!orderedKeys.Contains(key)) orderedKeys.Add(key);
             foreach (string key in orderedKeys)
             {
+                if (IsLegacyNetworkKey(key)) continue;
                 CheckBox check = new CheckBox
                 {
-                    Content = BottomFavoriteName(key) ?? BottomIndicatorName(key), Tag = key,
+                    Content = BottomIndicatorName(key), Tag = key,
                     IsChecked = configuredFavorites.Contains(key),
                     Padding = new Thickness(2, 3, 0, 3)
                 };
@@ -6452,45 +7303,11 @@ namespace AppShelf
             }
             panelMode.SelectionChanged += delegate { updateFavoriteAvailability(); };
             updateFavoriteAvailability();
-            CheckBox network = new CheckBox
-            {
-                Content = "Показывать сетевые проверки в нижней панели", IsChecked = _config.ShowNetwork,
-                Foreground = WhiteBrush, Margin = new Thickness(0, 0, 0, 12)
-            };
-            StackPanel networkChecksSettings = new StackPanel();
-            TextBlock networkDescription = Text(
-                "Две проверки вместо стандартных 1.1.1.1 и ya.ru. Выбери тип и укажи адрес. Дополнительных фоновых запросов не будет.",
-                11, MutedBrush);
-            networkDescription.TextWrapping = TextWrapping.Wrap;
-            networkChecksSettings.Children.Add(networkDescription);
-            ComboBox networkMode1, networkMode2;
-            TextBox networkAddress1, networkAddress2;
-            AddNetworkTargetRow(networkChecksSettings, 1,
-                _config.NetworkCheck1Mode, _config.NetworkCheck1Target,
-                out networkMode1, out networkAddress1);
-            AddNetworkTargetRow(networkChecksSettings, 2,
-                _config.NetworkCheck2Mode, _config.NetworkCheck2Target,
-                out networkMode2, out networkAddress2);
-            // Reuse the existing dark ComboBox template and scoped dropdown styles.
-            // Without both, Windows renders these new network controls in system light theme.
-            foreach (ComboBox networkMode in new ComboBox[] { networkMode1, networkMode2 })
-            {
-                networkMode.Style = panelMode.Style;
-                foreach (ResourceDictionary resources in panelMode.Resources.MergedDictionaries)
-                    networkMode.Resources.MergedDictionaries.Add(resources);
-            }
-            TextBlock networkHint = Text(
-                "ICMP: host/IP  ·  HTTPS: https://site.example/path  ·  TCP: host:port",
-                11, MutedBrush);
-            networkHint.TextWrapping = TextWrapping.Wrap;
-            networkChecksSettings.Children.Add(networkHint);
-
             CheckBox weather = new CheckBox
             {
                 Content = "Показывать погоду", IsChecked = _config.ShowWeather,
                 Foreground = WhiteBrush, Margin = new Thickness(0, 0, 0, 10)
             };
-            layout.Children.Add(network);
             layout.Children.Add(weather);
             CheckBox pomodoro = new CheckBox
             {
@@ -6666,176 +7483,36 @@ namespace AppShelf
             {
                 tileScaleValue.Text = FluentUi.NormalizeTileScale((int)Math.Round(tileScaleSlider.Value)) + "%";
             };
-            // Keep the existing JSON settings and layout logic; only their editor changes.
-            TextBlock groupLayoutLabel = Text("Размещение групп:", 12, MutedBrush);
-            groupLayoutLabel.Margin = new Thickness(0, 4, 0, 5);
-            StackPanel groupLayoutChoices = new StackPanel { Margin = new Thickness(4, 0, 0, 0) };
-            string activeLayoutMode = NormalizeGroupLayoutMode(_config.GroupLayoutMode);
-            RadioButton groupLayoutList = new RadioButton
-            {
-                Content = "Список — группы одна под другой", Tag = "GroupLayoutMode:vertical",
-                GroupName = "AppShelfSettingsGroupLayout", IsChecked = activeLayoutMode == "vertical",
-                Foreground = WhiteBrush, Margin = new Thickness(0, 3, 0, 5)
-            };
-            RadioButton groupLayoutGrid = new RadioButton
-            {
-                Content = "Автоматическая сетка — с переносом", Tag = "GroupLayoutMode:grid",
-                GroupName = "AppShelfSettingsGroupLayout", IsChecked = activeLayoutMode == "grid",
-                Foreground = WhiteBrush, Margin = new Thickness(0, 3, 0, 5)
-            };
-            RadioButton groupLayoutFree = new RadioButton
-            {
-                Content = "Свободное размещение — девять зон", Tag = "GroupLayoutMode:free",
-                GroupName = "AppShelfSettingsGroupLayout", IsChecked = activeLayoutMode == "free",
-                Foreground = WhiteBrush, Margin = new Thickness(0, 3, 0, 5)
-            };
-            groupLayoutChoices.Children.Add(groupLayoutList);
-            groupLayoutChoices.Children.Add(groupLayoutGrid);
-            groupLayoutChoices.Children.Add(groupLayoutFree);
-            TextBlock groupModeDescription = Text("", 11, MutedBrush);
+            TextBlock groupModeDescription = Text("Свободное полотно — общая сетка групп и виджетов.", 12, MutedBrush);
             groupModeDescription.TextWrapping = TextWrapping.Wrap;
-            groupModeDescription.Margin = new Thickness(3, 0, 0, 11);
-
-            TextBlock groupWidthLabel = Text("Ширина групп:", 12, MutedBrush);
-            WrapPanel groupWidthChoices = new WrapPanel { Margin = new Thickness(4, 5, 0, 9) };
-            bool contentWidthSelected = NormalizeGroupWidthMode(_config.GroupWidthMode) == "content";
-            RadioButton groupWidthFull = new RadioButton
-            {
-                Content = "На всю ширину", Tag = "GroupWidthMode:full",
-                GroupName = "AppShelfSettingsGroupWidth", IsChecked = !contentWidthSelected,
-                Foreground = WhiteBrush, Margin = new Thickness(0, 0, 16, 6)
-            };
-            RadioButton groupWidthContent = new RadioButton
-            {
-                Content = "По содержимому", Tag = "GroupWidthMode:content",
-                GroupName = "AppShelfSettingsGroupWidth", IsChecked = contentWidthSelected,
-                Foreground = WhiteBrush, Margin = new Thickness(0, 0, 12, 6)
-            };
-            groupWidthChoices.Children.Add(groupWidthFull);
-            groupWidthChoices.Children.Add(groupWidthContent);
-
-            TextBlock groupAlignmentLabel = Text("Выравнивание групп:", 12, MutedBrush);
-            ComboBox groupAlignmentSetting = new ComboBox
-            {
-                MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
-                Style = tileSetting.Style
-            };
-            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "По левому краю", Tag = "left" });
-            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "По центру", Tag = "center" });
-            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "По правому краю", Tag = "right" });
-            groupAlignmentSetting.Items.Add(new ComboBoxItem { Content = "Чередование слева и справа", Tag = "alternate" });
-            string activeGroupAlignment = NormalizeGroupAlignment(_config.GroupAlignment);
-            groupAlignmentSetting.SelectedIndex = activeGroupAlignment == "center" ? 1 :
-                activeGroupAlignment == "right" ? 2 : activeGroupAlignment == "alternate" ? 3 : 0;
+            groupModeDescription.Margin = new Thickness(0, 4, 0, 10);
+            TextBlock canvasStepLabel = Text("Шаг сетки:", 12, MutedBrush);
+            ComboBox canvasStepSetting = new ComboBox { MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
+                Style = tileSetting.Style };
             foreach (ResourceDictionary styles in tileSetting.Resources.MergedDictionaries)
-                groupAlignmentSetting.Resources.MergedDictionaries.Add(styles);
-            groupAlignmentSetting.Background = FluentUi.Brush("#101A2A");
-            groupAlignmentSetting.BorderBrush = FluentUi.Brush("#34465F");
-            groupAlignmentSetting.FontWeight = FontWeights.Normal;
-            TextBlock groupLayoutHint = Text(
-                "Для отдельных групп выравнивание задаётся через правую кнопку на заголовке.",
-                11, MutedBrush);
-            groupLayoutHint.TextWrapping = TextWrapping.Wrap;
-            groupLayoutHint.Margin = new Thickness(0, 0, 0, 10);
-
-            TextBlock groupDefaultZoneLabel = Text("Положение новых групп по умолчанию:", 12, MutedBrush);
-            groupDefaultZoneLabel.Margin = new Thickness(0, 0, 0, 5);
-            System.Windows.Controls.Primitives.UniformGrid groupZonePicker =
-                new System.Windows.Controls.Primitives.UniformGrid
-                {
-                    Columns = 3, Rows = 3, MaxWidth = 255,
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    Margin = new Thickness(0, 0, 0, 5), Tag = "GroupZonePicker"
-                };
-            string selectedGroupZone = NormalizeGroupZone(_config.GroupDefaultZone);
-            string[] zoneSymbols = { "↖", "↑", "↗", "←", "●", "→", "↙", "↓", "↘" };
-            List<Button> zoneButtons = new List<Button>();
-            for (int i = 0; i < FreeGroupZones.Length; i++)
-            {
-                string chosenZone = FreeGroupZones[i];
-                Button zoneButton = ActionButton(zoneSymbols[i], false);
-                zoneButton.Tag = "GroupZone:" + chosenZone;
-                zoneButton.ToolTip = FreeGroupZoneLabel(chosenZone);
-                zoneButton.FontSize = 18;
-                zoneButton.Margin = new Thickness(3);
-                zoneButton.Padding = new Thickness(0);
-                zoneButton.MinHeight = 38;
-                zoneButton.Height = 40;
-                zoneButton.HorizontalAlignment = HorizontalAlignment.Stretch;
-                System.Windows.Automation.AutomationProperties.SetName(zoneButton,
-                    "Зона размещения: " + FreeGroupZoneLabel(chosenZone));
-                zoneButtons.Add(zoneButton);
-                groupZonePicker.Children.Add(zoneButton);
-            }
-            TextBlock groupZoneSelection = Text("", 11, WhiteBrush);
-            groupZoneSelection.Margin = new Thickness(3, 0, 0, 8);
-            Action refreshZonePicker = delegate
-            {
-                foreach (Button button in zoneButtons)
-                {
-                    bool selected = String.Equals(
-                        ((string)button.Tag).Substring("GroupZone:".Length),
-                        selectedGroupZone, StringComparison.Ordinal);
-                    button.Background = selected ? FluentUi.Brush("#244B65") : TileBrush;
-                    button.BorderBrush = selected ? AccentBrush : StrokeBrush;
-                    button.BorderThickness = new Thickness(selected ? 2 : 1);
-                }
-                groupZoneSelection.Text = "Выбрана зона: " + FreeGroupZoneLabel(selectedGroupZone);
-            };
-            foreach (Button button in zoneButtons)
-            {
-                Button selectedButton = button;
-                selectedButton.Click += delegate
-                {
-                    selectedGroupZone = ((string)selectedButton.Tag).Substring("GroupZone:".Length);
-                    refreshZonePicker();
-                };
-            }
-            refreshZonePicker();
-            TextBlock freeGroupHint = Text(
-                "Перетаскивай группы мышью или выбирай зону через меню заголовка. " +
-                "Общее положение также действует для групп с правилом «По общему правилу».",
-                11, MutedBrush);
-            freeGroupHint.TextWrapping = TextWrapping.Wrap;
-            freeGroupHint.Margin = new Thickness(0, 0, 0, 10);
+                canvasStepSetting.Resources.MergedDictionaries.Add(styles);
+            foreach (int step in new[] { 10, 20, 30, 40 })
+                canvasStepSetting.Items.Add(new ComboBoxItem { Content = step + " DIP", Tag = step,
+                    IsSelected = step == FreeCanvasLayout.NormalizeStep(_config.CanvasGridStep) });
+            TextBlock canvasViewportLabel = Text("При уменьшении окна:", 12, MutedBrush);
+            ComboBox canvasViewportSetting = new ComboBox { MinHeight = 33, Margin = new Thickness(0, 4, 0, 10),
+                Style = tileSetting.Style };
+            foreach (ResourceDictionary styles in tileSetting.Resources.MergedDictionaries)
+                canvasViewportSetting.Resources.MergedDictionaries.Add(styles);
+            string viewportMode = FreeCanvasLayout.NormalizeViewportMode(_config.CanvasViewportMode);
+            string[] viewportKeys = { "adaptive", "scale", "collapse", "scroll" };
+            string[] viewportTitles = { "Адаптивная расстановка", "Масштабирование (не ниже 75%)", "Сворачивание групп", "Прокрутка полотна" };
+            for (int i = 0; i < viewportKeys.Length; i++)
+                canvasViewportSetting.Items.Add(new ComboBoxItem { Content = viewportTitles[i], Tag = viewportKeys[i], IsSelected = viewportMode == viewportKeys[i] });
 
             Action refreshGroupLayoutControls = delegate
             {
-                bool grouped = groupingSetting.IsChecked == true;
-                bool list = groupLayoutList.IsChecked == true;
-                bool grid = groupLayoutGrid.IsChecked == true;
-                bool free = groupLayoutFree.IsChecked == true;
-                bool contentWidth = groupWidthContent.IsChecked == true;
-                Visibility basic = grouped ? Visibility.Visible : Visibility.Collapsed;
-                Visibility listOnly = grouped && list ? Visibility.Visible : Visibility.Collapsed;
-                Visibility alignmentOnly = grouped && list && contentWidth
-                    ? Visibility.Visible : Visibility.Collapsed;
-                Visibility freeOnly = grouped && free ? Visibility.Visible : Visibility.Collapsed;
-                groupLayoutLabel.Visibility = basic;
-                groupLayoutChoices.Visibility = basic;
-                groupModeDescription.Visibility = basic;
-                groupModeDescription.Text = free
-                    ? "Размещай группы независимо по девяти зонам рабочего пространства."
-                    : grid
-                        ? "Ширина рассчитывается автоматически; группы переносятся на следующую строку."
-                        : "Группы располагаются последовательно сверху вниз.";
-                groupWidthLabel.Visibility = listOnly;
-                groupWidthChoices.Visibility = listOnly;
-                groupAlignmentLabel.Visibility = alignmentOnly;
-                groupAlignmentSetting.Visibility = alignmentOnly;
-                groupLayoutHint.Visibility = alignmentOnly;
-                groupDefaultZoneLabel.Visibility = freeOnly;
-                groupZonePicker.Visibility = freeOnly;
-                groupZoneSelection.Visibility = freeOnly;
-                freeGroupHint.Visibility = freeOnly;
+                Visibility visible = groupingSetting.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+                groupModeDescription.Visibility = canvasStepLabel.Visibility = canvasStepSetting.Visibility =
+                    canvasViewportLabel.Visibility = canvasViewportSetting.Visibility = visible;
             };
             groupingSetting.Checked += delegate { refreshGroupLayoutControls(); };
             groupingSetting.Unchecked += delegate { refreshGroupLayoutControls(); };
-            groupLayoutList.Checked += delegate { refreshGroupLayoutControls(); };
-            groupLayoutGrid.Checked += delegate { refreshGroupLayoutControls(); };
-            groupLayoutFree.Checked += delegate { refreshGroupLayoutControls(); };
-            groupWidthFull.Checked += delegate { refreshGroupLayoutControls(); };
-            groupWidthContent.Checked += delegate { refreshGroupLayoutControls(); };
             refreshGroupLayoutControls();
 
             TextBlock backgroundSettingLabel = Text("Фон главного окна:", 12, MutedBrush);
@@ -7099,9 +7776,17 @@ namespace AppShelf
                 IsChecked = _config.ShowCollections != false,
                 Foreground = WhiteBrush, Margin = new Thickness(0, 0, 0, 10)
             };
+            string pendingZipRestore = null;
             Button backupSettings = ActionButton("Экспорт / импорт данных…", false);
             backupSettings.HorizontalAlignment = HorizontalAlignment.Left;
-            backupSettings.Click += delegate { ShowBackupMenuWindow(dialog); };
+            backupSettings.Click += delegate
+            {
+                ShowBackupMenuWindow(dialog, delegate(string filename)
+                {
+                    pendingZipRestore = filename;
+                    dialog.DialogResult = false;
+                });
+            };
 
             List<UIElement> originalSettings = new List<UIElement>();
             foreach (UIElement control in layout.Children) originalSettings.Add(control);
@@ -7149,7 +7834,7 @@ namespace AppShelf
                 ? "appearance" : savedSection;
             if (lastSection != "network" && lastSection != "weather" &&
                 lastSection != "time" && lastSection != "windows" &&
-                lastSection != "appearance" && lastSection != "data" && lastSection != "collections")
+                lastSection != "appearance" && lastSection != "data" && lastSection != "collections" && lastSection != "plugins")
                 lastSection = "appearance";
             if (requestedSection == "appearance-panel")
             {
@@ -7158,7 +7843,7 @@ namespace AppShelf
             }
             else if (requestedSection == "network" || requestedSection == "weather" ||
                 requestedSection == "time" || requestedSection == "windows" ||
-                requestedSection == "appearance" || requestedSection == "data" || requestedSection == "collections")
+                requestedSection == "appearance" || requestedSection == "data" || requestedSection == "collections" || requestedSection == "plugins")
                 lastSection = requestedSection;
             Action<string> toggleSection = delegate(string key)
             {
@@ -7227,10 +7912,7 @@ namespace AppShelf
             AddSettingsSection(appearanceRows, "appearance-tiles", "Плитки и группы",
                 new List<UIElement> { groupingSetting, tileSettingLabel, tileSetting,
                     tileScaleLabel, tileScaleRow,
-                    groupLayoutLabel, groupLayoutChoices, groupModeDescription,
-                    groupWidthLabel, groupWidthChoices, groupAlignmentLabel, groupAlignmentSetting,
-                    groupLayoutHint, groupDefaultZoneLabel, groupZonePicker, groupZoneSelection,
-                    freeGroupHint,
+                    groupModeDescription, canvasStepLabel, canvasStepSetting, canvasViewportLabel, canvasViewportSetting,
                     groupOpacityLabel, opacityRow, previewCaption, previewBackdrop },
                 appearanceBodies, appearanceArrows, appearanceHeaders, toggleAppearance);
             AddSettingsSection(appearanceRows, "appearance-background", "Фон главного окна",
@@ -7291,8 +7973,14 @@ namespace AppShelf
             AddSettingsSection(accordionRows, "appearance", "Внешний вид",
                 new List<UIElement> { appearanceFrame },
                 sections, arrows, headers, toggleSection);
-            AddSettingsSection(accordionRows, "network", "Сеть",
-                new List<UIElement> { network, networkChecksSettings },
+            TextBlock networkPluginHint = Text("Сетевые проверки и диагностика теперь доступны в отдельном плагине «Сеть». " +
+                "При первом включении прежние настройки будут предложены к переносу.", 12, MutedBrush);
+            networkPluginHint.TextWrapping = TextWrapping.Wrap;
+            Button networkPluginButton = ActionButton("Открыть менеджер плагинов…", false);
+            networkPluginButton.Tag = "NetworkPluginSettings";
+            networkPluginButton.Click += delegate { ShowPluginManager(dialog); };
+            AddSettingsSection(accordionRows, "network", "Сеть — плагин",
+                new List<UIElement> { networkPluginHint, networkPluginButton },
                 sections, arrows, headers, toggleSection);
             List<UIElement> weatherItems = new List<UIElement> { weather };
             weatherItems.AddRange(SettingsRange(originalSettings, weatherTitle, providerNote));
@@ -7311,6 +7999,12 @@ namespace AppShelf
                 windowsItems, sections, arrows, headers, toggleSection);
             AddSettingsSection(accordionRows, "collections", "Подборки",
                 new List<UIElement> { collectionsSetting }, sections, arrows, headers, toggleSection);
+            Button pluginSettings = ActionButton("Управление плагинами…", true);
+            pluginSettings.Click += delegate { ShowPluginManager(dialog); };
+            TextBlock pluginHint = Text("Установка, обновление, удаление и резервирование данных плагинов.", 12, MutedBrush);
+            pluginHint.TextWrapping = TextWrapping.Wrap;
+            AddSettingsSection(accordionRows, "plugins", "Плагины",
+                new List<UIElement> { pluginSettings, pluginHint }, sections, arrows, headers, toggleSection);
             AddSettingsSection(accordionRows, "data", "Резервные копии",
                 new List<UIElement> { backupSettings },
                 sections, arrows, headers, toggleSection);
@@ -7330,23 +8024,6 @@ namespace AppShelf
             ok.IsEnabled = _canSave;
             ok.Click += delegate
             {
-                string firstMode = (string)((ComboBoxItem)networkMode1.SelectedItem).Tag;
-                string secondMode = (string)((ComboBoxItem)networkMode2.SelectedItem).Tag;
-                NetworkChecks.Target validated; string error;
-                if (!NetworkChecks.TryParse(firstMode, networkAddress1.Text, 1,
-                    out validated, out error))
-                {
-                    MessageBox.Show(dialog, "Проверка 1: " + error,
-                        "AppShelf — настройки сети", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-                if (!NetworkChecks.TryParse(secondMode, networkAddress2.Text, 2,
-                    out validated, out error))
-                {
-                    MessageBox.Show(dialog, "Проверка 2: " + error,
-                        "AppShelf — настройки сети", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
                 dialog.DialogResult = true;
             };
             Button cancel = ActionButton("Отмена", false);
@@ -7373,7 +8050,7 @@ namespace AppShelf
             bool backgroundsSaved = false;
             try
             {
-            if (savedSettings == true)
+            if (savedSettings == true && pendingZipRestore == null)
             {
                 bool changedCity = !String.Equals(_config.WeatherCity, city.Text.Trim(), StringComparison.Ordinal);
                 string selectedProvider = (string)((ComboBoxItem)weatherProvider.SelectedItem).Tag;
@@ -7389,15 +8066,6 @@ namespace AppShelf
                 }
                 AppConfig pending = _config.Copy();
                 pending.WeatherProvider = selectedProvider;
-                pending.ShowNetwork = network.IsChecked == true;
-                pending.NetworkCheck1Mode = (string)((ComboBoxItem)networkMode1.SelectedItem).Tag == "default"
-                    ? null : (string)((ComboBoxItem)networkMode1.SelectedItem).Tag;
-                pending.NetworkCheck1Target = pending.NetworkCheck1Mode == null
-                    ? null : networkAddress1.Text.Trim();
-                pending.NetworkCheck2Mode = (string)((ComboBoxItem)networkMode2.SelectedItem).Tag == "default"
-                    ? null : (string)((ComboBoxItem)networkMode2.SelectedItem).Tag;
-                pending.NetworkCheck2Target = pending.NetworkCheck2Mode == null
-                    ? null : networkAddress2.Text.Trim();
                 pending.BottomPanelMode = (string)((ComboBoxItem)panelMode.SelectedItem).Tag;
                 pending.BottomPanelCategories = new List<string>();
                 foreach (string category in new string[] { "network", "weather", "time" })
@@ -7410,6 +8078,11 @@ namespace AppShelf
                     if (check != null && check.IsChecked == true)
                         pending.BottomPanelFavorites.Add((string)check.Tag);
                 }
+                // Keep hidden legacy selections in their original relative slots.
+                List<string> legacyFavorites = BottomPanelFavorites(_config);
+                for (int i = 0; i < legacyFavorites.Count; i++)
+                    if (IsLegacyNetworkKey(legacyFavorites[i]))
+                        pending.BottomPanelFavorites.Insert(Math.Min(i, pending.BottomPanelFavorites.Count), legacyFavorites[i]);
                 pending.ShowWeather = weather.IsChecked == true;
                 pending.WeatherCity = city.Text.Trim();
                 pending.CloseToTray = tray.IsChecked == true;
@@ -7419,11 +8092,16 @@ namespace AppShelf
                 pending.RdpKeepAwake = rdp.IsChecked == true;
                 pending.SettingsLastSection = selectedSettingsSection;
                 pending.GroupingEnabled = groupingSetting.IsChecked == true;
-                pending.GroupLayoutMode = groupLayoutFree.IsChecked == true ? "free" :
-                    groupLayoutGrid.IsChecked == true ? "grid" : "vertical";
-                pending.GroupWidthMode = groupWidthContent.IsChecked == true ? "content" : "full";
-                pending.GroupAlignment = (string)((ComboBoxItem)groupAlignmentSetting.SelectedItem).Tag;
-                pending.GroupDefaultZone = selectedGroupZone;
+                pending.CanvasViewportMode = (string)((ComboBoxItem)canvasViewportSetting.SelectedItem).Tag;
+                int newCanvasStep = (int)((ComboBoxItem)canvasStepSetting.SelectedItem).Tag;
+                int previousCanvasStep = FreeCanvasLayout.NormalizeStep(pending.CanvasGridStep);
+                if (newCanvasStep != previousCanvasStep)
+                {
+                    if (pending.CanvasPositions != null)
+                        foreach (string key in new List<string>(pending.CanvasPositions.Keys))
+                            pending.CanvasPositions[key] = FreeCanvasLayout.ConvertStep(pending.CanvasPositions[key], previousCanvasStep, newCanvasStep);
+                    pending.CanvasGridStep = newCanvasStep;
+                }
                 pending.AlwaysOnTop = topmostSetting.IsChecked == true;
                 pending.TileDisplayMode = (string)((ComboBoxItem)tileSetting.SelectedItem).Tag;
                 pending.TileScalePercent = FluentUi.NormalizeTileScale((int)Math.Round(tileScaleSlider.Value));
@@ -7463,11 +8141,6 @@ namespace AppShelf
                     ShowError("Не удалось настроить автозапуск Windows.", ex);
                     return;
                 }
-                bool targetsChanged =
-                    !String.Equals(_config.NetworkCheck1Mode, pending.NetworkCheck1Mode, StringComparison.Ordinal) ||
-                    !String.Equals(_config.NetworkCheck1Target, pending.NetworkCheck1Target, StringComparison.Ordinal) ||
-                    !String.Equals(_config.NetworkCheck2Mode, pending.NetworkCheck2Mode, StringComparison.Ordinal) ||
-                    !String.Equals(_config.NetworkCheck2Target, pending.NetworkCheck2Target, StringComparison.Ordinal);
                 if (!SaveConfigChanges(pending))
                 {
                     if (attemptedRegistryChange)
@@ -7496,21 +8169,11 @@ namespace AppShelf
                 UpdatePomodoroUi();
                 UpdateCountdownUi();
                 UpdateRdpStatus();
-                if (targetsChanged)
-                {
-                    // Clear the previous targets immediately; an in-flight result
-                    // is rejected and the new checks begin once it finishes.
-                    _pingInternational.Text = "Проверка 1: обновление…";
-                    _pingRussian.Text = "Проверка 2: обновление…";
-                }
-                if (targetsChanged && _happWindow != null)
-                    _happWindow.UpdateNetworkConfig(_config.Copy());
-                RefreshNetwork();
                 if (changedCity || changedProvider) ResetWeatherSnapshot();
                 if (changedCity || changedProvider || _config.ShowWeather != _weatherSettingsVisible || _config.ShowWeather)
                     RefreshWeather();
             }
-            else if (_canSave && _config.SettingsLastSection != selectedSettingsSection)
+            else if (pendingZipRestore == null && _canSave && _config.SettingsLastSection != selectedSettingsSection)
             {
                 // A navigation preference is independent of edits cancelled in the dialog.
                 AppConfig navigation = _config.Copy();
@@ -7528,6 +8191,8 @@ namespace AppShelf
                     catch (Exception ex) { ConfigStore.Log(ex); }
                 }
             }
+            // Run only after the settings dialog and all preview cleanup have completed.
+            if (pendingZipRestore != null) CompleteZipRestore(pendingZipRestore, this);
         }
 
         private bool SaveConfig()

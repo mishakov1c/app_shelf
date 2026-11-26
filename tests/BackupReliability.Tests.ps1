@@ -9,8 +9,14 @@ $previous = $env:APPSHELF_TEST_DATA
 $env:APPSHELF_TEST_DATA = $testRoot
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
+    $samplePackage = ''
+    if (-not $Baseline) {
+        $samplePackage = & (Join-Path $root 'samples\NotesPlugin\Build.ps1') -OutputDirectory (Join-Path $testRoot 'SamplePackage')
+        if (-not (Test-Path -LiteralPath $samplePackage -PathType Leaf)) { throw 'Missing sample package.' }
+    }
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
+        if ($Baseline -and $file -in @('PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) { continue }
         if ($Baseline -and $file -in @('AppUpdate.cs','AppUpdateWindow.cs')) { continue }
         $source = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($Baseline -and $file -in @('Collections.cs','CollectionsWindow.cs')) { continue }
@@ -270,7 +276,7 @@ public static class BackupTests
         EventHandler source = (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
         window.SourceInitialized -= source;
-        Set(window, "_networkTimer", new DispatcherTimer());
+        Set(window, "_weatherTimer", new DispatcherTimer());
         window.Opacity = 0; window.ShowActivated = false; window.ShowInTaskbar = false;
         window.Show(); window.Dispatcher.Invoke(DispatcherPriority.Loaded, new Action(delegate { }));
         return window;
@@ -657,6 +663,13 @@ public static class BackupTests
             else BackupStore.RestoreAll(zip);
         }
         finally { failImageCopy = false; }
+        if (!corrupt && !copyFailure)
+        {
+            string safety = Directory.GetDirectories(Path.Combine(Root, "Backups"))[0];
+            Assert(File.Exists(Path.Combine(safety, "missing-assets.txt")) &&
+                File.Exists(Path.Combine(safety, "Collections", "collections.json")),
+                "Repair of missing asset did not retain original metadata");
+        }
         Assert(File.ReadAllText(CollectionStore.FilePath) == before, "Cover restore changed collection records");
         Assert(Directory.GetFiles(CollectionStore.ImagesPath).Length == (corrupt || copyFailure ? 0 : 1),
             "Cover restore lost valid data or left a partial file");
@@ -871,12 +884,275 @@ public static class BackupTests
             "Second migration duplicated a previous executable");
     }
 
+    private static void PluginBackupRoundtrip()
+    {
+        string oldArchive = Path.Combine(Root, "old.zip");
+        BackupStore.ExportAll(oldArchive, Loaded(), Reminders("B"));
+        string package = Path.Combine(Root, "test.asplugin");
+        using (FileStream input = File.Create(package))
+        using (ZipArchive zip = new ZipArchive(input, ZipArchiveMode.Create))
+        {
+            using (StreamWriter writer = new StreamWriter(zip.CreateEntry("plugin.json").Open()))
+                writer.Write("{\"schemaVersion\":1,\"apiVersion\":1,\"id\":\"test.backup\",\"name\":\"Backup test\",\"version\":\"1.0.0\",\"entryPoint\":\"bin/Test.exe\",\"capabilities\":[\"window\"],\"backupFiles\":[\"settings.json\"]}");
+            using (StreamWriter writer = new StreamWriter(zip.CreateEntry("bin/Test.exe").Open()))
+                writer.Write("never executed");
+        }
+        PluginPackageStore store = new PluginPackageStore(Root);
+        store.Install(package, delegate { return true; });
+        store.SetEnabled("test.backup", true);
+        string data = store.GetDataDirectory("test.backup");
+        string settings = Path.Combine(data, "settings.json");
+        File.WriteAllText(settings, "saved settings");
+        File.WriteAllText(Path.Combine(data, "history.txt"), "private history");
+        string before = BackupAutomation.DataSignature();
+        File.WriteAllText(settings, "changed but not opted in");
+        Assert(before == BackupAutomation.DataSignature(), "Unselected data changed signature");
+        File.WriteAllText(settings, "saved settings");
+        store.SetBackupDataEnabled("test.backup", true);
+        Assert(before != BackupAutomation.DataSignature(), "Consent not included in signature");
+        string opted = BackupAutomation.DataSignature();
+        File.WriteAllText(Path.Combine(data, "history.txt"), "changed private history");
+        Assert(opted == BackupAutomation.DataSignature(), "Undeclared data changed signature");
+        string zipFile = Path.Combine(Root, "plugins.zip");
+        string exe = Path.Combine(Root, "renamed.exe");
+        File.WriteAllBytes(exe, new byte[] { 77, 90, 1, 2, 3, 4 });
+        string code = Path.Combine(Root, "Plugins", "Installed", "test.backup", "bin", "dependency.dll");
+        File.WriteAllText(code, "dependency v1");
+        string firstCodeSignature = BackupAutomation.DataSignature();
+        File.WriteAllText(code, "dependency v2");
+        Assert(firstCodeSignature != BackupAutomation.DataSignature(), "Plugin dependency omitted from fingerprint");
+        BackupStore.ExportAll(zipFile, Loaded(), Reminders("B"), exe);
+        using (ZipArchive zip = ZipFile.OpenRead(zipFile))
+        {
+            Assert(zip.GetEntry("Program/AppShelf.exe") != null, "Renamed core missing");
+            Assert(zip.GetEntry("Plugins/Packages/test.backup.asplugin") != null, "Plugin package missing");
+        }
+        string extracted = BackupStore.ExtractPrograms(zipFile, Root, true, true);
+        Assert(File.ReadAllBytes(Path.Combine(extracted, "Program", "AppShelf.exe")).SequenceEqual(File.ReadAllBytes(exe)), "Wrong core bytes");
+        string savedPackage = Path.Combine(extracted, "Plugins", "test.backup.asplugin");
+        using (ZipArchive zip = ZipFile.OpenRead(savedPackage))
+        {
+            Assert(zip.GetEntry("bin/dependency.dll") != null && zip.GetEntry("bin/Test.exe") != null, "Plugin dependencies missing");
+            Assert(zip.GetEntry("enabled.flag") == null && zip.GetEntry("approved.flag") == null, "Trust markers leaked");
+        }
+        PluginPackageStore fresh = new PluginPackageStore(Path.Combine(Root, "fresh-profile"));
+        bool asked = false;
+        Assert(fresh.Install(savedPackage, delegate { asked = true; return false; }) == null && asked, "Restored package bypassed trust");
+        fresh.Install(savedPackage, delegate { return true; });
+        Assert(!fresh.List()[0].Enabled, "Restored package started automatically");
+        string onlyCore = BackupStore.ExtractPrograms(zipFile, Root, true, false);
+        Assert(File.Exists(Path.Combine(onlyCore, "Program", "AppShelf.exe")) && !Directory.Exists(Path.Combine(onlyCore, "Plugins")), "Component selection ignored");
+        string onlyPlugins = BackupStore.ExtractPrograms(zipFile, Root, false, true);
+        Assert(!Directory.Exists(Path.Combine(onlyPlugins, "Program")) && File.Exists(Path.Combine(onlyPlugins, "Plugins", "test.backup.asplugin")), "Package selection ignored");
+        AppConfig excluded = Loaded();
+        excluded.BackupExecutable = false; excluded.BackupPluginPackages = false;
+        string excludedZip = Path.Combine(Root, "excluded.zip");
+        BackupStore.ExportAll(excludedZip, excluded, Reminders("B"), exe);
+        using (ZipArchive zip = ZipFile.OpenRead(excludedZip))
+            Assert(zip.GetEntry("Program/AppShelf.exe") == null && zip.GetEntry("Plugins/Packages/test.backup.asplugin") == null &&
+                zip.GetEntry(PluginPackageStore.BackupArchiveEntry) != null, "Binary opt-out ignored");
+        using (ZipArchive zip = ZipFile.OpenRead(zipFile))
+        {
+            ZipArchiveEntry entry = zip.GetEntry(PluginPackageStore.BackupArchiveEntry);
+            Assert(entry != null, "Plugin backup missing");
+            using (Stream content = entry.Open())
+            using (StreamReader reader = new StreamReader(content))
+            {
+                string json = reader.ReadToEnd();
+                Assert(json.Contains("settings.json") && !json.Contains("history.txt") &&
+                    !json.Contains("Test.exe") && !json.Contains("approved.flag"), "Private data or executable leaked");
+            }
+        }
+        File.WriteAllText(settings, "live settings");
+        Assert(opted != BackupAutomation.DataSignature(), "Selected data not included in signature");
+        BackupStore.RestoreAll(zipFile);
+        Assert(File.ReadAllText(settings) == "live settings" && store.List()[0].Enabled,
+            "Full restore modified the live plugin or enabled state");
+        Assert(store.ReadRecovered().Count == 1 && store.ReadRecovered()[0].Files.Count == 1,
+            "Full restore did not stage plugin data");
+        byte[] recovery = File.ReadAllBytes(store.RecoveredPath());
+        BackupStore.RestoreAll(oldArchive);
+        Assert(Convert.ToBase64String(File.ReadAllBytes(store.RecoveredPath())) == Convert.ToBase64String(recovery),
+            "Old archive overwrote pending plugin recovery");
+        string secondSafety = BackupStore.RestoreAll(zipFile);
+        Assert(File.Exists(Path.Combine(secondSafety, PluginPackageStore.RecoveredRelativePath)),
+            "Previous staged recovery not saved before restore");
+        string invalid = Path.Combine(Root, "invalid-plugins.zip");
+        using (ZipArchive original = ZipFile.OpenRead(zipFile))
+        using (ZipArchive output = ZipFile.Open(invalid, ZipArchiveMode.Create))
+        {
+            foreach (ZipArchiveEntry entry in original.Entries)
+            {
+                ZipArchiveEntry copy = output.CreateEntry(entry.FullName);
+                using (Stream target = copy.Open())
+                {
+                    if (entry.FullName == PluginPackageStore.BackupArchiveEntry)
+                    {
+                        byte[] bytes = System.Text.Encoding.UTF8.GetBytes("{\"schemaVersion\":999,\"plugins\":[]}");
+                        target.Write(bytes, 0, bytes.Length);
+                    }
+                    else using (Stream source = entry.Open()) source.CopyTo(target);
+                }
+            }
+        }
+        Throws(delegate { BackupStore.RestoreAll(invalid); });
+        Assert(File.ReadAllText(settings) == "live settings" &&
+            Convert.ToBase64String(File.ReadAllBytes(store.RecoveredPath())) == Convert.ToBase64String(recovery),
+            "Invalid archive touched live or recovered data");
+    }
+
+    private static void SamplePluginRoundtrip(string package)
+    {
+        const string id = "example.notes", version = "1.0.1";
+        PluginPackageStore store = new PluginPackageStore(Root);
+        bool confirmed = false;
+        store.Install(package, delegate(PluginManifest m) {
+            confirmed = m.Id == id && m.Version == version;
+            return confirmed;
+        });
+        Assert(confirmed && !store.List()[0].Enabled, "Sample install did not require trust or was enabled automatically");
+        string data = store.GetDataDirectory(id);
+        string notes = Path.Combine(data, "notes.txt"), settings = Path.Combine(data, "settings.txt");
+        // Seed the documented on-disk format. Actual editing and notice delivery are manual UI acceptance.
+        File.WriteAllText(notes, "Saved sample note");
+        File.WriteAllText(settings, "on");
+        File.WriteAllText(Path.Combine(data, "private.txt"), "not declared");
+        Assert(!store.BackupDataEnabled(id), "Sample data backup enabled without consent");
+        store.SetBackupDataEnabled(id, true);
+        using (PluginRuntime runtime = new PluginRuntime(store, 10000))
+        {
+            runtime.SetEnabledAsync(id, true).GetAwaiter().GetResult();
+            Assert(runtime.State(id).Status == "running", "Sample did not start");
+            PluginCommand[] commands = runtime.GetCommandsAsync(id, version).GetAwaiter().GetResult();
+            Assert(commands.Length == 1 && commands[0].Id == "open", "Sample command not discovered");
+            runtime.InvokeAsync(id, version, "open").GetAwaiter().GetResult();
+            runtime.OpenSettingsAsync(id, version).GetAwaiter().GetResult();
+            Assert(runtime.CheckHealthAsync().GetAwaiter().GetResult().Count == 0, "Unexpected sample notice");
+            Assert(runtime.State(id).Status == "running", "Sample did not answer ping/poll");
+            string archive = Path.Combine(Root, "sample.zip");
+            AppConfig config = Loaded();
+            config.BackupPluginPackages = true; config.BackupExecutable = false;
+            BackupStore.ExportAll(archive, config, Reminders("B"));
+            runtime.RemoveAsync(id).GetAwaiter().GetResult();
+            Assert(store.List().Count == 0 && File.ReadAllText(notes) == "Saved sample note", "Removal lost data or left package");
+            File.WriteAllText(notes, "Modified after backup");
+            File.WriteAllText(settings, "off");
+            BackupStore.RestoreAll(archive);
+            Assert(store.List().Count == 0 && File.ReadAllText(notes) == "Modified after backup", "ZIP restore installed code or changed live data");
+            string extracted = BackupStore.ExtractPrograms(archive, Root, false, true);
+            string restored = Path.Combine(extracted, "Plugins", id + ".asplugin");
+            bool asked = false;
+            Assert(store.Install(restored, delegate { asked = true; return false; }) == null && asked, "Recovered sample skipped trust");
+            store.Install(restored, delegate { return true; });
+            Assert(!store.List()[0].Enabled && !store.BackupDataEnabled(id), "Recovered sample inherited approval state or backup consent");
+            PluginBackupItem recovered = store.ReadRecovered().Single(x => x.Id == id);
+            Assert(recovered.DataIncluded && recovered.Files.Count == 2, "Sample declared files missing");
+            runtime.RestoreDataAsync(id, version, ExternalBackupRoot()).GetAwaiter().GetResult();
+            Assert(!store.List()[0].Enabled && runtime.State(id).Status == "idle", "Restored sample started automatically");
+            Assert(File.ReadAllText(notes) == "Saved sample note" && File.ReadAllText(settings) == "on", "Sample data did not roundtrip");
+            Assert(File.ReadAllText(Path.Combine(data, "private.txt")) == "not declared", "Undeclared data changed");
+            runtime.SetEnabledAsync(id, true).GetAwaiter().GetResult();
+            runtime.InvokeAsync(id, version, "open").GetAwaiter().GetResult();
+            Assert(runtime.State(id).Status == "running", "Recovered sample failed to launch");
+            runtime.SetEnabledAsync(id, false).GetAwaiter().GetResult();
+            Assert(runtime.State(id).Status == "idle", "Sample did not stop");
+        }
+    }
+
+    private static void DowngradePreservesExtensions()
+    {
+        AppConfig config = Loaded();
+        config.BackupExecutable = false;
+        config.BackupBackgrounds = false;
+        config.BackupReminders = false;
+        config.WidgetIndicators = new List<PluginWidgetPlacementConfig> {
+            new PluginWidgetPlacementConfig { PluginId = "test.backup", Version = "1.0.0", WidgetId = "status",
+                Title = "Status", Size = "indicator" }
+        };
+        ConfigStore.Save(config);
+        string shared = File.ReadAllText(ConfigStore.FilePath);
+        Assert(!shared.Contains("widgetIndicators") && !shared.Contains("backupBackgrounds") &&
+            !shared.Contains("backupExecutable"), "New settings leaked into shared profile");
+        string sidecar = File.ReadAllText(ConfigStore.PluginSettingsPath);
+        Assert(sidecar.Contains("widgetIndicators") && sidecar.Contains("backupBackgrounds"), "Sidecar missing settings");
+        // Simulate stable 2.23.0 saving the shared JSON: it has no extension fields.
+        File.WriteAllText(ConfigStore.FilePath, shared.Replace("\"weatherCity\":\"B\"", "\"weatherCity\":\"Stable changed\""));
+        AppConfig after = Loaded();
+        Assert(after.WeatherCity == "Stable changed" && after.WidgetIndicators.Count == 1 &&
+            after.BackupBackgrounds == false && after.BackupReminders == false && after.BackupExecutable == false,
+            "Stable save lost new settings or shared edit");
+        Assert(File.ReadAllText(ConfigStore.PluginSettingsPath) == sidecar, "Stable save rewrote sidecar");
+        ConfigStore.Save(after);
+        Assert(Loaded().WidgetIndicators.Count == 1, "Return to beta lost layout");
+    }
+
+    private static void PartialBackupRoundtrip()
+    {
+        string archive = Path.Combine(Root, "partial.zip");
+        AppConfig source = Config("A", 2);
+        BackupStore.ExportSelected(archive, source, Reminders("A"), null, BackupComponents.Settings);
+        using (ZipArchive zip = ZipFile.OpenRead(archive))
+            Assert(zip.GetEntry("apps.json") != null && zip.GetEntry("reminders.json") == null &&
+                zip.GetEntry("Collections/collections.json") == null, "Partial archive contains excluded data");
+        Assert(BackupStore.InspectComponents(archive) == BackupComponents.Settings, "Wrong component inventory");
+        string reminders = File.ReadAllText(ReminderStore.FilePath);
+        AppConfig current = Loaded();
+        current.BackupBackgrounds = false; ConfigStore.Save(current);
+        BackupStore.RestoreAll(archive);
+        Assert(Loaded().WeatherCity == "A" && Loaded().BackupBackgrounds == false &&
+            File.ReadAllText(ReminderStore.FilePath) == reminders, "Partial restore overwrote excluded data");
+        string full = Path.Combine(Root, "selected.zip");
+        BackupStore.ExportSelected(full, Config("C", 2), Reminders("C"), null,
+            BackupComponents.Settings | BackupComponents.Reminders);
+        string shared = File.ReadAllText(ConfigStore.FilePath);
+        BackupStore.RestoreSelected(full, null, BackupComponents.Reminders);
+        Assert(File.ReadAllText(ConfigStore.FilePath) == shared && File.ReadAllText(ReminderStore.FilePath) != reminders,
+            "Reminder-only restore changed settings");
+    }
+
+    private static void CanvasBackupRoundtrip()
+    {
+        AppConfig source = Loaded();
+        source.CanvasGridStep = 20; source.CanvasViewportMode = "adaptive"; source.CanvasInitialized = true;
+        source.CanvasPositions = new Dictionary<string, FreeCanvasRect> {
+            { "app:Work", new FreeCanvasRect(2, 3, 12, 8) },
+            { "widget:1", new FreeCanvasRect(20, 3, 20, 10) }
+        };
+        ConfigStore.Save(source);
+        Assert(!File.ReadAllText(ConfigStore.FilePath).Contains("canvasPositions"), "Canvas positions leaked into shared file");
+        Assert(Loaded().CanvasPositions["widget:1"].X == 20 && Loaded().CanvasInitialized, "Sidecar lost canvas position");
+        string archive = Path.Combine(Root, "canvas.zip");
+        BackupStore.ExportSelected(archive, source, Reminders("A"), null, BackupComponents.Settings | BackupComponents.WidgetLayout);
+        AppConfig current = Loaded();
+        current.CanvasGridStep = 10;
+        current.CanvasPositions = new Dictionary<string, FreeCanvasRect> {
+            { "app:Work", new FreeCanvasRect(7, 9, 24, 16) },
+            { "widget:1", new FreeCanvasRect(50, 9, 40, 20) }
+        };
+        ConfigStore.Save(current);
+        BackupStore.RestoreSelected(archive, null, BackupComponents.WidgetLayout);
+        AppConfig after = Loaded();
+        Assert(after.CanvasGridStep == 10 && after.CanvasPositions["app:Work"].X == 7 &&
+            after.CanvasPositions["widget:1"].X == 40, "Widget-only restore did not preserve app positions or convert grid");
+        current = Loaded();
+        current.CanvasPositions["widget:1"].X = 60; ConfigStore.Save(current);
+        BackupStore.RestoreSelected(archive, null, BackupComponents.Settings);
+        after = Loaded();
+        Assert(after.CanvasGridStep == 20 && after.CanvasPositions["app:Work"].X == 2 &&
+            after.CanvasPositions["widget:1"].X == 30, "Settings-only restore did not preserve widget coordinates");
+        string settingsOnly = Path.Combine(Root, "canvas-settings-only.zip");
+        BackupStore.ExportSelected(settingsOnly, source, Reminders("A"), null, BackupComponents.Settings);
+        using (ZipArchive zip = ZipFile.OpenRead(settingsOnly))
+        using (StreamReader reader = new StreamReader(zip.GetEntry("apps.json").Open()))
+            Assert(!reader.ReadToEnd().Contains("widget:1"), "Excluded widget geometry exported");
+    }
+
     private static void Case(string name, Action action)
     {
         try { Reset(); action(); passes++; Console.WriteLine("PASS: " + name); }
         catch (Exception ex) { failures++; Console.WriteLine("FAIL: " + name + " - " + ex.Message); }
     }
-    public static void Run()
+    public static void Run(string samplePackage)
     {
         foreach (bool json in new bool[] { false, true }) foreach (bool existing in new bool[] { false, true })
         foreach (bool fail in new bool[] { false, true })
@@ -884,6 +1160,11 @@ public static class BackupTests
             bool j = json, e = existing, f = fail;
             Case((json ? "JSON" : "ZIP") + " existing=" + existing + " fail=" + fail, delegate { ExportCase(j, e, f); });
         }
+        Case("downgrade preserves beta extension settings", DowngradePreservesExtensions);
+        Case("partial archives and selective restoration", PartialBackupRoundtrip);
+        Case("canvas sidecar and selective ZIP geometry restoration", CanvasBackupRoundtrip);
+        Case("plugin ZIP inventory, privacy, signature and staged restore", PluginBackupRoundtrip);
+        if (!String.IsNullOrEmpty(samplePackage)) Case("real sample plugin install, IPC and ZIP recovery", delegate { SamplePluginRoundtrip(samplePackage); });
         Case("chosen backup directory isolation", InvalidBackupDirectory);
         Case("automatic backup schedule, changed data, retention", AutomaticBackupRetention);
         Case("failed automatic copy preserves existing ZIP", FailedAutomaticPreservesPrevious);
@@ -943,7 +1224,7 @@ public static class BackupTests
     }
     $result = $provider.CompileAssemblyFromSource($options, [string[]]$sources)
     if ($result.Errors.Count) { throw ($result.Errors | Out-String) }
-    $result.CompiledAssembly.GetType('BackupTests').GetMethod('Run').Invoke($null, @())
+    $result.CompiledAssembly.GetType('BackupTests').GetMethod('Run').Invoke($null, [object[]]@([string]$samplePackage))
     Write-Output "PASS: backup reliability tests. Isolated data at $testRoot"
 }
 finally {

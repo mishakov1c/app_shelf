@@ -135,7 +135,6 @@ public static class Ui218Probe
     {
         if (kind == "weather") return new WeatherForecastWindow(delegate {}, delegate {});
         if (kind == "collections") return new CollectionsWindow(w);
-        if (kind == "diagnostics") return new HappDiagnosticsWindow(new AppConfig());
         if (kind == "countdown" || kind == "pomodoro") {
             Call(w, kind == "countdown" ? "ShowCountdownWindow" : "ShowPomodoroWindow");
             return (Window)Get(w, kind == "countdown" ? "_countdownWindow" : "_pomodoroWindow");
@@ -280,7 +279,7 @@ public static class Ui218Probe
                 }
             } finally { w.Close(); }
         });
-        foreach (string kind in new string[] { "settings", "reminder-list", "reminder-alert", "collections", "weather", "countdown", "pomodoro", "diagnostics" }) {
+        foreach (string kind in new string[] { "settings", "reminder-list", "reminder-alert", "collections", "weather", "countdown", "pomodoro" }) {
             string k = kind;
             Case("independent window size reopen and process restart " + k, delegate {
                 Seed(); MainWindow w = Open(); double width = 0, height = 0;

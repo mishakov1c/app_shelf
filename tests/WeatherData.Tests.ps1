@@ -11,7 +11,8 @@ $previous = $env:APPSHELF_TEST_DATA
 $env:APPSHELF_TEST_DATA = $temp
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
+        if ($Baseline -and $file -in @('PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) { continue }
     if ($Baseline -and $file -in @('AppUpdate.cs','AppUpdateWindow.cs')) { continue }
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($Baseline -and $file -in @('Collections.cs','CollectionsWindow.cs')) { continue }
@@ -242,7 +243,7 @@ public static class WeatherTests
         ConfigStore.Save(new AppConfig { ShowWeather = false, ShowNetwork = false, MinimizeToTray = false });
         MainWindow window = new MainWindow();
         window.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window, typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(window, "_networkTimer", new DispatcherTimer());
+        Set(window, "_weatherTimer", new DispatcherTimer());
         window.Opacity = 0; window.ShowActivated = false; window.ShowInTaskbar = false;
         window.Show(); Drain();
         // The regular test harness suppresses StartMonitors; warm-start tests need
@@ -273,7 +274,7 @@ public static class WeatherTests
         MainWindow window = new MainWindow();
         window.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(window, "_networkTimer", new DispatcherTimer());
+        Set(window, "_weatherTimer", new DispatcherTimer());
         window.ShowInTaskbar = false; window.Show(); Drain();
         try {
             Call(window, "RefreshWeather");

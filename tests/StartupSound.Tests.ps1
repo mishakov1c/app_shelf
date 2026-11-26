@@ -12,7 +12,7 @@ $env:APPSHELF_TEST_DATA = $data
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
@@ -98,7 +98,11 @@ public static class StartupSoundTests
             RenderFailureProbe(folder);
             return;
         }
-        File.WriteAllText(Path.Combine(folder, "started.txt"), WindowsStartup.IsTrayLaunch().ToString());
+        // Publish the readiness marker only after the writer has closed it.
+        string marker = Path.Combine(folder, "started.txt");
+        string temporary = marker + ".tmp";
+        File.WriteAllText(temporary, WindowsStartup.IsTrayLaunch().ToString());
+        File.Move(temporary, marker);
         if (Environment.GetEnvironmentVariable("APPSHELF_HOLD_TEST") == "1")
             using (EventWaitHandle stop = new EventWaitHandle(false, EventResetMode.ManualReset, "Local\\AppShelf.Package8." + new DirectoryInfo(folder).Name)) stop.WaitOne(20000);
     }

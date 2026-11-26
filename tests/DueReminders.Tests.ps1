@@ -10,7 +10,7 @@ $env:APPSHELF_TEST_DATA = $testRoot
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
         $source = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $original = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
@@ -84,7 +84,7 @@ public static class DueReminderTests
         EventHandler sourceHandler = (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
         window.SourceInitialized -= sourceHandler;
-        Set(window, "_networkTimer", new DispatcherTimer()); // Prevent Loaded from starting monitors.
+        Set(window, "_weatherTimer", new DispatcherTimer()); // Prevent Loaded from starting monitors.
         window.Opacity = 0;
         window.ShowActivated = false;
         window.ShowInTaskbar = false;
@@ -266,7 +266,7 @@ public static class DueReminderTests
         });
         ReminderStore.Save(seeded);
         MainWindow first = new MainWindow(true);
-        Set(first, "_networkTimer", new DispatcherTimer());
+        Set(first, "_weatherTimer", new DispatcherTimer());
         first.Show();
         first.Dispatcher.Invoke(DispatcherPriority.Loaded, new Action(delegate { }));
         Start(first);
@@ -280,7 +280,7 @@ public static class DueReminderTests
             "Shutdown silently acknowledged a notification that the user never saw");
 
         MainWindow second = new MainWindow(true);
-        Set(second, "_networkTimer", new DispatcherTimer());
+        Set(second, "_weatherTimer", new DispatcherTimer());
         try
         {
             second.Show();
@@ -298,7 +298,7 @@ public static class DueReminderTests
         finally { second.Close(); }
 
         MainWindow third = new MainWindow(true);
-        Set(third, "_networkTimer", new DispatcherTimer());
+        Set(third, "_weatherTimer", new DispatcherTimer());
         try
         {
             third.Show();
@@ -315,7 +315,7 @@ public static class DueReminderTests
         }
         finally { third.Close(); }
         MainWindow fourth = new MainWindow(true);
-        Set(fourth, "_networkTimer", new DispatcherTimer());
+        Set(fourth, "_weatherTimer", new DispatcherTimer());
         try
         {
             fourth.Show();

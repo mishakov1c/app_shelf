@@ -9,7 +9,7 @@ $env:APPSHELF_TEST_DATA = $temp
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
 try {
     $sources = @()
-    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs')) {
+    foreach ($file in @('AppShelf.cs','AppShelfExtras.cs','FluentUi.cs','Reminders.cs','WeatherProviders.cs','BackupManager.cs','VersionInfo.cs','SiteLinks.cs','WindowsIntegration.cs','Collections.cs','CollectionsWindow.cs','AppUpdate.cs','AppUpdateWindow.cs','PluginPackages.cs','PluginManagerWindow.cs','PluginProtocol.cs','PluginRuntime.cs','PluginWidgetView.cs')) {
         $text = [IO.File]::ReadAllText((Join-Path $root $file))
         if ($file -eq 'AppShelf.cs') {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
@@ -82,7 +82,7 @@ public static class BackgroundTests
         MainWindow w = new MainWindow();
         w.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), w,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(w, "_networkTimer", new DispatcherTimer());
+        Set(w, "_weatherTimer", new DispatcherTimer());
         w.ShowInTaskbar = false; w.Show(); Drain();
         Assert(PresentationSource.FromVisual(w) != null, "No real WPF source");
         return w;
@@ -267,13 +267,8 @@ public static class BackgroundTests
         Case("group opacity live preview, save, and cancel", delegate {
             Seed("blue-arcs");
             MainWindow w = Open(); try {
-                StackPanel groups = (StackPanel)Get(w, "_tileHost");
-                Border group = null;
-                foreach (UIElement item in groups.Children) {
-                    Border candidate = item as Border;
-                    if (candidate != null && Object.Equals(candidate.Tag, "AppShelfMainGroupCard"))
-                        group = candidate;
-                }
+                Border group = Controls<Border>((DependencyObject)Get(w, "_tileHost"))
+                    .Find(candidate => Object.Equals(candidate.Tag, "AppShelfMainGroupCard"));
                 Assert(group != null, "No real group card to preview");
                 Brush before = group.Background;
                 settings = delegate(Window d) {
