@@ -208,9 +208,15 @@ public static class Ui219Probe
                                 if ((bool)Get(w, "_bottomCompactExpanded") != expanded)
                                     expand.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                                 Drain();
+                                var compactItems = (WrapPanel)Get(w, "_bottomCompactItems");
+                                var detailItems = (WrapPanel)Get(w, "_bottomFullMonitors");
+                                Assert(compactItems.IsVisible == !expanded && detailItems.IsVisible == expanded,
+                                    "Expanded details did not replace compact indicators");
+                                Assert(expanded ? compactItems.Children.Count == 0 : compactItems.Children.Count > 0,
+                                    "Compact indicators duplicated or did not return after collapse");
                                 double tallest = 0;
-                                foreach (FrameworkElement item in ((WrapPanel)Get(w, "_bottomCompactItems")).Children)
-                                    tallest = Math.Max(tallest, item.ActualHeight);
+                                foreach (FrameworkElement item in (expanded ? detailItems : compactItems).Children)
+                                    if (item.IsVisible) tallest = Math.Max(tallest, item.ActualHeight);
                                 Assert(Math.Abs(expand.ActualHeight - Math.Max(tallest, expand.MinHeight)) < 0.6,
                                     "Expand height differs from tallest card");
                                 Picture(w, "compact-" + width + "-" + expanded);
