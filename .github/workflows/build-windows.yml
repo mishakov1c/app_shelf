@@ -69,6 +69,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Upload network plugin
+        uses: actions/upload-artifact@v6
+        with:
+          name: NetworkPlugin-${{ github.sha }}
+          path: artifacts/plugins/NetworkPlugin-1.0.0.asplugin
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Run full isolated Windows PowerShell 5.1 STA regression tests
         if: >-
           ${{ github.event_name == 'pull_request' || startsWith(github.event.head_commit.message, 'test: run full regression') }}
