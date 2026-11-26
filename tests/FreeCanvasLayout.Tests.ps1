@@ -34,7 +34,23 @@ Assert ($null -eq [AppShelf.FreeCanvasLayout]::FindFirstFree(1,1,8,$occupied)) '
 Assert ([AppShelf.FreeCanvasLayout]::Snap(15,10) -eq 2) 'half step not rounded away from zero'
 Assert ([AppShelf.FreeCanvasLayout]::Snap(-10,10) -eq 0) 'negative snap not clamped'
 Assert ([AppShelf.FreeCanvasLayout]::Snap(100000,10) -eq 4096) 'snap overflow not clamped'
-Write-Host 'PASS free canvas geometry'
+# Nearest positions must retain dimensions and avoid every reserved card.
+$blockedRects = New-Object 'System.Collections.Generic.List[AppShelf.FreeCanvasRect]'
+$blockedRects.Add((Rect 0 0 6 4))
+$blockedRects.Add((Rect 0 8 7 3))
+$right = Rect 15 7 3 4
+$right.ManualHeight = 3
+$near = [AppShelf.FreeCanvasLayout]::FindNearestFree($right,12,12,$blockedRects)
+Assert ($null -ne $near -and $near.X -eq 9 -and $near.Y -eq 7 -and $near.Width -eq 3 -and $near.ManualHeight -eq 3) 'right group did not move minimally'
+$blockedRects.Add((Rect 9 7 3 4))
+$near = [AppShelf.FreeCanvasLayout]::FindNearestFree($right,12,12,$blockedRects)
+Assert ($null -ne $near -and [AppShelf.FreeCanvasLayout]::CanPlace($near,$blockedRects) -and ($near.X + $near.Width) -le 12 -and ($near.Y + $near.Height) -le 12) 'nearest position overlaps or leaves viewport'
+Assert ($right.X -eq 15 -and $right.Y -eq 7 -and $blockedRects[0].X -eq 0) 'nearest search mutated input'
+$blockedRects.Clear()
+$blockedRects.Add((Rect 0 0 12 12))
+Assert ($null -eq [AppShelf.FreeCanvasLayout]::FindNearestFree($right,12,12,$blockedRects)) 'nearest search accepted full viewport'
+Assert ($null -eq [AppShelf.FreeCanvasLayout]::FindNearestFree((Rect 0 0 13 2),12,12,$null)) 'oversized group accepted'
+Write-Host 'PASS free canvas geometry and nearest free placement'
 
 # Exercise the actual WPF panel without creating a window or touching user data.
 Add-Type -AssemblyName WindowsBase
@@ -146,6 +162,45 @@ foreach ($key in $before.Keys) {
     Assert ($before[$key].X -eq $after[$key].X -and $before[$key].Y -eq $after[$key].Y -and $before[$key].Width -eq $after[$key].Width -and $before[$key].Height -eq $after[$key].Height) 'viewport strategy modified original placement'
 }
 Write-Host 'PASS viewport strategies and restoration'
+
+# Real panel: one out-of-bounds right group must not stack the two left groups.
+$adaptive = [Activator]::CreateInstance($type,$true)
+$work = New-Object System.Windows.Controls.Border
+$work.MinHeight = 72
+$tools = New-Object System.Windows.Controls.Border
+$tools.MinHeight = 72
+$personal = New-Object System.Windows.Controls.Border
+$personal.MinHeight = 152
+[void]$add.Invoke($adaptive,[object[]]@('app:work',$work.PSObject.BaseObject,20,(Rect 0 1 20 4).PSObject.BaseObject))
+[void]$add.Invoke($adaptive,[object[]]@('app:tools',$tools.PSObject.BaseObject,20,(Rect 0 20 20 4).PSObject.BaseObject))
+[void]$add.Invoke($adaptive,[object[]]@('widget:personal',$personal.PSObject.BaseObject,10,(Rect 65 16 10 8).PSObject.BaseObject))
+$heightMethod = $type.GetMethod('SetViewportHeight',$flags)
+function AdaptiveLayout([double]$width,[double]$height) {
+    [void]$viewport.Invoke($adaptive,[object[]]@($width,'adaptive'))
+    [void]$heightMethod.Invoke($adaptive,[object[]]@($height))
+    $adaptive.Measure((New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)))
+    $adaptive.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$adaptive.DesiredSize.Width,$adaptive.DesiredSize.Height))
+}
+function Position($card) { $card.TranslatePoint((New-Object System.Windows.Point -ArgumentList 0,0),$adaptive) }
+AdaptiveLayout 1600 600
+$savedPositions = $capture.Invoke($adaptive,$null)
+AdaptiveLayout 1100 600
+Assert ($temp.GetValue($adaptive,$null)) 'adaptation did not activate'
+Assert ((Position $work).X -eq 0 -and (Position $work).Y -eq 20 -and $work.RenderSize.Width -eq 392) 'fitting work group changed'
+Assert ((Position $tools).X -eq 0 -and (Position $tools).Y -eq 400 -and $tools.RenderSize.Width -eq 392) 'fitting tools group changed'
+Assert ((Position $personal).X -eq 900 -and (Position $personal).Y -eq 320 -and $personal.RenderSize.Width -eq 192) 'right group was not moved minimally'
+$adaptedPositions = $capture.Invoke($adaptive,$null)
+foreach ($key in $savedPositions.Keys) {
+    Assert ($adaptedPositions[$key].X -eq $savedPositions[$key].X -and $adaptedPositions[$key].Y -eq $savedPositions[$key].Y) 'adaptation altered original coordinates'
+}
+Assert ($null -eq $candidate.Invoke($adaptive,[object[]]@('widget:personal',(New-Object System.Windows.Point -ArgumentList 0,0).PSObject.BaseObject))) 'adaptive view accepts drag'
+AdaptiveLayout 1100 600
+Assert ((Position $personal).X -eq 900 -and (Position $personal).Y -eq 320) 'adaptation not repeatable'
+AdaptiveLayout 300 600
+Assert ($work.RenderSize.Width -eq 292 -and (Position $personal).X -eq 0 -and (Position $tools).Y -gt (Position $personal).Y) 'insufficient width did not fall back to vertical layout'
+AdaptiveLayout 1600 600
+Assert (-not $temp.GetValue($adaptive,$null) -and (Position $personal).X -eq 1300 -and (Position $personal).Y -eq 320 -and (Position $tools).Y -eq 400) 'large viewport did not restore composition'
+Write-Host 'PASS adaptive canvas preserves fitting groups, moves only overflow, falls back and restores'
 # A larger viewport must expose empty area, and drag cannot introduce adaptive overflow.
 [void]$type.GetMethod('SetViewportHeight',$flags).Invoke($board,[object[]]@(1000.0))
 $board.Measure((New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)))

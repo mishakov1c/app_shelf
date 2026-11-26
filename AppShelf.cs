@@ -254,6 +254,70 @@ namespace AppShelf
             return null;
         }
 
+        // Find the nearest free position within a bounded viewport, without
+        // changing card dimensions. The feasible X intervals only change when
+        // Y crosses an obstacle edge. Inspect those edges and the preferred Y,
+        // then choose the closest X in each gap. No per-cell grid scanning.
+        public static FreeCanvasRect FindNearestFree(FreeCanvasRect preferred, int columns, int rows,
+            IEnumerable<FreeCanvasRect> occupied)
+        {
+            if (!IsValid(preferred) || columns <= 0 || columns > MaxCells || rows <= 0 || rows > MaxCells ||
+                preferred.Width > columns || preferred.Height > rows) return null;
+            int maxX = columns - preferred.Width, maxY = rows - preferred.Height;
+            int wantedX = Math.Min(maxX, preferred.X), wantedY = Math.Min(maxY, preferred.Y);
+            List<FreeCanvasRect> cards = new List<FreeCanvasRect>();
+            SortedSet<int> candidates = new SortedSet<int> { 0, maxY, wantedY };
+            if (occupied != null)
+                foreach (FreeCanvasRect rect in occupied)
+                {
+                    if (!IsValid(rect)) continue;
+                    cards.Add(rect);
+                    candidates.Add(Math.Max(0, Math.Min(maxY, rect.Y - preferred.Height)));
+                    candidates.Add(Math.Max(0, Math.Min(maxY, rect.Y + rect.Height)));
+                }
+            FreeCanvasRect best = null;
+            int bestDistance = Int32.MaxValue, bestVertical = Int32.MaxValue;
+            foreach (int y in candidates)
+            {
+                int vertical = Math.Abs(y - preferred.Y);
+                if (vertical > bestDistance) continue;
+                // Obstacles forbid inclusive intervals of candidate origins.
+                List<FreeCanvasRect> row = cards.FindAll(delegate(FreeCanvasRect rect) {
+                    return y < rect.Y + rect.Height && rect.Y < y + preferred.Height;
+                });
+                row.Sort(delegate(FreeCanvasRect left, FreeCanvasRect right) { return left.X.CompareTo(right.X); });
+                int start = 0;
+                foreach (FreeCanvasRect rect in row)
+                {
+                    int blockedStart = rect.X - preferred.Width + 1, blockedEnd = rect.X + rect.Width - 1;
+                    if (blockedEnd < start) continue;
+                    if (blockedStart > maxX) break;
+                    ConsiderNearest(preferred, wantedX, y, start, Math.Min(maxX, blockedStart - 1),
+                        ref best, ref bestDistance, ref bestVertical);
+                    start = Math.Max(start, blockedEnd + 1);
+                    if (start > maxX) break;
+                }
+                ConsiderNearest(preferred, wantedX, y, start, maxX, ref best, ref bestDistance, ref bestVertical);
+            }
+            return best;
+        }
+
+        private static void ConsiderNearest(FreeCanvasRect preferred, int wantedX, int y, int start, int end,
+            ref FreeCanvasRect best, ref int distance, ref int verticalDistance)
+        {
+            if (start > end) return;
+            int x = Math.Max(start, Math.Min(end, wantedX));
+            int vertical = Math.Abs(y - preferred.Y);
+            int total = Math.Abs(x - preferred.X) + vertical;
+            // Prefer the original row for equally close choices, then stable
+            // top-to-bottom/left-to-right order to avoid resize jitter.
+            if (best != null && (total > distance || (total == distance &&
+                (vertical > verticalDistance || (vertical == verticalDistance &&
+                (y > best.Y || (y == best.Y && x >= best.X))))))) return;
+            best = new FreeCanvasRect(x, y, preferred.Width, preferred.Height) { ManualHeight = preferred.ManualHeight };
+            distance = total; verticalDistance = vertical;
+        }
+
         public static Dictionary<string, FreeCanvasRect> SelectPositions(Dictionary<string, FreeCanvasRect> source, bool widgets)
         {
             Dictionary<string, FreeCanvasRect> result = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
@@ -535,6 +599,11 @@ namespace AppShelf
             displayScale = next == "scale" ? Math.Max(0.75, Math.Min(1, viewportWidth / Math.Max(1, contentWidth))) : 1;
             if (finite)
                 naturalWidth = Math.Max(viewportWidth, viewportMode == "scroll" ? naturalWidth : contentWidth);
+            if (activeMode == "adaptive")
+            {
+                Size? adapted = MeasureAdaptive(Math.Max(1, viewportWidth), rows);
+                if (adapted.HasValue) return adapted.Value;
+            }
             if (activeMode == "adaptive" || activeMode == "collapse")
                 return MeasureTemporary(Math.Max(1, viewportWidth));
             foreach (Entry entry in entries)
@@ -544,6 +613,57 @@ namespace AppShelf
                 entry.Grip.Visibility = IsTemporaryLayout || CardCollapsed(entry) ? Visibility.Hidden : Visibility.Visible;
             }
             return new Size(naturalWidth * displayScale, Math.Max(viewportHeight, naturalHeight * displayScale));
+        }
+
+        private Size? MeasureAdaptive(double width, int originalRows)
+        {
+            int columns = (int)Math.Min(FreeCanvasLayout.MaxCells, Math.Floor(width / CellStep));
+            int rows = viewportHeight > 0
+                ? (int)Math.Min(FreeCanvasLayout.MaxCells, Math.Floor(viewportHeight / CellStep))
+                : Math.Min(FreeCanvasLayout.MaxCells, originalRows);
+            if (columns <= 0 || rows <= 0) return null;
+
+            // First reserve every group that already fits. Never displace it
+            // just to make room for another card. Effective and Preferred are
+            // the original layout; only DisplayRect is written on success.
+            List<FreeCanvasRect> occupied = new List<FreeCanvasRect>();
+            Dictionary<Entry, FreeCanvasRect> positions = new Dictionary<Entry, FreeCanvasRect>();
+            List<Entry> displaced = new List<Entry>();
+            foreach (Entry entry in entries)
+            {
+                FreeCanvasRect rect = entry.Effective;
+                if (!FreeCanvasLayout.IsValid(rect) || rect.Width > columns || rect.Height > rows) return null;
+                if (rect.X <= columns - rect.Width && rect.Y <= rows - rect.Height)
+                { positions.Add(entry, rect); occupied.Add(rect); }
+                else displaced.Add(entry);
+            }
+            // Larger displaced cards have fewer possible destinations.
+            displaced.Sort(delegate(Entry left, Entry right) {
+                FreeCanvasRect a = left.Effective, b = right.Effective;
+                int area = (b.Width * b.Height).CompareTo(a.Width * a.Height);
+                if (area != 0) return area;
+                int y = a.Y.CompareTo(b.Y);
+                if (y != 0) return y;
+                int x = a.X.CompareTo(b.X);
+                return x != 0 ? x : StringComparer.OrdinalIgnoreCase.Compare(left.Key, right.Key);
+            });
+            foreach (Entry entry in displaced)
+            {
+                FreeCanvasRect rect = FreeCanvasLayout.FindNearestFree(entry.Effective, columns, rows, occupied);
+                if (rect == null) return null;
+                positions.Add(entry, rect); occupied.Add(rect);
+            }
+            double bottom = 0;
+            foreach (Entry entry in entries)
+            {
+                entry.Card.Visibility = Visibility.Visible;
+                entry.Compact.Visibility = Visibility.Hidden;
+                entry.Grip.Visibility = Visibility.Hidden;
+                entry.CompactRect = new Rect(0, 0, 0, 0);
+                entry.DisplayRect = PixelRect(positions[entry]);
+                bottom = Math.Max(bottom, entry.DisplayRect.Bottom);
+            }
+            return new Size(width, Math.Max(1, Math.Max(viewportHeight, bottom)));
         }
 
         private Size MeasureTemporary(double width)
