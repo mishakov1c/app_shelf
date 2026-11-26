@@ -1,4 +1,4 @@
-# Real released stable EXE and the current compiled beta, in a disposable GitHub-hosted Windows profile.
+# Real released 2.23.0 EXE and the current compiled 2.24.0 candidate, in a disposable GitHub-hosted Windows profile.
 # Do not run against a developer's profile. Local regression runs skip this test.
 param([string]$Worker = '', [string]$Binary = '', [string]$ExpectedProfile = '')
 $ErrorActionPreference = 'Stop'
@@ -91,8 +91,9 @@ if ($Worker) {
 $root = Split-Path $PSScriptRoot -Parent
 $beta = Join-Path $root 'AppShelf.exe'
 Assert (Test-Path -LiteralPath $beta -PathType Leaf) 'Current compiled AppShelf.exe is missing'
-if ((Get-Item -LiteralPath $beta).VersionInfo.ProductVersion -notmatch '^\d+\.\d+\.\d+-beta\.\d+$') {
-    Write-Output 'SKIP: transition regression applies only to beta releases.'
+$candidateVersion = (Get-Item -LiteralPath $beta).VersionInfo.ProductVersion
+if ($candidateVersion -notmatch '^2\.24\.0(?:-beta\.\d+)?$') {
+    Write-Output 'SKIP: transition regression applies to the 2.24.0 release family.'
     return
 }
 # The hosted runner is a disposable Windows VM. Refuse to touch any existing profile,
@@ -151,7 +152,7 @@ try {
     Run-Worker 'beta-verify' $beta
     Run-RealApp $beta
     Run-Worker 'beta-verify' $beta
-    Write-Output 'PASS: real stable -> beta -> stable -> beta transition'
+    Write-Output 'PASS: real 2.23.0 -> candidate -> 2.23.0 -> candidate transition'
 } finally {
     # The path was verified absent before this test. Never delete an existing user profile.
     if (Test-Path -LiteralPath $profileRoot) { Remove-Item -LiteralPath $profileRoot -Recurse -Force }
