@@ -769,8 +769,9 @@ namespace AppShelf
         {
             try
             {
-                PluginManagerWindow manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime(), _config.BackupDirectory,
-                    delegate(InstalledPlugin plugin) { return PrepareNetworkPluginEnable(owner, plugin); });
+                PluginManagerWindow manager = null;
+                manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime(), _config.BackupDirectory,
+                    delegate(InstalledPlugin plugin) { return PrepareNetworkPluginEnable(manager, plugin); });
                 manager.ShowDialog();
                 if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
             }

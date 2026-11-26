@@ -2584,6 +2584,48 @@ public static class Package6Tests
                         "Wide free placement did not restore three columns");
             } finally { w.Close(); }
         });
+        Case("Network plugin migration preserves legacy targets and existing plugin data", delegate {
+            AppConfig source = new AppConfig { ShowNetwork = true, NetworkCheck1Mode = "tcp",
+                NetworkCheck1Target = "localhost:443", NetworkCheck2Mode = "icmp",
+                NetworkCheck2Target = "127.0.0.1" };
+            string path = Path.Combine(ConfigStore.DirectoryPath, "network-migration-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(path);
+            try {
+                AppConfig next = NetworkPluginMigration.Prepare(source, "1.0.0",
+                    new[] { "network2", "weather", "route", "network2" }, path);
+                Assert(next.NetworkPluginMigrated && !source.NetworkPluginMigrated && source.WidgetIndicators == null,
+                    "Migration mutated source or did not mark completion");
+                Assert(next.WidgetIndicators.Count == 2 && next.WidgetIndicators[0].WidgetId == "network2" &&
+                    next.WidgetIndicators[1].WidgetId == "route", "Legacy indicator selection/order lost");
+                Assert(next.ShowNetwork && next.NetworkCheck1Target == source.NetworkCheck1Target,
+                    "Rollback targets not preserved");
+                string settings = Path.Combine(path, "network-settings.json");
+                string original = File.ReadAllText(settings);
+                Assert(original.Contains("localhost:443") && original.Contains("127.0.0.1"), "Seed missing targets");
+                File.WriteAllText(settings, "independent plugin settings");
+                AppConfig again = NetworkPluginMigration.Prepare(source, "1.0.0", new[] { "network1" }, path);
+                Assert(again.NetworkPluginMigrated && File.ReadAllText(settings) == "independent plugin settings",
+                    "Existing plugin data overwritten");
+                AppConfig repeated = NetworkPluginMigration.Prepare(next, "1.0.0", new[] { "network1" }, path);
+                Assert(repeated.WidgetIndicators.Count == 2, "Migration repeated after completion");
+                AppConfig crowded = source.Copy();
+                crowded.WidgetIndicators = new List<PluginWidgetPlacementConfig>();
+                for (int i = 0; i < 6; i++)
+                    crowded.WidgetIndicators.Add(new PluginWidgetPlacementConfig {
+                        PluginId = "example.test", WidgetId = "item" + i, Version = "1.0.0",
+                        Title = "Indicator " + i, Size = "indicator" });
+                bool refused = false;
+                try { NetworkPluginMigration.Prepare(crowded, "1.0.0", new[] { "network1" }, path); }
+                catch (InvalidOperationException) { refused = true; }
+                Assert(refused && !crowded.NetworkPluginMigrated && crowded.WidgetIndicators.Count == 6 &&
+                    File.ReadAllText(settings) == "independent plugin settings", "Capacity failure changed data");
+                source.ShowNetwork = false;
+                File.Delete(settings);
+                AppConfig disabled = NetworkPluginMigration.Prepare(source, "1.0.0", new string[0], path);
+                Assert(disabled.WidgetIndicators.Count == 0 && File.ReadAllText(settings).Contains("\"showNetwork\":false"),
+                    "Disabled legacy monitor was enabled or gained indicators");
+            } finally { Directory.Delete(path, true); }
+        });
         Case("D03 group headings wrap in all four layouts", delegate {
             Seed("normal", 2);
             AppConfig c = Load();

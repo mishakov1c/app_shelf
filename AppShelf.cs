@@ -8516,6 +8516,7 @@ namespace AppShelf
             ok.IsEnabled = _canSave;
             ok.Click += delegate
             {
+                if (_config.NetworkPluginMigrated) { dialog.DialogResult = true; return; }
                 string firstMode = (string)((ComboBoxItem)networkMode1.SelectedItem).Tag;
                 string secondMode = (string)((ComboBoxItem)networkMode2.SelectedItem).Tag;
                 NetworkChecks.Target validated; string error;
