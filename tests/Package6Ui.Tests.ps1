@@ -2446,6 +2446,34 @@ public static class Package6Tests
                     saved.CanvasMonitorPositions[other]["app:Первая"].X == 7, "Personal reset changed another layout");
             } finally { w.Close(); }
         });
+        Case("canvas scrollbars only on actual overflow", delegate {
+            Seed("normal", 4);
+            AppConfig c = Load(); c.GroupLayoutMode = "canvas"; c.CanvasInitialized = true; c.CanvasGridStep = 20;
+            c.CanvasViewportMode = "scroll"; c.Groups.Clear(); c.Groups.Add("Первая");
+            ConfigStore.Save(c);
+            MainWindow w = Open();
+            try {
+                var scroller = (ScrollViewer)Get(w, "_tilesScroller");
+                var board = (FreeCanvasBoard)Get(w, "_canvasBoard");
+                w.UpdateLayout(); Drain();
+                double width = scroller.ViewportWidth, height = scroller.ViewportHeight;
+                Assert(width > 400 && height > 200, "Unexpected initial viewport");
+                int x = (int)Math.Floor(width / 20) - 12;
+                int y = (int)Math.Floor(height / 20) - 8;
+                var fitting = new FreeCanvasRect(x, y, 12, 8) { ManualHeight = 8 };
+                board.SetPreferred("app:Первая", fitting);
+                w.UpdateLayout(); Drain(); w.UpdateLayout();
+                Assert(scroller.ScrollableHeight < 1 && scroller.ScrollableWidth < 1 &&
+                    scroller.ComputedVerticalScrollBarVisibility != Visibility.Visible &&
+                    scroller.ComputedHorizontalScrollBarVisibility != Visibility.Visible, "Fitting card shows scrollbars");
+                board.SetPreferred("app:Первая", new FreeCanvasRect(x + 10, y + 10, 12, 8) { ManualHeight = 8 });
+                w.UpdateLayout(); Drain(); w.UpdateLayout();
+                Assert(scroller.ScrollableHeight > 50 && scroller.ScrollableWidth > 50, "Actual overflow did not scroll");
+                board.SetPreferred("app:Первая", fitting);
+                w.UpdateLayout(); Drain(); w.UpdateLayout();
+                Assert(scroller.ScrollableHeight < 1 && scroller.ScrollableWidth < 1, "Scrollbars stuck after overflow removed");
+            } finally { w.Close(); }
+        });
         Console.WriteLine("Package6 scenarios passed=" + passed + "; failed=" + failed);
         app.Shutdown(); if (failed != 0) throw new Exception("Package6 failures: " + failed);
     }

@@ -647,9 +647,10 @@ namespace AppShelf
                 columns = Math.Max(columns, rect.X + rect.Width);
                 rows = Math.Max(rows, rect.Y + rect.Height);
             }
-            double contentWidth = columns * CellStep;
-            double naturalWidth = Math.Min(FreeCanvasLayout.MaxCells, Math.Max(InitialColumns, columns) + 4) * CellStep;
-            double naturalHeight = Math.Min(FreeCanvasLayout.MaxCells, Math.Max((int)Math.Ceiling(400.0 / CellStep), rows) + 4) * CellStep;
+            // The trailing grid gap and four extra cells are not visible content.
+            // Fill the viewport for dragging, but do not invent scrollable space.
+            double contentWidth = Math.Max(0, columns * CellStep - Gap);
+            double contentHeight = Math.Max(0, rows * CellStep - Gap);
             bool finite = !Double.IsInfinity(viewportWidth);
             bool overflow = finite && contentWidth > viewportWidth + 0.5;
             string next = overflow ? viewportMode : "scroll";
@@ -657,8 +658,10 @@ namespace AppShelf
                 foreach (Entry entry in entries) entry.TemporarilyExpanded = false;
             activeMode = next;
             displayScale = next == "scale" ? Math.Max(0.75, Math.Min(1, viewportWidth / Math.Max(1, contentWidth))) : 1;
-            if (finite)
-                naturalWidth = Math.Max(viewportWidth, viewportMode == "scroll" ? naturalWidth : contentWidth);
+            double naturalWidth = Math.Max(finite ? viewportWidth : InitialColumns * CellStep,
+                contentWidth * displayScale);
+            double naturalHeight = Math.Max(viewportHeight > 0 ? viewportHeight : 400,
+                contentHeight * displayScale);
             if (activeMode == "adaptive")
             {
                 Size? adapted = MeasureAdaptive(Math.Max(1, viewportWidth), rows);
@@ -672,7 +675,7 @@ namespace AppShelf
                 entry.Compact.Visibility = Visibility.Hidden;
                 entry.Grip.Visibility = IsTemporaryLayout || CardCollapsed(entry) ? Visibility.Hidden : Visibility.Visible;
             }
-            return new Size(naturalWidth * displayScale, Math.Max(viewportHeight, naturalHeight * displayScale));
+            return new Size(naturalWidth, naturalHeight);
         }
 
         private Size? MeasureAdaptive(double width, int originalRows)
@@ -762,7 +765,7 @@ namespace AppShelf
                     top += height + Gap;
                 }
             }
-            return new Size(width, Math.Max(1, top));
+            return new Size(width, Math.Max(1, top - Gap));
         }
 
         internal bool ToggleTemporaryGroup(string key)
@@ -5691,10 +5694,14 @@ namespace AppShelf
             if (_canvasBoard != null)
             {
                 double outer = _tilesScroller.ActualWidth > 1 ? _tilesScroller.ActualWidth : Width;
+                string mode = HasCanvasMonitorLayout(_config) ? "scroll" : FreeCanvasLayout.NormalizeViewportMode(_config.CanvasViewportMode);
                 double viewport = outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
-                // A personal monitor layout stays editable even if the window
-                // is temporarily smaller than the saved geometry.
-                _canvasBoard.SetViewport(Math.Max(1, viewport), HasCanvasMonitorLayout(_config) ? "scroll" : _config.CanvasViewportMode);
+                // In scrolling mode use the actual available width, not a
+                // hypothetical vertical bar. Other strategies keep the stable
+                // reserved width to avoid oscillating between layouts.
+                if (mode == "scroll" && _tilesScroller.ViewportWidth > 0 && !Double.IsInfinity(_tilesScroller.ViewportWidth))
+                    viewport = _tilesScroller.ViewportWidth;
+                _canvasBoard.SetViewport(Math.Max(1, viewport), mode);
                 double height = _tilesScroller.ViewportHeight;
                 if (height <= 0 || Double.IsInfinity(height)) height = _tilesScroller.ActualHeight - _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
                 _canvasBoard.SetViewportHeight(height);
