@@ -24,6 +24,8 @@ namespace AppShelf
         private readonly PluginRuntime runtime;
         private readonly string backupRoot;
         private readonly Func<InstalledPlugin, Func<Task>> prepareEnable;
+        private readonly Action<Window, bool, string> placeWidget;
+        private readonly Func<bool> canPlaceWidget;
         private List<PluginBackupItem> recovered = new List<PluginBackupItem>();
         private readonly DispatcherTimer stateTimer;
         private readonly List<Action> stateUpdates = new List<Action>();
@@ -32,12 +34,15 @@ namespace AppShelf
         private readonly Button install;
         private bool busy;
 
-        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null, Func<InstalledPlugin, Func<Task>> beforeEnable = null)
+        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null, Func<InstalledPlugin, Func<Task>> beforeEnable = null,
+            Action<Window, bool, string> placement = null, Func<bool> widgetPlacementAvailable = null)
         {
             store = packages;
             runtime = controller;
             backupRoot = selectedBackupRoot;
             prepareEnable = beforeEnable;
+            placeWidget = placement;
+            canPlaceWidget = widgetPlacementAvailable;
             Owner = owner;
             Title = "AppShelf — Плагины";
             Width = 760; Height = 580; MinWidth = 480; MinHeight = 360;
@@ -295,6 +300,18 @@ namespace AppShelf
                         "Запрос открытия настроек выполнен.");
                 };
                 actions.Children.Add(settings);
+            }
+            if (placeWidget != null && manifest != null && Array.IndexOf(manifest.Capabilities, "widget") >= 0)
+            {
+                foreach (bool indicator in new[] { true, false })
+                {
+                    bool chosen = indicator;
+                    Button place = ButtonFor(chosen ? "Добавить индикатор…" : "Добавить виджет…", false);
+                    place.Tag = (chosen ? "PluginAddIndicator:" : "PluginAddWidget:") + plugin.Id;
+                    place.IsEnabled = plugin.Enabled && plugin.Error == null && (chosen || canPlaceWidget == null || canPlaceWidget());
+                    place.Click += delegate { if (!busy && place.IsEnabled) placeWidget(this, chosen, plugin.Id); };
+                    actions.Children.Add(place);
+                }
             }
             stateUpdates.Add(delegate
             {
@@ -811,7 +828,9 @@ namespace AppShelf
             {
                 PluginManagerWindow manager = null;
                 manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime(), _config.BackupDirectory,
-                    delegate(InstalledPlugin plugin) { return PrepareNetworkPluginEnable(manager, plugin); });
+                    delegate(InstalledPlugin plugin) { return PrepareNetworkPluginEnable(manager, plugin); },
+                    delegate(Window dialogOwner, bool indicator, string id) { ShowPluginWidgetPickerFor(dialogOwner, indicator, id); },
+                    delegate { return WidgetsInFreeLayout(); });
                 manager.ShowDialog();
                 if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
             }

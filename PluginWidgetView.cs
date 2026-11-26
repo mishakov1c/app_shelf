@@ -1208,12 +1208,15 @@ namespace AppShelf
         private void ShowAddPluginIndicator() { ShowPluginWidgetPicker(true); }
 
         private void ShowPluginWidgetPicker(bool indicator)
+        { ShowPluginWidgetPickerFor(this, indicator, null); }
+
+        private void ShowPluginWidgetPickerFor(Window owner, bool indicator, string preferredId)
         {
             if ((!indicator && !WidgetsInFreeLayout()) || !_canSave || _pluginWidgetPickerOpen || _pluginRuntimeStopping || _pluginWidgets == null) return;
             _pluginWidgetPickerOpen = true;
             try
             {
-                Window dialog = new Window { Owner = this, Title = indicator ? "AppShelf — Добавить индикатор" : "AppShelf — Добавить виджет",
+                Window dialog = new Window { Owner = owner, Title = indicator ? "AppShelf — Добавить индикатор" : "AppShelf — Добавить виджет",
                     Width = 480, Height = 410, MinWidth = 360, MinHeight = 330,
                     WindowStartupLocation = WindowStartupLocation.CenterOwner };
                 FluentUi.PrepareWindow(dialog);
@@ -1226,6 +1229,7 @@ namespace AppShelf
                 hint.TextWrapping = TextWrapping.Wrap;
                 hint.Margin = new Thickness(0, 6, 0, 10); top.Children.Add(hint);
                 ComboBox packages = new ComboBox { MinHeight = 32, IsEnabled = false };
+                FluentUi.StyleComboBox(packages);
                 top.Children.Add(packages);
                 Button load = ActionButton(indicator ? "Загрузить индикаторы" : "Загрузить виджеты", false);
                 load.Margin = new Thickness(0, 8, 0, 8); load.IsEnabled = false;
@@ -1263,7 +1267,8 @@ namespace AppShelf
                         if (closed || _pluginRuntimeStopping) return;
                         foreach (InstalledPlugin plugin in installed)
                             if (plugin.Enabled && plugin.Error == null && plugin.Manifest != null &&
-                                Array.IndexOf(plugin.Manifest.Capabilities, "widget") >= 0)
+                                Array.IndexOf(plugin.Manifest.Capabilities, "widget") >= 0 &&
+                                (preferredId == null || String.Equals(plugin.Id, preferredId, StringComparison.Ordinal)))
                                 packages.Items.Add(new ComboBoxItem { Content = plugin.Manifest.Name, Tag = plugin });
                         packages.IsEnabled = packages.Items.Count > 0;
                         if (packages.Items.Count > 0)
