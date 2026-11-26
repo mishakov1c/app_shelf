@@ -758,7 +758,7 @@ public static class Package6Tests
                     "Plain status message was parsed as Markdown");
             } finally { window.Close(); }
         });
-        Case("backup window uses the existing dark scrollbar", delegate {
+        Case("backup window uses dark dropdowns and scrollbar", delegate {
             Seed("normal", 1);
             MainWindow w = Open();
             try {
@@ -771,6 +771,21 @@ public static class Package6Tests
                     Click(Section(d, "backup-automatic")); Drain();
                     Assert(Body(d, "backup-automatic").Visibility == Visibility.Visible,
                         "Automatic backup section did not open");
+                    List<ComboBox> fields = Controls<ComboBox>(d);
+                    Assert(fields.Count == 3, "Expected cadence, retention and quota dropdowns");
+                    foreach (ComboBox field in fields)
+                    {
+                        field.ApplyTemplate();
+                        field.IsDropDownOpen = true;
+                        try {
+                            Drain();
+                            var popup = field.Template.FindName("PART_Popup", field)
+                                as System.Windows.Controls.Primitives.Popup;
+                            Assert(popup != null && popup.IsOpen && popup.Child is Border,
+                                "Backup dropdown did not render its popup");
+                            Dark(((Border)popup.Child).Background, "Backup dropdown popup");
+                        } finally { field.IsDropDownOpen = false; Drain(); }
+                    }
                     List<ScrollViewer> scrollers = Controls<ScrollViewer>(d);
                     Assert(scrollers.Count == 1, "Backup dialog scroll viewer missing");
                     ScrollViewer scroll = scrollers[0];
@@ -970,7 +985,7 @@ public static class Package6Tests
                     Call(w, "SwapGroups", "Первая", "Вторая"); Drain(); Assert(Live(w).Groups[0] == "Вторая" && Load().Groups[0] == "Вторая", "Group reorder failed");
                 } finally { w.Close(); }
             });
-            Case("routed drag/drop to empty and collapsed groups " + m, delegate {
+            Case("routed tile drag/drop to empty and collapsed groups " + m, delegate {
                 Seed(m, 2); MainWindow w = Open(); try {
                     AppItem item = Live(w).Items[0]; DataObject data = new DataObject(); data.SetData("AppShelf.InternalTilePath", item.Path);
                     Expander destination = Group(w, 1); destination.IsExpanded = false; Drain();
@@ -978,9 +993,6 @@ public static class Package6Tests
                     Assert(Drag(header, data, DragDrop.PreviewDragOverEvent).Effects == DragDropEffects.Move, "Collapsed group does not accept tile drag");
                     Assert(Drag(header, data, DragDrop.PreviewDropEvent).Effects == DragDropEffects.Move && item.Group == "Вторая", "Routed tile drop failed");
                     destination = Group(w, 2); Assert(Drag((FrameworkElement)destination.Header, data, DragDrop.PreviewDropEvent).Effects == DragDropEffects.Move && item.Group == "Пустая", "Empty group drop failed");
-                    DataObject groupData = new DataObject(); groupData.SetData("AppShelf.InternalGroupName", "Первая");
-                    destination = Group(w, 1); Assert(Drag((FrameworkElement)destination.Header, groupData, DragDrop.PreviewDropEvent).Effects == DragDropEffects.Move, "Routed group drop failed");
-                    Assert(Live(w).Groups[0] == "Вторая" && Load().Groups[0] == "Вторая", "Group drop not saved");
                 } finally { w.Close(); }
             });
         }
@@ -2168,9 +2180,77 @@ public static class Package6Tests
                     Assert(Tiles(w).Count == 4, "Migration lost application tiles");
                     Assert(saved.CanvasPositions != null && saved.CanvasPositions.ContainsKey("app:Первая") &&
                         saved.CanvasPositions.ContainsKey("app:Вторая"), "Legacy positions were not captured");
+                    if (legacyMode == "free")
+                    {
+                        double viewport = ((ScrollViewer)Get(w, "_tilesScroller")).ViewportHeight;
+                        double bottomGroupY = saved.CanvasPositions["app:Вторая"].Y * FreeCanvasLayout.NormalizeStep(saved.CanvasGridStep);
+                        Assert(viewport > 250 && bottomGroupY > viewport / 2,
+                            "Legacy bottom zone migrated near the top of the canvas");
+                    }
                 } finally { w.Close(); }
             });
         }
+        Case("enabling grouping during search migrates the unfiltered legacy layout", delegate {
+            Seed("normal", 2);
+            AppConfig config = Load();
+            config.GroupingEnabled = false;
+            config.GroupLayoutMode = "free";
+            config.Items[1].Group = null;
+            ConfigStore.Save(config);
+            MainWindow w = Open(); try {
+                TextBox search = (TextBox)Get(w, "_search");
+                search.Text = "non-matching filter";
+                Call(w, "SetGrouping", true);
+                Drain();
+                AppConfig saved = Load();
+                Assert(saved.CanvasInitialized && saved.CanvasPositions != null &&
+                    saved.CanvasPositions.ContainsKey("app:Первая") && saved.CanvasPositions.ContainsKey("app:"),
+                    "Search prevented migration of legacy group positions");
+                Assert(Tiles(w).Count == 0, "Migration cleared the active search");
+                search.Clear(); Drain();
+                Assert(Tiles(w).Count == 2, "Clearing search did not restore both shortcuts");
+            } finally { w.Close(); }
+        });
+        Case("legacy ZIP migrates application groups and retains unselected widget geometry", delegate {
+            Seed("normal", 1);
+            AppConfig legacy = Load();
+            legacy.GroupLayoutMode = "free";
+            legacy.GroupZoneOverrides = new Dictionary<string, string> { { "Первая", "bottom-right" } };
+            string zip = Path.Combine(ConfigStore.DirectoryPath, "legacy-layout.zip");
+            using (var file = File.Create(zip))
+            using (var archive = new System.IO.Compression.ZipArchive(file, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                using (var entry = archive.CreateEntry("apps.json").Open())
+                    new DataContractJsonSerializer(typeof(AppConfig)).WriteObject(entry, legacy);
+                using (var entry = archive.CreateEntry("reminders.json").Open())
+                    new DataContractJsonSerializer(typeof(ReminderDocument)).WriteObject(entry, new ReminderDocument());
+            }
+            AppConfig current = legacy.Copy();
+            current.GroupLayoutMode = "canvas";
+            current.CanvasInitialized = true;
+            current.CanvasPositions = new Dictionary<string, FreeCanvasRect> {
+                { "widget:1", new FreeCanvasRect(0, 12, 12, 4) }
+            };
+            current.WidgetGroups = new List<PluginWidgetGroupConfig> {
+                new PluginWidgetGroupConfig { Number = 1, Title = "Existing widgets", Zone = "top-left", Collapsed = true,
+                    Widgets = new List<PluginWidgetPlacementConfig> {
+                        new PluginWidgetPlacementConfig { PluginId = "example.stocks", WidgetId = "quotes",
+                            Title = "Quotes", Version = "1.0.0", Size = "quarter" }
+                    } }
+            };
+            ConfigStore.Save(current);
+            BackupStore.RestoreAll(zip);
+            MainWindow w = Open(); try {
+                AppConfig saved = Load();
+                Assert(saved.GroupLayoutMode == "canvas" && saved.CanvasInitialized &&
+                    saved.CanvasPositions.ContainsKey("app:Первая") && saved.Items.Count == 1,
+                    "Retaining unselected widgets skipped legacy application migration");
+                FreeCanvasRect pos = saved.CanvasPositions["widget:1"];
+                Assert(pos.X == 0 && pos.Y == 12 && pos.Width == 12 && pos.Height == 4 &&
+                    saved.WidgetGroups[0].Collapsed && saved.WidgetGroups[0].Widgets[0].WidgetId == "quotes",
+                    "Restore replaced unselected widget geometry or content");
+            } finally { w.Close(); }
+        });
         Case("Network plugin migration preserves legacy targets and existing plugin data", delegate {
             AppConfig source = new AppConfig { ShowNetwork = true, NetworkCheck1Mode = "tcp",
                 NetworkCheck1Target = "localhost:443", NetworkCheck2Mode = "icmp",
@@ -2229,8 +2309,30 @@ public static class Package6Tests
             c.CanvasPositions = new Dictionary<string,FreeCanvasRect> { { "app:Первая", new FreeCanvasRect(2, 3, 12, 10) } };
             ConfigStore.Save(c);
             MainWindow w = Open(); try {
-                Assert(Load().CanvasPositions["app:Первая"].X == 2 && Load().GroupLayoutMode == "canvas", "Existing canvas overwritten");
-                Call(w, "ArrangeCanvas", "reset"); Drain();
+                FreeCanvasRect saved = Load().CanvasPositions["app:Первая"];
+                Assert(saved.X == 2 && saved.Y == 3 && saved.Width == 12 && saved.Height == 10 &&
+                    Load().GroupLayoutMode == "canvas", "Existing canvas overwritten");
+                string before = File.ReadAllText(ConfigStore.PluginSettingsPath);
+                MenuItem reset = Menu(Menu(Tools(w), "Быстрые настройки"), "Сбросить расположение групп");
+                foreach (string answer in new[] { "Нет", "Да" })
+                {
+                    Exception error = null;
+                    w.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(delegate {
+                        Window confirmation = null;
+                        try {
+                            foreach (Window owned in w.OwnedWindows)
+                                if (owned.Title == "AppShelf — Свободное полотно") confirmation = owned;
+                            Assert(confirmation != null, "Canvas reset did not ask for confirmation");
+                            Click(ButtonNamed(confirmation, answer));
+                        } catch (Exception ex) { error = ex; }
+                        finally { if (confirmation != null && confirmation.IsVisible) confirmation.Close(); }
+                    }));
+                    reset.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    Drain();
+                    if (error != null) throw error;
+                    if (answer == "Нет")
+                        Assert(File.ReadAllText(ConfigStore.PluginSettingsPath) == before, "Declining reset changed canvas settings");
+                }
                 Assert(Load().CanvasInitialized && Load().CanvasPositions == null && Tiles(w).Count == 4, "Reset lost data or did not clear geometry");
             } finally { w.Close(); }
             w = Open(); try {

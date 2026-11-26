@@ -817,7 +817,7 @@ namespace AppShelf
                         restoreSettings ? archivePositions : current.CanvasPositions, restoreSettings ? archiveStep : currentStep,
                         restoreWidgets ? archivePositions : current.CanvasPositions, restoreWidgets ? archiveStep : currentStep, targetStep);
                     restored.CanvasGridStep = restoreSettings ? archiveGridStep : current.CanvasGridStep;
-                    restored.CanvasInitialized = canvasInitialized || restored.CanvasPositions != null;
+                    restored.CanvasInitialized = canvasInitialized;
                     restored.CanvasViewportMode = viewportMode;
                     restored.MainBackgroundPreset = restoreBackgrounds ? background : current.MainBackgroundPreset;
                 }

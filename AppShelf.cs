@@ -1053,7 +1053,7 @@ namespace AppShelf
             c.CanvasPositions = FreeCanvasLayout.MergePositions(CanvasPositions, FreeCanvasLayout.NormalizeStep(CanvasGridStep),
                 CanvasPositions, FreeCanvasLayout.NormalizeStep(CanvasGridStep), FreeCanvasLayout.NormalizeStep(CanvasGridStep));
             c.CanvasGridStep = CanvasGridStep; c.CanvasViewportMode = CanvasViewportMode;
-            c.CanvasInitialized = CanvasInitialized || c.CanvasPositions != null;
+            c.CanvasInitialized = CanvasInitialized;
             c.WidgetGroups = WidgetGroups; c.WidgetIndicators = WidgetIndicators;
             c.BackupExecutable = BackupExecutable; c.BackupPluginPackages = BackupPluginPackages;
             c.BackupReminders = BackupReminders; c.BackupCollections = BackupCollections;
@@ -2628,6 +2628,8 @@ namespace AppShelf
             // Wait for the first Loaded event so fast HTTP failures are always visible.
             Loaded += delegate
             {
+                if (_config.GroupingEnabled && NormalizeGroupLayoutMode(_config.GroupLayoutMode) != "canvas")
+                    RenderTiles();
                 _windowPlacementTrackingReady = true;
                 if (_startupHidePending)
                 {
@@ -4349,18 +4351,20 @@ namespace AppShelf
         private void MigrateCanvasLayout(AppConfig pending)
         {
             if (pending.GroupLayoutMode != "canvas" || pending.CanvasInitialized || !_config.GroupingEnabled ||
-                NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "canvas" ||
-                (pending.CanvasPositions != null && pending.CanvasPositions.Count != 0) ||
-                (_search != null && !String.IsNullOrWhiteSpace(_search.Text))) return;
+                NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "canvas") return;
             int step = FreeCanvasLayout.NormalizeStep(pending.CanvasGridStep);
-            Dictionary<string, FreeCanvasRect> positions = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
-            List<FreeCanvasRect> occupied = new List<FreeCanvasRect>();
+            // Selective backup restore can retain canvas positions for widgets
+            // while restoring application groups from a legacy layout.
+            Dictionary<string, FreeCanvasRect> positions = pending.CanvasPositions ??
+                new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            List<FreeCanvasRect> occupied = new List<FreeCanvasRect>(positions.Values);
             List<KeyValuePair<string, Border>> cards = new List<KeyValuePair<string, Border>>();
             foreach (GroupLayoutCard group in _groupLayoutCards)
                 cards.Add(new KeyValuePair<string, Border>("app:" + group.Group, group.Card));
             if (_pluginWidgets != null) cards.AddRange(_pluginWidgets.CanvasCards());
             foreach (KeyValuePair<string, Border> item in cards)
             {
+                if (positions.ContainsKey(item.Key)) continue;
                 Border card = item.Value;
                 if (card.ActualWidth <= 0 || card.ActualHeight <= 0 || !card.IsDescendantOf(_tileHost)) continue;
                 Point origin;
@@ -5452,9 +5456,13 @@ namespace AppShelf
             {
                 AppConfig pending = _config.Copy();
                 pending.GroupLayoutMode = "canvas";
-                if (!pending.CanvasInitialized && (pending.CanvasPositions == null || pending.CanvasPositions.Count == 0))
+                if (!pending.CanvasInitialized)
                 {
-                    RenderTilesCore();
+                    RenderTilesCore(true);
+                    // The nine-zone layout anchors groups to the measured viewport.
+                    // At startup its first real height is available in Loaded.
+                    if (NormalizeGroupLayoutMode(_config.GroupLayoutMode) == "free" && !IsLoaded) return;
+                    if (IsLoaded) _tilesScroller.UpdateLayout();
                     double outer = _tilesScroller.ActualWidth > 1 ? _tilesScroller.ActualWidth : Width;
                     double width = Math.Max(200, outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth);
                     _tileHost.Measure(new Size(width, Double.PositiveInfinity));
@@ -5469,7 +5477,7 @@ namespace AppShelf
             RenderTilesCore();
         }
 
-        private void RenderTilesCore()
+        private void RenderTilesCore(bool ignoreSearch = false)
         {
             if (_tileHost == null) return;
             if (_pluginWidgets != null) _pluginWidgets.DetachBoard();
@@ -5489,7 +5497,7 @@ namespace AppShelf
                 _tileHost.Children.Add(zone);
                 foreach (AppItem item in _config.Items)
                 {
-                    if (!Matches(item)) continue;
+                    if (!ignoreSearch && !Matches(item)) continue;
                     list.Children.Add(MakeTile(item));
                     count++;
                 }
@@ -5561,7 +5569,7 @@ namespace AppShelf
                 // visible applications. Keep it last, after the user-defined groups.
                 bool hasUngrouped = false;
                 foreach (AppItem item in _config.Items)
-                    if (Matches(item) && GroupOf(item).Length == 0)
+                    if (GroupOf(item).Length == 0 && (ignoreSearch || Matches(item)))
                     {
                         hasUngrouped = true;
                         break;
@@ -5573,7 +5581,8 @@ namespace AppShelf
                     int inGroup = 0;
                     foreach (AppItem item in _config.Items)
                     {
-                        if (!Matches(item) || !String.Equals(GroupOf(item), group, StringComparison.OrdinalIgnoreCase))
+                        if (!String.Equals(GroupOf(item), group, StringComparison.OrdinalIgnoreCase) ||
+                            (!ignoreSearch && !Matches(item)))
                             continue;
                         list.Children.Add(MakeTile(item));
                         inGroup++;
