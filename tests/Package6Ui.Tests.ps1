@@ -1339,13 +1339,16 @@ public static class Package6Tests
                 using (System.IO.Compression.ZipArchive zip = new System.IO.Compression.ZipArchive(
                     stream, System.IO.Compression.ZipArchiveMode.Create)) {
                     using (StreamWriter writer = new StreamWriter(zip.CreateEntry("plugin.json").Open()))
-                        writer.Write("{\"schemaVersion\":1,\"apiVersion\":1,\"id\":\"example.hello\",\"name\":\"Hello\",\"version\":\"1.0.0\",\"entryPoint\":\"bin/Hello.exe\",\"capabilities\":[\"window\"]}");
+                        writer.Write("{\"schemaVersion\":1,\"apiVersion\":1,\"id\":\"example.hello\",\"name\":\"Hello\",\"version\":\"1.0.0\",\"entryPoint\":\"bin/Hello.exe\",\"capabilities\":[\"window\",\"widget\"],\"update\":{\"provider\":\"github\",\"repository\":\"example/hello\"}}");
                     using (StreamWriter writer = new StreamWriter(zip.CreateEntry("bin/Hello.exe").Open()))
                         writer.Write("not executed");
                 }
                 store.Install(package, delegate { return true; });
                 Directory.CreateDirectory(Path.Combine(ConfigStore.DirectoryPath, "Plugins", "Installed", "example.broken"));
-                PluginManagerWindow manager = new PluginManagerWindow(w, store, runtime);
+                int placements = 0; bool chosenIndicator = false; string placementId = null;
+                PluginManagerWindow manager = new PluginManagerWindow(w, store, runtime, null, null,
+                    delegate(Window owner, bool indicator, string id) { placements++; chosenIndicator = indicator; placementId = id; },
+                    delegate { return true; });
                 manager.ShowInTaskbar = false; manager.Show(); Drain();
                 try {
                     CheckBox good = null, broken = null;
@@ -1364,8 +1367,11 @@ public static class Package6Tests
                     });
                     Assert(process != null && process.Text == "Состояние процесса: Остановлен", "Disabled process state missing");
                     Assert(Controls<TextBlock>(manager).Exists(delegate(TextBlock block) {
-                        return block.Text == "Возможности: собственные окна";
+                        return block.Text == "Возможности: собственные окна, виджеты";
                     }), "Capability not localized");
+                    Button disabledPlacement = Controls<Button>(manager).Find(button => Object.Equals(button.Tag, "PluginAddIndicator:example.hello"));
+                    Assert(disabledPlacement != null && !disabledPlacement.IsEnabled, "Disabled plugin offers widget placement");
+                    Assert(Controls<Button>(manager).Exists(button => Object.Equals(button.Tag, "PluginCheckUpdate:example.hello")), "GitHub check missing for declared source");
                     good.IsChecked = true;
                     good.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
                     // The enabled flag can reach disk before the manager refreshes its controls.
@@ -1384,6 +1390,11 @@ public static class Package6Tests
                         if (plugin.Id == "example.hello") enabled = plugin.Enabled;
                     Assert(enabled, "UI toggle did not persist enabled state");
                     Assert(commandButton != null && commandButton.IsEnabled, "Command button did not become enabled after the UI toggle");
+                    Button placeIndicator = Controls<Button>(manager).Find(button => Object.Equals(button.Tag, "PluginAddIndicator:example.hello"));
+                    Button placeWidget = Controls<Button>(manager).Find(button => Object.Equals(button.Tag, "PluginAddWidget:example.hello"));
+                    Assert(placeIndicator != null && placeWidget != null && placeIndicator.IsEnabled && placeWidget.IsEnabled, "Placement buttons missing");
+                    Click(placeIndicator); Assert(placements == 1 && chosenIndicator && placementId == "example.hello", "Wrong indicator route");
+                    Click(placeWidget); Assert(placements == 2 && !chosenIndicator && placementId == "example.hello", "Wrong widget route");
                     CheckBox refreshed = Controls<CheckBox>(manager).Find(delegate(CheckBox check) {
                         return Object.Equals(check.Tag, "PluginEnabled:example.hello");
                     });

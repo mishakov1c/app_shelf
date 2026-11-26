@@ -454,14 +454,37 @@ namespace AppShelf
                 Math.Max(MinimumColumns, entry.Preferred.Width));
         }
 
+        private static bool CardCollapsed(Entry entry)
+        {
+            Expander expander = entry.Card.Child as Expander;
+            if (expander != null) return !expander.IsExpanded;
+            // Widget cards contain the heading and a separately collapsible cell grid.
+            StackPanel body = entry.Key.StartsWith("widget:", StringComparison.Ordinal) ? entry.Card.Child as StackPanel : null;
+            return body != null && body.Children.Count == 2 && body.Children[1] is Grid &&
+                body.Children[1].Visibility == Visibility.Collapsed;
+        }
+
         private int HeightFor(Entry entry, int width, int manual)
         {
             entry.Card.Measure(new Size(width * CellStep - Gap, Double.PositiveInfinity));
-            // Manual expanded height must not leave a large empty collapsed card.
-            Expander expander = entry.Card.Child as Expander;
-            if (expander != null && !expander.IsExpanded) manual = 0;
-            return (int)Math.Min(FreeCanvasLayout.MaxCells, Math.Max(Math.Max(2, manual),
+            bool collapsed = CardCollapsed(entry);
+            return (int)Math.Min(FreeCanvasLayout.MaxCells, Math.Max(Math.Max(collapsed ? 1 : 2, collapsed ? 0 : manual),
                 Math.Ceiling((entry.Card.DesiredSize.Height + Gap) / CellStep)));
+        }
+
+        // Effective collapsed geometry must remain valid for collision detection,
+        // while the expanded manual height stays in the persisted preference.
+        internal FreeCanvasRect PreferenceForEdit(string key, FreeCanvasRect candidate)
+        {
+            Entry entry = Find(key);
+            if (entry == null || !FreeCanvasLayout.IsValid(candidate)) return null;
+            FreeCanvasRect result = candidate.Copy();
+            if (CardCollapsed(entry) && entry.Preferred != null)
+            {
+                result.ManualHeight = entry.Preferred.ManualHeight;
+                result.Height = Math.Max(result.Height, result.ManualHeight);
+            }
+            return FreeCanvasLayout.IsValid(result) ? result : null;
         }
 
         protected override Size MeasureOverride(Size availableSize)
@@ -470,7 +493,7 @@ namespace AppShelf
             int columns = 0, rows = 0;
             foreach (Entry entry in entries)
             {
-                int width = WidthFor(entry), manual = entry.Preferred == null ? 0 : entry.Preferred.ManualHeight;
+                int width = WidthFor(entry), manual = entry.Preferred == null || CardCollapsed(entry) ? 0 : entry.Preferred.ManualHeight;
                 int height = HeightFor(entry, width, manual);
                 entry.Grip.Measure(new Size(18, 18));
                 entry.Effective = null;
@@ -485,7 +508,7 @@ namespace AppShelf
             foreach (Entry entry in entries)
             {
                 if (entry.Effective != null) continue;
-                int width = WidthFor(entry), manual = entry.Preferred == null ? 0 : entry.Preferred.ManualHeight;
+                int width = WidthFor(entry), manual = entry.Preferred == null || CardCollapsed(entry) ? 0 : entry.Preferred.ManualHeight;
                 int height = HeightFor(entry, width, manual);
                 int availableColumns = Double.IsInfinity(viewportWidth) ? InitialColumns : Math.Max(1, (int)Math.Floor(viewportWidth / CellStep));
                 entry.Effective = FreeCanvasLayout.FindFirstFree(width, height, Math.Max(availableColumns, width), occupied);
@@ -510,15 +533,15 @@ namespace AppShelf
                 foreach (Entry entry in entries) entry.TemporarilyExpanded = false;
             activeMode = next;
             displayScale = next == "scale" ? Math.Max(0.75, Math.Min(1, viewportWidth / Math.Max(1, contentWidth))) : 1;
-            if (finite && viewportMode != "scroll")
-                naturalWidth = Math.Max(viewportWidth, contentWidth);
+            if (finite)
+                naturalWidth = Math.Max(viewportWidth, viewportMode == "scroll" ? naturalWidth : contentWidth);
             if (activeMode == "adaptive" || activeMode == "collapse")
                 return MeasureTemporary(Math.Max(1, viewportWidth));
             foreach (Entry entry in entries)
             {
                 entry.Card.Visibility = Visibility.Visible;
                 entry.Compact.Visibility = Visibility.Hidden;
-                entry.Grip.Visibility = IsTemporaryLayout ? Visibility.Hidden : Visibility.Visible;
+                entry.Grip.Visibility = IsTemporaryLayout || CardCollapsed(entry) ? Visibility.Hidden : Visibility.Visible;
             }
             return new Size(naturalWidth * displayScale, Math.Max(viewportHeight, naturalHeight * displayScale));
         }
@@ -588,7 +611,7 @@ namespace AppShelf
                 entry.Card.Arrange(stacked ? entry.DisplayRect : new Rect(rect.X * displayScale,
                     rect.Y * displayScale, rect.Width, rect.Height));
                 entry.Compact.Arrange(stacked ? entry.CompactRect : new Rect(0, 0, 0, 0));
-                entry.Grip.Arrange(IsTemporaryLayout || entry.Effective == null ? new Rect(0, 0, 0, 0) :
+                entry.Grip.Arrange(IsTemporaryLayout || entry.Effective == null || CardCollapsed(entry) ? new Rect(0, 0, 0, 0) :
                     new Rect(rect.Right - 18, rect.Bottom - 18, 18, 18));
             }
             Rect target = IsTemporaryLayout ? new Rect(0, 0, 0, 0) : PixelRect(previewRect);
@@ -646,7 +669,7 @@ namespace AppShelf
         internal FreeCanvasRect ResizeCandidate(string key, double widthDip, double heightDip)
         {
             Entry entry = Find(key);
-            if (IsTemporaryLayout || entry == null || entry.Effective == null) return null;
+            if (IsTemporaryLayout || entry == null || entry.Effective == null || CardCollapsed(entry)) return null;
             int width = Math.Max(MinimumColumns, FreeCanvasLayout.Snap(widthDip, CellStep));
             int manual = Math.Max(2, FreeCanvasLayout.Snap(heightDip, CellStep));
             // Measure the content at the proposed width, then restore the
@@ -4368,7 +4391,9 @@ namespace AppShelf
             Dictionary<string, FreeCanvasRect> changes = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
             foreach (KeyValuePair<string, FreeCanvasRect> item in positions)
                 if (!pending.CanvasPositions.ContainsKey(item.Key)) changes[item.Key] = item.Value;
-            changes[key] = candidate;
+            FreeCanvasRect preference = _canvasBoard.PreferenceForEdit(key, candidate);
+            if (preference == null) return false;
+            changes[key] = preference;
             foreach (KeyValuePair<string, FreeCanvasRect> item in changes)
                 pending.CanvasPositions[item.Key] = item.Value.Copy();
             if (!SaveConfigChanges(pending)) return false;
@@ -5431,7 +5456,7 @@ namespace AppShelf
                 {
                     RenderTilesCore();
                     double outer = _tilesScroller.ActualWidth > 1 ? _tilesScroller.ActualWidth : Width;
-                    double width = Math.Max(800, outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth);
+                    double width = Math.Max(200, outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth);
                     _tileHost.Measure(new Size(width, Double.PositiveInfinity));
                     _tileHost.Arrange(new Rect(0, 0, width, Math.Max(1, _tileHost.DesiredSize.Height)));
                     MigrateCanvasLayout(pending);

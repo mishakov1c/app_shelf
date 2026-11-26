@@ -157,6 +157,33 @@ $lower = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Win
 Assert ($null -ne $lower) 'available lower viewport rejected'
 Write-Host 'PASS enlarged viewport and adaptive drag boundary'
 
+# Collapsed effective height must not invalidate the saved manual height or collision checks.
+$collapsedBoard = [Activator]::CreateInstance($type,$true)
+$expander = New-Object System.Windows.Controls.Expander
+$expander.Header = 'Collapsed group'
+$body = New-Object System.Windows.Controls.Border
+$body.Height = 180
+$expander.Content = $body
+$expander.IsExpanded = $false
+$card = New-Object System.Windows.Controls.Border
+$card.Child = $expander
+$pref = Rect 2 2 12 18
+$pref.ManualHeight = 18
+[void]$add.Invoke($collapsedBoard,[object[]]@('app:collapsed',$card.PSObject.BaseObject,12,$pref.PSObject.BaseObject))
+$infinite = New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)
+$collapsedBoard.Measure($infinite)
+$collapsedBoard.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$collapsedBoard.DesiredSize.Width,$collapsedBoard.DesiredSize.Height))
+$short = $capture.Invoke($collapsedBoard,$null)['app:collapsed']
+Assert ([AppShelf.FreeCanvasLayout]::IsValid($short) -and $short.Height -lt 18 -and $short.X -eq 2) 'collapsed saved size leaves invalid effective rectangle'
+$stored = $type.GetMethod('PreferenceForEdit',$flags).Invoke($collapsedBoard,[object[]]@('app:collapsed',$short.PSObject.BaseObject))
+Assert ($stored.ManualHeight -eq 18) 'collapsed drag loses expanded manual height'
+$expander.IsExpanded = $true
+$collapsedBoard.InvalidateMeasure()
+$collapsedBoard.Measure($infinite)
+$expanded = $capture.Invoke($collapsedBoard,$null)['app:collapsed']
+Assert ($expanded.Height -ge 18 -and $expanded.ManualHeight -eq 18 -and $expanded.X -eq 2) 'expanded height not restored'
+Write-Host 'PASS collapsed effective geometry preserves manual expanded height'
+
 # D04: a long sequence and a single movement to the same pointer must
 # produce identical geometry. In particular 56 DIP is not 360 DIP.
 $pointerResize = $type.GetMethod('ResizeFromPointer',$flags)
