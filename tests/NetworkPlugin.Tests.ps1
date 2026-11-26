@@ -58,17 +58,17 @@ try {
     $type.GetField('ShowNetwork').SetValue($settings,$false)
     $type.GetField('NetworkCheck1Mode').SetValue($settings,'tcp')
     $type.GetField('NetworkCheck1Target').SetValue($settings,'localhost:443')
-    [void]$type.GetMethod('Save',$flags).Invoke($settings,[object[]]@($temp))
-    $loaded = $type.GetMethod('Load',$flags).Invoke($null,[object[]]@($temp))
+    [void]$type.GetMethod('Save',$flags).Invoke($settings.PSObject.BaseObject,[object[]]@([string]$temp))
+    $loaded = $type.GetMethod('Load',$flags).Invoke($null,[object[]]@([string]$temp))
     if ($loaded.ShowNetwork -or $loaded.NetworkCheck1Mode -ne 'tcp' -or $loaded.NetworkCheck1Target -ne 'localhost:443') { throw 'Network settings roundtrip failed.' }
     $type.GetField('NetworkCheck1Target').SetValue($settings,'invalid')
     $before = [IO.File]::ReadAllText((Join-Path $temp 'network-settings.json'))
     $failed = $false
-    try { [void]$type.GetMethod('Save',$flags).Invoke($settings,[object[]]@($temp)) } catch { $failed = $true }
+    try { [void]$type.GetMethod('Save',$flags).Invoke($settings.PSObject.BaseObject,[object[]]@([string]$temp)) } catch { $failed = $true }
     if (-not $failed -or $before -ne [IO.File]::ReadAllText((Join-Path $temp 'network-settings.json'))) { throw 'Invalid settings replaced saved data.' }
     Write-Host 'PASS: network settings validation and atomic roundtrip'
     $plugin = $assembly.GetType('AppShelf.Network.NetworkPlugin',$true)
-    $plugin.GetField('settings',$flags).SetValue($null,$loaded)
+    $plugin.GetField('settings',$flags).SetValue($null,$loaded.PSObject.BaseObject)
     $plugin.GetMethod('ResetResults',$flags).Invoke($null,@())
     $widgets = $plugin.GetMethod('Snapshot',$flags).Invoke($null,@())
     if (@($widgets).Count -ne 3 -or @($widgets | Where-Object {$_.Kind -ne 'indicator'}).Count -ne 0) { throw 'Indicator snapshot mismatch.' }
