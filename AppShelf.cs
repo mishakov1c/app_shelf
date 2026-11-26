@@ -834,6 +834,10 @@ namespace AppShelf
         [DataMember(Name = "showNetwork")]
         public bool ShowNetwork = true;
 
+        // Retain the legacy targets for rollback; migrated profiles no longer run built-in probes.
+        [DataMember(Name = "networkPluginMigrated", EmitDefaultValue = false)]
+        public bool NetworkPluginMigrated;
+
         // Two fixed slots, never extra background requests. Null means original
         // ICMP+HTTPS targets 1.1.1.1 and ya.ru, compatible with older apps.json.
         [DataMember(Name = "networkCheck1Mode", EmitDefaultValue = false)]
@@ -3504,9 +3508,9 @@ namespace AppShelf
 
         private void UpdateMonitorVisibility()
         {
-            _pingInternationalChip.Visibility = _config.ShowNetwork ? Visibility.Visible : Visibility.Collapsed;
-            _pingRussianChip.Visibility = _config.ShowNetwork ? Visibility.Visible : Visibility.Collapsed;
-            _routeChip.Visibility = _config.ShowNetwork ? Visibility.Visible : Visibility.Collapsed;
+            _pingInternationalChip.Visibility = LegacyNetworkEnabled ? Visibility.Visible : Visibility.Collapsed;
+            _pingRussianChip.Visibility = LegacyNetworkEnabled ? Visibility.Visible : Visibility.Collapsed;
+            _routeChip.Visibility = LegacyNetworkEnabled ? Visibility.Visible : Visibility.Collapsed;
             _weatherChip.Visibility = _config.ShowWeather ? Visibility.Visible : Visibility.Collapsed;
             _pomodoroChip.Visibility = _config.ShowPomodoro ? Visibility.Visible : Visibility.Collapsed;
             _countdownChip.Visibility = _config.ShowCountdownTimer != false ? Visibility.Visible : Visibility.Collapsed;
@@ -3580,7 +3584,7 @@ namespace AppShelf
         {
             switch (key)
             {
-                case "network1": case "network2": case "route": return _config.ShowNetwork;
+                case "network1": case "network2": case "route": return LegacyNetworkEnabled;
                 case "weather": return _config.ShowWeather;
                 case "pomodoro": return _config.ShowPomodoro;
                 case "countdown": return _config.ShowCountdownTimer != false;
@@ -3790,7 +3794,7 @@ namespace AppShelf
             {
                 AppConfig config = _window._config;
                 if (_category == "network")
-                    return config.ShowNetwork ? System.Convert.ToString(values[0]).Replace("Маршрут: ", "") : "Мониторинг выключен";
+                    return config.ShowNetwork && !config.NetworkPluginMigrated ? System.Convert.ToString(values[0]).Replace("Маршрут: ", "") : "Мониторинг выключен";
                 if (_category == "weather")
                 {
                     if (!config.ShowWeather) return "Погода выключена";
@@ -3870,9 +3874,11 @@ namespace AppShelf
             else RefreshBottomCategoryDetails();
         }
 
+        private bool LegacyNetworkEnabled { get { return _config.ShowNetwork && !_config.NetworkPluginMigrated; } }
+
         private bool NetworkTargetsCurrent(NetworkChecks.Target first, NetworkChecks.Target second)
         {
-            if (!_config.ShowNetwork) return false;
+            if (!LegacyNetworkEnabled) return false;
             NetworkChecks.Target currentFirst = NetworkChecks.Resolve(_config, 1);
             NetworkChecks.Target currentSecond = NetworkChecks.Resolve(_config, 2);
             return String.Equals(first.Mode, currentFirst.Mode, StringComparison.Ordinal) &&
@@ -3883,7 +3889,7 @@ namespace AppShelf
 
         private async void RefreshNetwork()
         {
-            if (_networkPending || !_config.ShowNetwork) return;
+            if (_networkPending || !LegacyNetworkEnabled) return;
             _networkPending = true;
             // Keep the targets that actually started these asynchronous probes.
             NetworkChecks.Target firstTarget = NetworkChecks.Resolve(_config, 1);
@@ -3913,7 +3919,7 @@ namespace AppShelf
                 _networkPending = false;
                 // A RefreshNetwork call during the old request was skipped by
                 // _networkPending. Start one check for the latest saved targets.
-                if (IsLoaded && _config.ShowNetwork &&
+                if (IsLoaded && LegacyNetworkEnabled &&
                     !NetworkTargetsCurrent(firstTarget, secondTarget))
                     RefreshNetwork();
             }
@@ -7615,6 +7621,12 @@ namespace AppShelf
                 11, MutedBrush);
             networkHint.TextWrapping = TextWrapping.Wrap;
             networkChecksSettings.Children.Add(networkHint);
+            if (_config.NetworkPluginMigrated)
+            {
+                network.Content = "Сетевые проверки перенесены в плагин «Сеть»";
+                network.IsEnabled = false;
+                networkChecksSettings.Visibility = Visibility.Collapsed;
+            }
 
             CheckBox weather = new CheckBox
             {
@@ -8563,6 +8575,8 @@ namespace AppShelf
                 }
                 AppConfig pending = _config.Copy();
                 pending.WeatherProvider = selectedProvider;
+                if (!pending.NetworkPluginMigrated)
+                {
                 pending.ShowNetwork = network.IsChecked == true;
                 pending.NetworkCheck1Mode = (string)((ComboBoxItem)networkMode1.SelectedItem).Tag == "default"
                     ? null : (string)((ComboBoxItem)networkMode1.SelectedItem).Tag;
@@ -8572,6 +8586,7 @@ namespace AppShelf
                     ? null : (string)((ComboBoxItem)networkMode2.SelectedItem).Tag;
                 pending.NetworkCheck2Target = pending.NetworkCheck2Mode == null
                     ? null : networkAddress2.Text.Trim();
+                }
                 pending.BottomPanelMode = (string)((ComboBoxItem)panelMode.SelectedItem).Tag;
                 pending.BottomPanelCategories = new List<string>();
                 foreach (string category in new string[] { "network", "weather", "time" })

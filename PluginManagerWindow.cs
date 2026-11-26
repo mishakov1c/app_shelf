@@ -4,6 +4,8 @@ using System.ComponentModel;
 using System.Collections.Generic;
 using System.Windows.Threading;
 using System.IO;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -21,6 +23,7 @@ namespace AppShelf
         private readonly PluginPackageStore store;
         private readonly PluginRuntime runtime;
         private readonly string backupRoot;
+        private readonly Func<InstalledPlugin, bool> prepareEnable;
         private List<PluginBackupItem> recovered = new List<PluginBackupItem>();
         private readonly DispatcherTimer stateTimer;
         private readonly List<Action> stateUpdates = new List<Action>();
@@ -29,11 +32,12 @@ namespace AppShelf
         private readonly Button install;
         private bool busy;
 
-        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null)
+        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null, Func<InstalledPlugin, bool> beforeEnable = null)
         {
             store = packages;
             runtime = controller;
             backupRoot = selectedBackupRoot;
+            prepareEnable = beforeEnable;
             Owner = owner;
             Title = "AppShelf — Плагины";
             Width = 760; Height = 580; MinWidth = 480; MinHeight = 360;
@@ -243,6 +247,11 @@ namespace AppShelf
             enabled.Click += delegate
             {
                 bool enable = enabled.IsChecked == true;
+                if (enable && prepareEnable != null)
+                {
+                    try { if (!prepareEnable(plugin)) { enabled.IsChecked = false; return; } }
+                    catch (Exception error) { enabled.IsChecked = false; status.Text = error.Message; return; }
+                }
                 RunAction(delegate { return runtime.SetEnabledAsync(plugin.Id, enable); }, "Состояние сохранено.");
             };
             body.Children.Add(enabled);
@@ -470,6 +479,71 @@ namespace AppShelf
         }
     }
 
+    // The only special migration is an explicit user-approved transition from the
+    // historical built-in monitor to its separately installed replacement.
+    internal static class NetworkPluginMigration
+    {
+        internal const string Id = "appshelf.network";
+        [DataContract]
+        private sealed class Seed
+        {
+            [DataMember(Name = "showNetwork")] public bool Enabled;
+            [DataMember(Name = "networkCheck1Mode", EmitDefaultValue = false)] public string Mode1;
+            [DataMember(Name = "networkCheck1Target", EmitDefaultValue = false)] public string Target1;
+            [DataMember(Name = "networkCheck2Mode", EmitDefaultValue = false)] public string Mode2;
+            [DataMember(Name = "networkCheck2Target", EmitDefaultValue = false)] public string Target2;
+        }
+
+        internal static AppConfig Prepare(AppConfig source, string version, IEnumerable<string> keys, string directory)
+        {
+            AppConfig next = source.Copy();
+            if (next.NetworkPluginMigrated) return next;
+            if (next.WidgetIndicators == null) next.WidgetIndicators = new List<PluginWidgetPlacementConfig>();
+            foreach (string key in keys)
+            {
+                if (key != "network1" && key != "network2" && key != "route") continue;
+                if (next.WidgetIndicators.Exists(delegate(PluginWidgetPlacementConfig item) {
+                    return item.PluginId == Id && item.WidgetId == key;
+                })) continue;
+                if (next.WidgetIndicators.Count >= 6)
+                    throw new InvalidOperationException("Недостаточно места для переноса сетевых индикаторов. Освободите место в нижней панели и повторите.");
+                string title = key == "route" ? "Сеть" :
+                    NetworkChecks.Label(NetworkChecks.Resolve(source, key == "network1" ? 1 : 2), key == "network1" ? 1 : 2);
+                if (title.Length > 100) title = title.Substring(0, 99) + "…";
+                next.WidgetIndicators.Add(new PluginWidgetPlacementConfig {
+                    PluginId = Id, WidgetId = key, Version = version, Title = title, Size = "indicator"
+                });
+            }
+            PluginWidgetGroupConfig.Validate(next.WidgetGroups, next.WidgetIndicators);
+            string path = Path.Combine(directory, "network-settings.json");
+            if (!File.Exists(path))
+            {
+                NetworkChecks.Target target; string error;
+                if (!NetworkChecks.TryParse(source.NetworkCheck1Mode, source.NetworkCheck1Target, 1, out target, out error) ||
+                    !NetworkChecks.TryParse(source.NetworkCheck2Mode, source.NetworkCheck2Target, 2, out target, out error))
+                    throw new InvalidDataException(error);
+                string temp = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp");
+                try
+                {
+                    using (FileStream stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    {
+                        new DataContractJsonSerializer(typeof(Seed)).WriteObject(stream, new Seed {
+                            Enabled = source.ShowNetwork, Mode1 = source.NetworkCheck1Mode, Target1 = source.NetworkCheck1Target,
+                            Mode2 = source.NetworkCheck2Mode, Target2 = source.NetworkCheck2Target
+                        });
+                        stream.Flush(true);
+                    }
+                    // Never overwrite a plugin's independently created or restored settings.
+                    try { File.Move(temp, path); }
+                    catch (IOException) { if (!File.Exists(path)) throw; }
+                }
+                finally { if (File.Exists(temp)) File.Delete(temp); }
+            }
+            next.NetworkPluginMigrated = true;
+            return next;
+        }
+    }
+
     public sealed partial class MainWindow
     {
         private PluginRuntime _pluginRuntime;
@@ -478,6 +552,32 @@ namespace AppShelf
         private readonly Queue<PluginDelivery> _pluginNotices = new Queue<PluginDelivery>();
         private bool _pluginMenuBusy;
         private bool _pluginRuntimeStopping;
+
+        private bool PrepareNetworkPluginEnable(Window owner, InstalledPlugin plugin)
+        {
+            if (plugin.Id != NetworkPluginMigration.Id || _config.NetworkPluginMigrated) return true;
+            if (!_canSave) { ShowSaveDisabled(); return false; }
+            if (AppDialog.Show(owner, "Перенести прежние настройки сетевых проверок в плагин «Сеть»?\n\n" +
+                "Существующий файл настроек плагина не будет заменён. Сетевые индикаторы перейдут в панель индикаторов плагинов; " +
+                "встроенный монитор будет выключен. Настройки прежней версии сохранятся для отката.",
+                "AppShelf — перенос сети", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return false;
+            List<string> keys = new List<string>();
+            if (_config.ShowNetwork)
+            {
+                string mode = NormalizeBottomPanelMode(_config.BottomPanelMode);
+                if (mode == "compact") keys.AddRange(BottomPanelFavorites(_config));
+                else if (mode != "categories" || BottomPanelCategories(_config).Contains("network"))
+                    keys.AddRange(new[] { "network1", "network2", "route" });
+            }
+            PluginPackageStore store = new PluginPackageStore(ConfigStore.DirectoryPath);
+            AppConfig pending = NetworkPluginMigration.Prepare(_config, plugin.Manifest.Version, keys, store.GetDataDirectory(plugin.Id));
+            if (!SaveConfigChanges(pending)) return false;
+            if (_happWindow != null) _happWindow.Close();
+            if (_pluginWidgets != null) _pluginWidgets.RestoreLayout(_config.WidgetGroups, _config.WidgetIndicators);
+            UpdateMonitorVisibility();
+            RenderTiles();
+            return true;
+        }
 
         private PluginRuntime GetPluginRuntime()
         {
@@ -669,7 +769,8 @@ namespace AppShelf
         {
             try
             {
-                PluginManagerWindow manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime(), _config.BackupDirectory);
+                PluginManagerWindow manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime(), _config.BackupDirectory,
+                    delegate(InstalledPlugin plugin) { return PrepareNetworkPluginEnable(owner, plugin); });
                 manager.ShowDialog();
                 if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
             }
