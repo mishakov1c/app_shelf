@@ -16,7 +16,7 @@ try {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
             if ($text.Split(@($anchor), [StringSplitOptions]::None).Length -ne 2) { throw 'Isolation anchor missing.' }
             $text = $text.Replace($anchor, 'Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"')
-            $text = $text.Replace('if (_networkTimer == null) StartMonitors();', '')
+            $text = $text.Replace('if (_weatherTimer == null) StartMonitors();', '')
             $pattern = 'MessageBox.Show\(this, title \+ "\\n\\n" \+ error.Message \+\s*"[^"\r\n]*" \+ ConfigStore.LogPath, "AppShelf", MessageBoxButton.OK, MessageBoxImage.Error\);'
             if ([regex]::Matches($text, $pattern).Count -ne 1) { throw 'Config error boundary missing.' }
             $text = [regex]::Replace($text, $pattern, 'IndependentAudit.Errors++;')
@@ -359,8 +359,8 @@ public static class IndependentAudit
             Call(w, "ShowSettings");
             string warning; bool safe;
             AppConfig loaded = ConfigStore.Load(out warning, out safe);
-            Assert(loaded.BottomPanelMode == "compact" && loaded.BottomPanelFavorites.Count == 2 &&
-                loaded.BottomPanelFavorites[0] == "reminders" && loaded.BottomPanelFavorites[1] == "countdown",
+            Assert(loaded.BottomPanelMode == "compact" && loaded.BottomPanelFavorites.Count == 3 && loaded.BottomPanelFavorites[0] == "route" &&
+                loaded.BottomPanelFavorites[1] == "reminders" && loaded.BottomPanelFavorites[2] == "countdown",
                 "Settings dialog lost favorite order or mode");
             WrapPanel items = (WrapPanel)Get(w, "_bottomCompactItems");
             Assert(items.Children.Count == 2 &&

@@ -243,7 +243,7 @@ public static class WeatherTests
         ConfigStore.Save(new AppConfig { ShowWeather = false, ShowNetwork = false, MinimizeToTray = false });
         MainWindow window = new MainWindow();
         window.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window, typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(window, "_networkTimer", new DispatcherTimer());
+        Set(window, "_weatherTimer", new DispatcherTimer());
         window.Opacity = 0; window.ShowActivated = false; window.ShowInTaskbar = false;
         window.Show(); Drain();
         // The regular test harness suppresses StartMonitors; warm-start tests need
@@ -274,7 +274,7 @@ public static class WeatherTests
         MainWindow window = new MainWindow();
         window.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(window, "_networkTimer", new DispatcherTimer());
+        Set(window, "_weatherTimer", new DispatcherTimer());
         window.ShowInTaskbar = false; window.Show(); Drain();
         try {
             Call(window, "RefreshWeather");

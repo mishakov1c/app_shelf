@@ -82,7 +82,7 @@ public static class BackgroundTests
         MainWindow w = new MainWindow();
         w.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), w,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(w, "_networkTimer", new DispatcherTimer());
+        Set(w, "_weatherTimer", new DispatcherTimer());
         w.ShowInTaskbar = false; w.Show(); Drain();
         Assert(PresentationSource.FromVisual(w) != null, "No real WPF source");
         return w;

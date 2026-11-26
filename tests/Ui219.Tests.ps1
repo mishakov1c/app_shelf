@@ -15,7 +15,7 @@ try {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
             if ($text.Split(@($anchor), [StringSplitOptions]::None).Length -ne 2) { throw 'Isolation anchor missing.' }
             $text = $text.Replace($anchor, 'Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"')
-            $text = $text.Replace('if (_networkTimer == null) StartMonitors();', '')
+            $text = $text.Replace('if (_weatherTimer == null) StartMonitors();', '')
             $anchor = 'bool? savedSettings = dialog.ShowDialog();'
             if ($text.Split(@($anchor), [StringSplitOptions]::None).Length -ne 2) { throw 'Settings boundary missing.' }
             $text = $text.Replace($anchor, 'bool? savedSettings = Ui219Probe.Settings(dialog);')

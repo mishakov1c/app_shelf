@@ -293,3 +293,10 @@ powershell.exe -NoProfile -STA -File tests\HappRecovery.Tests.ps1
 - Сведения о выпущенных изменениях находятся в `CHANGELOG.md`; будущие задачи — в `ROADMAP.md`.
 
 Дальнейшие направления развития перечислены в [ROADMAP.md](ROADMAP.md), история изменений ведётся в [CHANGELOG.md](CHANGELOG.md).
+
+### Independent plugins
+
+- [NetworkPlugin](https://github.com/mishakov1c/app_shelf_network) — network diagnostics, separate package and build.
+- Notes and Stocks in `samples/` are API demonstrations and regression fixtures, not production plugins.
+
+Production network diagnostics are optional; on beta.3 they require the separately installed NetworkPlugin. Legacy targets and selected indicators can be transferred on first explicit enable. The built-in RDP anti-idle tool remains independent of the plugin.

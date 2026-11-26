@@ -69,6 +69,21 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Check out pinned independent NetworkPlugin for compatibility only
+        uses: actions/checkout@v5
+        with:
+          repository: mishakov1c/app_shelf_network
+          ref: 989d970f7d5637bb8ddf8906620d07e21d345b6e
+          path: .network-compat
+          persist-credentials: false
+
+      - name: Verify independent NetworkPlugin against this host
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File .network-compat/tests/NetworkRuntime.Tests.ps1 -HostSourceDirectory "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) { throw "Independent NetworkPlugin compatibility failed" }
+
       - name: Run full isolated Windows PowerShell 5.1 STA regression tests
         if: >-
           ${{ github.event_name == 'pull_request' || startsWith(github.event.head_commit.message, 'test: run full regression') }}

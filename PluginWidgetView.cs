@@ -337,8 +337,8 @@ namespace AppShelf
             foreach (WidgetGroup group in ordered)
             {
                 DetachCard(group);
-                group.Heading.TextWrapping = TextWrapping.NoWrap;
-                group.Heading.TextTrimming = TextTrimming.CharacterEllipsis;
+                group.Heading.TextWrapping = TextWrapping.Wrap;
+                group.Heading.TextTrimming = TextTrimming.None;
                 StackPanel host;
                 if (!hosts.TryGetValue(group.Zone ?? defaultZone, out host)) host = hosts[defaultZone];
                 host.Children.Insert(Math.Min(group.Order, host.Children.Count), group.Card);
@@ -610,12 +610,23 @@ namespace AppShelf
             group.Header.ContextMenu = menu;
             group.Heading.ContextMenu = menu;
             group.Grip.ToolTip = "Перетащите группу в другую зону.";
-            Point start = new Point();
+            Point start = new Point(), canvasStart = new Point();
             bool candidate = false;
             group.Grip.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
-            { start = e.GetPosition(group.Grip); candidate = true; group.Grip.CaptureMouse(); };
-            group.Grip.PreviewMouseLeftButtonUp += delegate { candidate = false; group.Grip.ReleaseMouseCapture(); };
-            group.Grip.MouseMove += delegate(object sender, MouseEventArgs e)
+            {
+                FreeCanvasBoard currentCanvas = group.Card.Parent as FreeCanvasBoard;
+                if (!canEdit() || (board == null && !canvasAttached) ||
+                    (currentCanvas != null && (currentCanvas.IsTemporaryLayout ||
+                        (currentCanvas.CanEdit != null && !currentCanvas.CanEdit())))) return;
+                start = e.GetPosition(group.Grip);
+                if (currentCanvas != null) canvasStart = e.GetPosition(currentCanvas);
+                candidate = group.Grip.CaptureMouse();
+                e.Handled = true;
+            };
+            group.Grip.PreviewMouseLeftButtonUp += delegate
+            { candidate = false; if (group.Grip.IsMouseCaptured) group.Grip.ReleaseMouseCapture(); };
+            group.Grip.LostMouseCapture += delegate { candidate = false; };
+            group.Grip.PreviewMouseMove += delegate(object sender, MouseEventArgs e)
             {
                 if (!candidate || e.LeftButton != MouseButtonState.Pressed || !canEdit() || (board == null && !canvasAttached)) return;
                 Point now = e.GetPosition(group.Grip);
@@ -624,7 +635,7 @@ namespace AppShelf
                 candidate = false; group.Grip.ReleaseMouseCapture();
                 draggingGroup = group;
                 FreeCanvasBoard canvas = group.Card.Parent as FreeCanvasBoard;
-                if (canvas != null) canvas.BeginGroupDrag("widget:" + group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture), Mouse.GetPosition(canvas));
+                if (canvas != null) canvas.BeginGroupDrag("widget:" + group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture), canvasStart);
                 try { DragDrop.DoDragDrop(group.Grip,
                     new DataObject(GroupDragFormat, group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)), DragDropEffects.Move); }
                 finally { draggingGroup = null; if (canvas != null) canvas.EndGroupDrag(); }
@@ -635,6 +646,7 @@ namespace AppShelf
         {
             int count = entries.FindAll(delegate(Placement p) { return p.Group == group; }).Count;
             group.Heading.Text = group.Title + "  ·  " + count;
+            group.Heading.ToolTip = group.Heading.Text;
             bool expanded = group.Cells.Visibility == Visibility.Visible;
             group.Collapse.Content = new System.Windows.Shapes.Path
             {
@@ -666,7 +678,7 @@ namespace AppShelf
             StackPanel body = new StackPanel();
             TextBlock title = new TextBlock { Text = group.Title, Foreground = FluentUi.Foreground,
                 FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(5, 0, 0, 4),
-                TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+                TextTrimming = TextTrimming.None, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
             group.Header = new DockPanel { LastChildFill = true, Margin = new Thickness(4, 0, 4, 4) };
             group.Collapse = new Button { Style = FluentUi.GroupCollapseButtonStyle(),
                 VerticalAlignment = VerticalAlignment.Center };

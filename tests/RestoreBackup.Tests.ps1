@@ -242,18 +242,19 @@ public static class RestoreBackupTests
         Assert(File.ReadAllText(config.Items[0].Path).Contains("example.com/A"), "Restored shortcut differs from A");
         Assert(ReminderStore.Load(out warning, out safe).Reminders[0].Title == "Reminder-A", "Reminders differ from A");
     }
-    private static void PrepareGeometry(MainWindow window)
+    private static void PrepareGeometry(MainWindow window, bool trackGeometry = true)
     {
         EventHandler sourceHandler = (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
         window.SourceInitialized -= sourceHandler;
-        Set(window, "_networkTimer", new DispatcherTimer()); // Loaded must not start background monitors.
+        Set(window, "_weatherTimer", new DispatcherTimer()); // Loaded must not start background monitors.
         window.Opacity = 0;
         window.ShowActivated = false;
         window.ShowInTaskbar = false;
         window.Show();
         window.Dispatcher.Invoke(DispatcherPriority.Loaded, new Action(delegate { }));
-        Set(window, "_windowPlacementTrackingReady", true);
+        Set(window, "_windowPlacementTrackingReady", trackGeometry);
+        if (!trackGeometry) ((DispatcherTimer)Get(window, "_windowPlacementSaveTimer")).Stop();
         window.Width = 1000;
         window.Left = 170;
         window.Measure(new Size(1000, 600));
@@ -276,7 +277,13 @@ public static class RestoreBackupTests
         MainWindow window = new MainWindow();
         try
         {
-            PrepareGeometry(window);
+            PrepareGeometry(window, false);
+            // This scenario exports the seeded B profile, not geometry from
+            // the deliberately resized in-memory window. Prevent the debounce
+            // timer from racing the modal dialog setup. The pending/queued timer
+            // restore cases below still exercise real SaveWindowPlacement.
+            DispatcherTimer exportPlacement = (DispatcherTimer)Get(window, "_windowPlacementSaveTimer");
+            exportPlacement.Stop();
             settingsAction = delegate(Window settings)
             {
                 pickedFile = source;
@@ -290,6 +297,11 @@ public static class RestoreBackupTests
                 {
                     AssertBackupGroups(backup);
                     ToggleBackupGroup(backup, "backup-full");
+                    string seedWarning; bool seedSafe;
+                    AppConfig seed = ConfigStore.Load(out seedWarning, out seedSafe);
+                    Assert(seedSafe && seedWarning == null && seed.WindowWidth == 950 &&
+                        ((AppConfig)Get(window, "_config")).WindowWidth == 950 &&
+                        !exportPlacement.IsEnabled, "Unexpected geometry save before export");
                     pickedFile = zip;
                     Click(backup, "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u0440\u0435\u0437\u0435\u0440\u0432\u043d\u0443\u044e \u043a\u043e\u043f\u0438\u044e ZIP\u2026");
                     Assert(File.Exists(zip) && compositionDialogs == 1, "ZIP export or composition picker was blocked");

@@ -6,7 +6,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
@@ -465,18 +464,20 @@ namespace AppShelf
             compact.Click += delegate { ToggleTemporaryGroup(key); };
             Children.Add(compact);
             FreeCanvasRect initial = null, candidate = null;
-            double dx = 0, dy = 0;
+            Point start = new Point();
             grip.DragStarted += delegate
             {
                 if (entry.Effective == null || IsTemporaryLayout || (CanEdit != null && !CanEdit())) return;
                 initial = entry.Effective.Copy(); candidate = initial.Copy();
-                dx = dy = 0; ShowGrid(true);
+                start = Mouse.GetPosition(this);
+                ShowGrid(true);
             };
-            grip.DragDelta += delegate(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
+            grip.DragDelta += delegate
             {
                 if (initial == null) return;
-                dx += e.HorizontalChange; dy += e.VerticalChange;
-                candidate = ResizeCandidate(key, initial.Width * CellStep + dx, initial.Height * CellStep + dy);
+                // Thumb can report a displacement from its unchanged starting
+                // geometry on every event. Never accumulate those values.
+                candidate = ResizeFromPointer(key, initial, start, Mouse.GetPosition(this));
                 ShowPreview(candidate);
             };
             grip.DragCompleted += delegate(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
@@ -670,6 +671,13 @@ namespace AppShelf
             return CanPlace(entry, rect) ? rect : null;
         }
 
+        internal FreeCanvasRect ResizeFromPointer(string key, FreeCanvasRect initial, Point start, Point current)
+        {
+            if (!FreeCanvasLayout.IsValid(initial)) return null;
+            Vector delta = current - start;
+            return ResizeCandidate(key, initial.Width * CellStep + delta.X, initial.Height * CellStep + delta.Y);
+        }
+
         internal FreeCanvasRect ResizeCandidate(string key, double widthDip, double heightDip)
         {
             Entry entry = Find(key);
@@ -824,6 +832,10 @@ namespace AppShelf
 
         [DataMember(Name = "showNetwork")]
         public bool ShowNetwork = true;
+
+        // Retain the legacy targets for rollback; migrated profiles no longer run built-in probes.
+        [DataMember(Name = "networkPluginMigrated", EmitDefaultValue = false)]
+        public bool NetworkPluginMigrated;
 
         // Two fixed slots, never extra background requests. Null means original
         // ICMP+HTTPS targets 1.1.1.1 and ya.ru, compatible with older apps.json.
@@ -2380,9 +2392,6 @@ namespace AppShelf
         private DispatcherTimer _statusMessageTimer;
         private string _defaultStatusText = "";
         private bool _statusMessageVisible;
-        private TextBlock _pingInternational;
-        private TextBlock _pingRussian;
-        private TextBlock _route;
         private TextBlock _weather;
         private TextBlock _pomodoro;
         private TextBlock _rdpStatus;
@@ -2398,9 +2407,6 @@ namespace AppShelf
         private WrapPanel _bottomCategoryDetails;
         private string _bottomOpenCategory;
         private bool _bottomCompactExpanded;
-        private Border _pingInternationalChip;
-        private Border _pingRussianChip;
-        private Border _routeChip;
         private Border _weatherChip;
         private Border _pomodoroChip;
         private Border _countdownChip;
@@ -2426,7 +2432,6 @@ namespace AppShelf
         private TextBlock _pomodoroClock;
         private TextBlock _pomodoroStage;
         private Button _pomodoroToggle;
-        private HappDiagnosticsWindow _happWindow;
         private MenuItem _groupMenuItem;
         private MenuItem _newGroupMenuItem;
         private MenuItem _collectionsMenuItem;
@@ -2435,9 +2440,7 @@ namespace AppShelf
         private MenuItem _tileModeLabeledMenuItem;
         private MenuItem _pinMenuItem;
         private TextBox _search;
-        private DispatcherTimer _networkTimer;
         private DispatcherTimer _weatherTimer;
-        private bool _networkPending;
         private bool _weatherPending;
         private WeatherSnapshot _lastWeather;
         private bool _lastWeatherIsCached;
@@ -2524,9 +2527,6 @@ namespace AppShelf
                 Zone = zone;
             }
         }
-
-        [DllImport("iphlpapi.dll")]
-        private static extern uint GetBestInterface(uint destination, out uint interfaceIndex);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool RegisterHotKey(IntPtr windowHandle, int id, uint modifiers, uint virtualKey);
@@ -2654,7 +2654,7 @@ namespace AppShelf
                         Activate();
                     }
                 }
-                if (_networkTimer == null) StartMonitors();
+                if (_weatherTimer == null) StartMonitors();
                 StartAutomaticBackupMonitor();
                 StartPluginRuntime();
             };
@@ -3114,9 +3114,6 @@ namespace AppShelf
             footerStack.Children.Add(_monitorBorder);
             WrapPanel monitors = new WrapPanel { Orientation = Orientation.Horizontal };
             _monitorBorder.Child = monitors;
-            _pingInternational = Text("1.1.1.1: проверяем…", 12, WhiteBrush);
-            _pingRussian = Text("ya.ru: проверяем…", 12, WhiteBrush);
-            _route = Text("Маршрут: проверяем…", 12, MutedBrush);
             _weather = Text("Погода: укажи город", 12, WhiteBrush);
             // The detailed weather chip must also keep full conditions visible.
             _weather.TextWrapping = TextWrapping.Wrap;
@@ -3124,16 +3121,11 @@ namespace AppShelf
             _pomodoro = Text("Помодоро: 25:00", 12, WhiteBrush);
             _countdownText = Text("Таймер: 00:05:00", 12, WhiteBrush);
             _rdpStatus = Text("RDP: проверяем…", 12, MutedBrush);
-            _pingInternationalChip = FluentUi.Chip(_pingInternational, FluentUi.Green, false);
-            _pingRussianChip = FluentUi.Chip(_pingRussian, FluentUi.Green, false);
-            _routeChip = FluentUi.Chip(_route, AccentBrush, true);
             _weatherChip = FluentUi.Chip(_weather, FluentUi.Amber, true);
             _pomodoroChip = FluentUi.Chip(_pomodoro, FluentUi.Green, true);
             _countdownChip = FluentUi.Chip(_countdownText, FluentUi.Amber, true);
             _rdpChip = FluentUi.Chip(_rdpStatus, AccentBrush, true);
             CreateRemindersChip();
-            _routeChip.ToolTip = "Открыть диагностику сети Windows, DNS, HTTPS и прокси.";
-            _routeChip.MouseLeftButtonUp += delegate { ToggleBottomModuleWindow("route"); };
             _pomodoroChip.ToolTip = "Нажми, чтобы открыть Помодоро.";
             _pomodoroChip.MouseLeftButtonUp += delegate { ToggleBottomModuleWindow("pomodoro"); };
             _countdownChip.ToolTip = "Нажми, чтобы открыть обычный таймер.";
@@ -3143,9 +3135,6 @@ namespace AppShelf
             _weatherChip.ToolTip = "Нажми для прогноза на 7 дней. Правая кнопка — параметры.";
             _weatherChip.MouseLeftButtonUp += delegate { ToggleBottomModuleWindow("weather"); };
             AttachWeatherContextMenu(_weatherChip);
-            monitors.Children.Add(_pingInternationalChip);
-            monitors.Children.Add(_pingRussianChip);
-            monitors.Children.Add(_routeChip);
             monitors.Children.Add(_weatherChip);
             monitors.Children.Add(_pomodoroChip);
             monitors.Children.Add(_countdownChip);
@@ -3449,7 +3438,6 @@ namespace AppShelf
             if (_windowPlacementSaveTimer != null) _windowPlacementSaveTimer.Stop();
             if (_automaticBackupTimer != null) _automaticBackupTimer.Stop();
             if (_statusMessageTimer != null) _statusMessageTimer.Stop();
-            if (_networkTimer != null) _networkTimer.Stop();
             if (_weatherTimer != null) _weatherTimer.Stop();
             if (_weatherCacheExpiryTimer != null) _weatherCacheExpiryTimer.Stop();
             if (_pomodoroTimer != null) _pomodoroTimer.Stop();
@@ -3472,9 +3460,6 @@ namespace AppShelf
 
         private void StartMonitors()
         {
-            _networkTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
-            _networkTimer.Tick += delegate { RefreshNetwork(); };
-            _networkTimer.Start();
             _weatherTimer = new DispatcherTimer { Interval = WeatherRefreshInterval() };
             _weatherTimer.Tick += delegate { RefreshWeather(); };
             _weatherTimer.Start();
@@ -3489,15 +3474,11 @@ namespace AppShelf
             UpdatePomodoroUi();
             UpdateCountdownUi();
             UpdateRdpStatus();
-            RefreshNetwork();
             RefreshWeather();
         }
 
         private void UpdateMonitorVisibility()
         {
-            _pingInternationalChip.Visibility = _config.ShowNetwork ? Visibility.Visible : Visibility.Collapsed;
-            _pingRussianChip.Visibility = _config.ShowNetwork ? Visibility.Visible : Visibility.Collapsed;
-            _routeChip.Visibility = _config.ShowNetwork ? Visibility.Visible : Visibility.Collapsed;
             _weatherChip.Visibility = _config.ShowWeather ? Visibility.Visible : Visibility.Collapsed;
             _pomodoroChip.Visibility = _config.ShowPomodoro ? Visibility.Visible : Visibility.Collapsed;
             _countdownChip.Visibility = _config.ShowCountdownTimer != false ? Visibility.Visible : Visibility.Collapsed;
@@ -3516,9 +3497,6 @@ namespace AppShelf
         {
             switch (key)
             {
-                case "network1": return NetworkChecks.Label(NetworkChecks.Resolve(_config, 1), 1);
-                case "network2": return NetworkChecks.Label(NetworkChecks.Resolve(_config, 2), 2);
-                case "route": return "Сеть";
                 case "weather": return "Погода";
                 case "pomodoro": return "Помодоро";
                 case "countdown": return "Таймер";
@@ -3527,14 +3505,9 @@ namespace AppShelf
             }
         }
 
-        // Favorites identify stable network slots, not today's configurable addresses.
-        // The actual target still appears in the live check result and diagnostics.
-        private static string BottomFavoriteName(string key)
-        {
-            if (key == "network1") return "Проверка сети 1";
-            if (key == "network2") return "Проверка сети 2";
-            return null;
-        }
+        // Legacy favorite IDs remain serialized for migration and downgrade.
+        private static bool IsLegacyNetworkKey(string key)
+        { return key == "network1" || key == "network2" || key == "route"; }
 
         private static string NormalizeBottomPanelMode(string value)
         {
@@ -3571,7 +3544,7 @@ namespace AppShelf
         {
             switch (key)
             {
-                case "network1": case "network2": case "route": return _config.ShowNetwork;
+                case "network1": case "network2": case "route": return false;
                 case "weather": return _config.ShowWeather;
                 case "pomodoro": return _config.ShowPomodoro;
                 case "countdown": return _config.ShowCountdownTimer != false;
@@ -3584,9 +3557,6 @@ namespace AppShelf
         {
             switch (key)
             {
-                case "network1": return _pingInternational;
-                case "network2": return _pingRussian;
-                case "route": return _route;
                 case "weather": return _weather;
                 case "pomodoro": return _pomodoro;
                 case "countdown": return _countdownText;
@@ -3602,15 +3572,14 @@ namespace AppShelf
             Window opened = key == "weather" ? (Window)_forecastWindow :
                 key == "pomodoro" ? _pomodoroWindow :
                 key == "countdown" ? _countdownWindow :
-                key == "reminders" ? _remindersWindow :
-                key == "route" || key == "network1" || key == "network2" ? (Window)_happWindow : null;
+                key == "reminders" ? _remindersWindow : null;
             if (opened != null && opened.IsVisible)
             {
                 opened.Close();
                 return;
             }
-            if (key == "route" || key == "network1" || key == "network2") ShowHappDiagnostics();
-            else if (key == "weather") ShowForecastWindow();
+            if (IsLegacyNetworkKey(key)) return;
+            if (key == "weather") ShowForecastWindow();
             else if (key == "pomodoro") ShowPomodoroWindow();
             else if (key == "countdown") ShowCountdownWindow();
             else if (key == "rdp") ShowSettingsSection("windows");
@@ -3711,7 +3680,7 @@ namespace AppShelf
                 card.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                 card.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                 card.Children.Add(FluentUi.BottomCategoryIcon(category));
-                TextBlock title = Text(category == "network" ? "Сеть" : category == "weather" ? "Погода" : "Время", 12, WhiteBrush);
+                TextBlock title = Text(category == "network" ? "RDP" : category == "weather" ? "Погода" : "Время", 12, WhiteBrush);
                 title.TextAlignment = TextAlignment.Center;
                 title.Margin = new Thickness(0, 3, 0, 3);
                 Grid.SetRow(title, 1);
@@ -3724,7 +3693,7 @@ namespace AppShelf
                     Converter = new BottomCategorySummary(this, category),
                     Mode = System.Windows.Data.BindingMode.OneWay
                 };
-                foreach (TextBlock source in new TextBlock[] { _route, _weather, _countdownText, _pomodoro })
+                foreach (TextBlock source in new TextBlock[] { _rdpStatus, _weather, _countdownText, _pomodoro })
                     binding.Bindings.Add(new System.Windows.Data.Binding("Text") { Source = source });
                 // The configuration object is replaced when settings are saved.
                 binding.Bindings.Add(new System.Windows.Data.Binding("Tag") { Source = _bottomCategoryTabs });
@@ -3732,7 +3701,7 @@ namespace AppShelf
                 Grid.SetRow(summary, 2);
                 card.Children.Add(summary);
                 button.Content = card;
-                button.ToolTip = category == "network" ? "Сетевые инструменты" :
+                button.ToolTip = category == "network" ? "Антипростой RDP" :
                     category == "weather" ? "Прогноз погоды" : "Таймер, Помодоро и напоминания";
                 if (category == "weather") AttachWeatherContextMenu(button);
                 button.Click += delegate
@@ -3781,7 +3750,7 @@ namespace AppShelf
             {
                 AppConfig config = _window._config;
                 if (_category == "network")
-                    return config.ShowNetwork ? System.Convert.ToString(values[0]).Replace("Маршрут: ", "") : "Мониторинг выключен";
+                    return config.RdpKeepAwake ? System.Convert.ToString(values[0]).Replace("RDP: ", "") : "RDP выключен";
                 if (_category == "weather")
                 {
                     if (!config.ShowWeather) return "Погода выключена";
@@ -3816,7 +3785,7 @@ namespace AppShelf
             foreach (string key in BottomPanelKeys)
             {
                 bool categoryMatch = _bottomOpenCategory == "network"
-                    ? (key == "network1" || key == "network2" || key == "route" || key == "rdp")
+                    ? key == "rdp"
                     : _bottomOpenCategory == "weather" ? key == "weather"
                     : (key == "pomodoro" || key == "countdown" || key == "reminders");
                 if (categoryMatch && BottomIndicatorEnabled(key))
@@ -3859,181 +3828,6 @@ namespace AppShelf
             }
             if (mode != "categories") _bottomCategoryDetails.Visibility = Visibility.Collapsed;
             else RefreshBottomCategoryDetails();
-        }
-
-        private bool NetworkTargetsCurrent(NetworkChecks.Target first, NetworkChecks.Target second)
-        {
-            if (!_config.ShowNetwork) return false;
-            NetworkChecks.Target currentFirst = NetworkChecks.Resolve(_config, 1);
-            NetworkChecks.Target currentSecond = NetworkChecks.Resolve(_config, 2);
-            return String.Equals(first.Mode, currentFirst.Mode, StringComparison.Ordinal) &&
-                String.Equals(first.Value, currentFirst.Value, StringComparison.Ordinal) &&
-                String.Equals(second.Mode, currentSecond.Mode, StringComparison.Ordinal) &&
-                String.Equals(second.Value, currentSecond.Value, StringComparison.Ordinal);
-        }
-
-        private async void RefreshNetwork()
-        {
-            if (_networkPending || !_config.ShowNetwork) return;
-            _networkPending = true;
-            // Keep the targets that actually started these asynchronous probes.
-            NetworkChecks.Target firstTarget = NetworkChecks.Resolve(_config, 1);
-            NetworkChecks.Target secondTarget = NetworkChecks.Resolve(_config, 2);
-            try
-            {
-                Task<string> first = NetworkChecks.ProbeAsync(firstTarget, 1);
-                Task<string> second = NetworkChecks.ProbeAsync(secondTarget, 2);
-                await Task.WhenAll(first, second);
-                // A settings save may replace the targets while these probes run.
-                // Never publish a result belonging to the previous configuration.
-                if (!IsLoaded || !NetworkTargetsCurrent(firstTarget, secondTarget)) return;
-                _pingInternational.Text = first.Result;
-                _pingRussian.Text = second.Result;
-                _route.Text = RouteSummary();
-            }
-            catch (Exception ex)
-            {
-                if (!IsLoaded || !NetworkTargetsCurrent(firstTarget, secondTarget)) return;
-                ConfigStore.Log(ex);
-                _pingInternational.Text = "Проверка 1: ошибка";
-                _pingRussian.Text = "Проверка 2: ошибка";
-                _route.Text = RouteSummary();
-            }
-            finally
-            {
-                _networkPending = false;
-                // A RefreshNetwork call during the old request was skipped by
-                // _networkPending. Start one check for the latest saved targets.
-                if (IsLoaded && _config.ShowNetwork &&
-                    !NetworkTargetsCurrent(firstTarget, secondTarget))
-                    RefreshNetwork();
-            }
-        }
-
-        private static string RouteSummary()
-        {
-            // Reports Windows' selected interface, not the VPN app's toggle state.
-            try
-            {
-                uint index;
-                uint dest = BitConverter.ToUInt32(IPAddress.Parse("1.1.1.1").GetAddressBytes(), 0);
-                if (GetBestInterface(dest, out index) != 0) return "Маршрут: неизвестен";
-                foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
-                {
-                    try
-                    {
-                        IPv4InterfaceProperties properties = nic.GetIPProperties().GetIPv4Properties();
-                        if (properties != null && properties.Index == (int)index)
-                        {
-                            if (nic.Name.IndexOf("happ", StringComparison.OrdinalIgnoreCase) >= 0)
-                                return "Маршрут: Happ TUN";
-                            string shortName = nic.Name.Length > 24 ? nic.Name.Substring(0, 24) + "…" : nic.Name;
-                            return "Маршрут: " + shortName;
-                        }
-                    }
-                    catch (NetworkInformationException) { }
-                }
-                return "Маршрут: интерфейс #" + index;
-            }
-            catch { return "Маршрут: неизвестен"; }
-        }
-
-        internal static async Task<string> ProbeEndpoint(string host, string httpsUrl)
-        {
-            // Run tests simultaneously. HTTPS measures the HTTP request, not ICMP latency.
-            Task<long?> icmp = TryIcmp(host);
-            Task<long?> https = TryHttps(httpsUrl);
-            await Task.WhenAll(icmp, https);
-            string icmpText = icmp.Result.HasValue ? "ICMP " + icmp.Result.Value + " мс" : "ICMP —";
-            string connectionText;
-            if (https.Result.HasValue)
-                connectionText = "HTTPS " + https.Result.Value + " мс";
-            else
-            {
-                // An HTTPS failure may be due to TLS or HTTP policy, not routing.
-                long? tcp = await TryTcp(host);
-                connectionText = tcp.HasValue ? "TCP 443 " + (tcp.Value == 0 ? "<1" : tcp.Value.ToString()) +
-                    " мс (HTTPS сбой)" : "HTTPS/TCP —";
-            }
-            return host + ": " + icmpText + " · " + connectionText;
-        }
-
-        private static Task<long?> TryTcp(string host)
-        {
-            return TryTcp(host, 443);
-        }
-
-        internal static async Task<long?> TryTcp(string host, int port)
-        {
-            try
-            {
-                using (TcpClient client = new TcpClient())
-                {
-                    Stopwatch watch = Stopwatch.StartNew();
-                    Task connect = client.ConnectAsync(host, port);
-                    if (await Task.WhenAny(connect, Task.Delay(1800)) != connect) return null;
-                    await connect;
-                    watch.Stop();
-                    return watch.ElapsedMilliseconds;
-                }
-            }
-            catch { return null; }
-        }
-
-        internal static async Task<long?> TryIcmp(string host)
-        {
-            try
-            {
-                using (Ping ping = new Ping())
-                {
-                    PingReply result = await ping.SendPingAsync(host, 1500);
-                    if (result.Status == IPStatus.Success) return result.RoundtripTime;
-                }
-            }
-            catch { /* ICMP can be blocked: not a network failure by itself. */ }
-            return null;
-        }
-
-        internal static async Task<long?> TryHttps(string url)
-        {
-            HttpWebRequest request = null;
-            try
-            {
-                request = (HttpWebRequest)WebRequest.Create(url);
-                request.Method = "HEAD";
-                request.UserAgent = "AppShelf/1.4 (network check)";
-                request.Timeout = 3500;
-                request.ReadWriteTimeout = 3500;
-                request.AllowAutoRedirect = true;
-                Stopwatch watch = Stopwatch.StartNew();
-                Task<WebResponse> responseTask = request.GetResponseAsync();
-                if (await Task.WhenAny(responseTask, Task.Delay(3500)) != responseTask)
-                {
-                    request.Abort();
-                    return null;
-                }
-                try
-                {
-                    using (WebResponse response = await responseTask)
-                    {
-                        watch.Stop();
-                        return watch.ElapsedMilliseconds;
-                    }
-                }
-                catch (WebException ex)
-                {
-                    // A valid HTTP error (e.g. 403/405) still proves TLS/HTTP reachability.
-                    HttpWebResponse response = ex.Response as HttpWebResponse;
-                    if (response != null)
-                    {
-                        response.Dispose();
-                        watch.Stop();
-                        return watch.ElapsedMilliseconds;
-                    }
-                    return null;
-                }
-            }
-            catch { return null; }
         }
 
         // Network availability is an expected state of a weather widget. Do
@@ -5649,7 +5443,7 @@ namespace AppShelf
                         card.HorizontalAlignment = align == "right" ? HorizontalAlignment.Right :
                             align == "center" ? HorizontalAlignment.Center : HorizontalAlignment.Left;
                         card.Margin = new Thickness(0, 0, grid ? 9 : 0, 8);
-                        group.Heading.MaxWidth = Math.Max(85, width - 84);
+                        group.Heading.MaxWidth = Math.Max(1, width - 84);
                     }
                     else
                     {
@@ -5804,8 +5598,9 @@ namespace AppShelf
                         "  ·  " + inGroup, 15, WhiteBrush);
                     heading.FontWeight = FontWeights.SemiBold;
                     heading.Margin = new Thickness(5, 0, 0, 4);
-                    heading.TextTrimming = canvasMode ? TextTrimming.None : TextTrimming.CharacterEllipsis;
-                    if (canvasMode) heading.TextWrapping = TextWrapping.Wrap;
+                    heading.TextTrimming = TextTrimming.None;
+                    heading.TextWrapping = TextWrapping.Wrap;
+                    heading.ToolTip = heading.Text;
                     DockPanel headerPanel = new DockPanel { LastChildFill = true };
                     if (group.Length != 0)
                     {
@@ -5901,9 +5696,9 @@ namespace AppShelf
                             groupMenu.Items.Add(zoneMenu);
                         }
                         headerPanel.ContextMenu = groupMenu;
-                        heading.ToolTip = freeMode
+                        heading.ToolTip = heading.Text + "\n" + (freeMode
                             ? "Правая кнопка — размещение группы и другие действия"
-                            : "Правая кнопка — порядок, переименование, удаление";
+                            : "Правая кнопка — порядок, переименование, удаление");
 
                         // Drag by the dedicated handle, never by an application tile.
                         // A normal click on the heading still expands/collapses.
@@ -5915,13 +5710,26 @@ namespace AppShelf
                             : "Перетащи на заголовок другой группы, чтобы поменять группы местами";
                         DockPanel.SetDock(grip, Dock.Right);
                         headerPanel.Children.Add(grip);
+                        Point canvasDragStart = new Point();
                         grip.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
                         {
-                            _groupDragCandidate = selectedGroup;
+                            if (!_canSave || _groupDragInProgress || (canvasMode && !CanEditCanvas())) return;
                             _groupDragStart = e.GetPosition(this);
+                            if (_canvasBoard != null) canvasDragStart = e.GetPosition(_canvasBoard);
+                            _groupDragCandidate = grip.CaptureMouse() ? selectedGroup : null;
                             e.Handled = true;
                         };
-                        section.PreviewMouseMove += delegate(object sender, MouseEventArgs e)
+                        grip.PreviewMouseLeftButtonUp += delegate
+                        {
+                            _groupDragCandidate = null;
+                            if (grip.IsMouseCaptured) grip.ReleaseMouseCapture();
+                        };
+                        grip.LostMouseCapture += delegate
+                        {
+                            if (String.Equals(_groupDragCandidate, selectedGroup, StringComparison.OrdinalIgnoreCase))
+                                _groupDragCandidate = null;
+                        };
+                        grip.PreviewMouseMove += delegate(object sender, MouseEventArgs e)
                         {
                             if (!_canSave || _groupDragInProgress ||
                                 !String.Equals(_groupDragCandidate, selectedGroup,
@@ -5932,12 +5740,13 @@ namespace AppShelf
                                 Math.Abs(current.Y - _groupDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
                             _groupDragCandidate = null;
                             _groupDragInProgress = true;
+                            if (grip.IsMouseCaptured) grip.ReleaseMouseCapture();
                             try
                             {
                                 DataObject data = new DataObject();
                                 data.SetData(GroupDragFormat, selectedGroup);
                                 if (freeMode) ShowFreeGroupZoneHints(true);
-                                if (_canvasBoard != null) _canvasBoard.BeginGroupDrag("app:" + selectedGroup, Mouse.GetPosition(_canvasBoard));
+                                if (_canvasBoard != null) _canvasBoard.BeginGroupDrag("app:" + selectedGroup, canvasDragStart);
                                 DragDrop.DoDragDrop(grip, data, DragDropEffects.Move);
                             }
                             catch (Exception ex)
@@ -6750,21 +6559,6 @@ namespace AppShelf
             RenderTiles();
         }
 
-        private void ShowHappDiagnostics()
-        {
-            if (_happWindow != null)
-            {
-                if (_happWindow.WindowState == WindowState.Minimized)
-                    _happWindow.WindowState = WindowState.Normal;
-                _happWindow.Activate();
-                return;
-            }
-            _happWindow = new HappDiagnosticsWindow(_config.Copy());
-            _happWindow.Owner = this;
-            _happWindow.Closed += delegate { _happWindow = null; };
-            _happWindow.Show();
-        }
-
         // Package #11: one independent countdown, never linked to Pomodoro.
         private void UpdateCountdownAvailability()
         {
@@ -6777,7 +6571,7 @@ namespace AppShelf
                 UpdateCountdownUi();
                 return;
             }
-            if (_countdownTimer == null && _networkTimer != null)
+            if (_countdownTimer == null && _weatherTimer != null)
             {
                 _countdownTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
                 _countdownTimer.Tick += delegate { TickCountdown(); };
@@ -7224,51 +7018,6 @@ namespace AppShelf
             layout.Children.Add(section);
         }
 
-        private static void AddNetworkTargetRow(StackPanel parent, int index,
-            string savedMode, string savedTarget, out ComboBox mode, out TextBox address)
-        {
-            parent.Children.Add(Text("Проверка " + index, 12, WhiteBrush));
-            mode = new ComboBox { Tag = "NetworkTargetMode" + index,
-                MinHeight = 33, Margin = new Thickness(0, 4, 0, 5) };
-            mode.Items.Add(new ComboBoxItem { Content = "По умолчанию — ICMP + HTTPS", Tag = "default" });
-            mode.Items.Add(new ComboBoxItem { Content = "ICMP — ping узла", Tag = "icmp" });
-            mode.Items.Add(new ComboBoxItem { Content = "HTTPS — проверка сайта", Tag = "https" });
-            mode.Items.Add(new ComboBoxItem { Content = "TCP — подключение к порту", Tag = "tcp" });
-            string selected = String.IsNullOrWhiteSpace(savedMode) ? "default" : savedMode;
-            mode.SelectedIndex = selected == "icmp" ? 1 : selected == "https" ? 2 :
-                selected == "tcp" ? 3 : 0;
-            parent.Children.Add(mode);
-            address = new TextBox
-            {
-                Text = selected == "default" ? NetworkChecks.DefaultHost(index) : savedTarget ?? "",
-                MinHeight = 31, Padding = new Thickness(8, 5, 8, 5),
-                Tag = "NetworkTargetAddress" + index,
-                Background = TileBrush, BorderBrush = StrokeBrush,
-                Foreground = WhiteBrush,
-                Margin = new Thickness(0, 0, 0, 12)
-            };
-            parent.Children.Add(address);
-            ComboBox selectedMode = mode;
-            TextBox input = address;
-            selectedMode.SelectionChanged += delegate
-            {
-                string type = (string)((ComboBoxItem)selectedMode.SelectedItem).Tag;
-                bool builtIn = type == "default";
-                input.IsEnabled = !builtIn;
-                if (builtIn) input.Text = NetworkChecks.DefaultHost(index);
-                else if (String.IsNullOrWhiteSpace(input.Text) ||
-                         String.Equals(input.Text, NetworkChecks.DefaultHost(index),
-                             StringComparison.OrdinalIgnoreCase))
-                {
-                    string host = NetworkChecks.DefaultHost(index);
-                    input.Text = type == "https" ? (index == 1
-                        ? "https://1.1.1.1/cdn-cgi/trace" : "https://ya.ru/") :
-                        type == "tcp" ? host + ":443" : host;
-                }
-            };
-            address.IsEnabled = mode.SelectedIndex != 0;
-        }
-
         // The gallery only selects an existing wallpaper. Import and deletion remain
         // in Settings, so the two entry points share one library and saved preset.
         private static Brush BackgroundGalleryThumbnail(string preset)
@@ -7459,7 +7208,7 @@ namespace AppShelf
             layout.Children.Add(Text("Режим отображения:", 12, MutedBrush));
             ComboBox panelMode = new ComboBox { MinHeight = 34, Margin = new Thickness(0, 5, 0, 9) };
             panelMode.Items.Add(new ComboBoxItem { Content = "Компактный — избранные показатели", Tag = "compact" });
-            panelMode.Items.Add(new ComboBoxItem { Content = "Категории — Сеть, Погода, Время", Tag = "categories" });
+            panelMode.Items.Add(new ComboBoxItem { Content = "Категории — RDP, Погода, Время", Tag = "categories" });
             panelMode.Items.Add(new ComboBoxItem { Content = "Подробный — все показатели", Tag = "detailed" });
             string currentPanelMode = NormalizeBottomPanelMode(_config.BottomPanelMode);
             panelMode.SelectedIndex = currentPanelMode == "compact" ? 0 : currentPanelMode == "categories" ? 1 : 2;
@@ -7474,7 +7223,7 @@ namespace AppShelf
             {
                 CheckBox check = new CheckBox
                 {
-                    Content = category == "network" ? "Сеть" : category == "weather" ? "Погода" : "Время",
+                    Content = category == "network" ? "RDP" : category == "weather" ? "Погода" : "Время",
                     IsChecked = enabledCategories.Contains(category),
                     Tag = category, Foreground = WhiteBrush, Margin = new Thickness(0, 0, 18, 0)
                 };
@@ -7486,7 +7235,7 @@ namespace AppShelf
             layout.Children.Add(favoritesLabel);
             ListBox favoriteList = new ListBox
             {
-                Height = 191, Background = TileBrush, Foreground = WhiteBrush,
+                Height = 120, Background = TileBrush, Foreground = WhiteBrush,
                 BorderBrush = StrokeBrush, BorderThickness = new Thickness(1),
                 Margin = new Thickness(0, 6, 0, 5)
             };
@@ -7497,9 +7246,10 @@ namespace AppShelf
                 if (!orderedKeys.Contains(key)) orderedKeys.Add(key);
             foreach (string key in orderedKeys)
             {
+                if (IsLegacyNetworkKey(key)) continue;
                 CheckBox check = new CheckBox
                 {
-                    Content = BottomFavoriteName(key) ?? BottomIndicatorName(key), Tag = key,
+                    Content = BottomIndicatorName(key), Tag = key,
                     IsChecked = configuredFavorites.Contains(key),
                     Padding = new Thickness(2, 3, 0, 3)
                 };
@@ -7559,45 +7309,11 @@ namespace AppShelf
             }
             panelMode.SelectionChanged += delegate { updateFavoriteAvailability(); };
             updateFavoriteAvailability();
-            CheckBox network = new CheckBox
-            {
-                Content = "Показывать сетевые проверки в нижней панели", IsChecked = _config.ShowNetwork,
-                Foreground = WhiteBrush, Margin = new Thickness(0, 0, 0, 12)
-            };
-            StackPanel networkChecksSettings = new StackPanel();
-            TextBlock networkDescription = Text(
-                "Две проверки вместо стандартных 1.1.1.1 и ya.ru. Выбери тип и укажи адрес. Дополнительных фоновых запросов не будет.",
-                11, MutedBrush);
-            networkDescription.TextWrapping = TextWrapping.Wrap;
-            networkChecksSettings.Children.Add(networkDescription);
-            ComboBox networkMode1, networkMode2;
-            TextBox networkAddress1, networkAddress2;
-            AddNetworkTargetRow(networkChecksSettings, 1,
-                _config.NetworkCheck1Mode, _config.NetworkCheck1Target,
-                out networkMode1, out networkAddress1);
-            AddNetworkTargetRow(networkChecksSettings, 2,
-                _config.NetworkCheck2Mode, _config.NetworkCheck2Target,
-                out networkMode2, out networkAddress2);
-            // Reuse the existing dark ComboBox template and scoped dropdown styles.
-            // Without both, Windows renders these new network controls in system light theme.
-            foreach (ComboBox networkMode in new ComboBox[] { networkMode1, networkMode2 })
-            {
-                networkMode.Style = panelMode.Style;
-                foreach (ResourceDictionary resources in panelMode.Resources.MergedDictionaries)
-                    networkMode.Resources.MergedDictionaries.Add(resources);
-            }
-            TextBlock networkHint = Text(
-                "ICMP: host/IP  ·  HTTPS: https://site.example/path  ·  TCP: host:port",
-                11, MutedBrush);
-            networkHint.TextWrapping = TextWrapping.Wrap;
-            networkChecksSettings.Children.Add(networkHint);
-
             CheckBox weather = new CheckBox
             {
                 Content = "Показывать погоду", IsChecked = _config.ShowWeather,
                 Foreground = WhiteBrush, Margin = new Thickness(0, 0, 0, 10)
             };
-            layout.Children.Add(network);
             layout.Children.Add(weather);
             CheckBox pomodoro = new CheckBox
             {
@@ -8435,8 +8151,14 @@ namespace AppShelf
             AddSettingsSection(accordionRows, "appearance", "Внешний вид",
                 new List<UIElement> { appearanceFrame },
                 sections, arrows, headers, toggleSection);
-            AddSettingsSection(accordionRows, "network", "Сеть",
-                new List<UIElement> { network, networkChecksSettings },
+            TextBlock networkPluginHint = Text("Сетевые проверки и диагностика теперь доступны в отдельном плагине «Сеть». " +
+                "При первом включении прежние настройки будут предложены к переносу.", 12, MutedBrush);
+            networkPluginHint.TextWrapping = TextWrapping.Wrap;
+            Button networkPluginButton = ActionButton("Открыть менеджер плагинов…", false);
+            networkPluginButton.Tag = "NetworkPluginSettings";
+            networkPluginButton.Click += delegate { ShowPluginManager(dialog); };
+            AddSettingsSection(accordionRows, "network", "Сеть — плагин",
+                new List<UIElement> { networkPluginHint, networkPluginButton },
                 sections, arrows, headers, toggleSection);
             List<UIElement> weatherItems = new List<UIElement> { weather };
             weatherItems.AddRange(SettingsRange(originalSettings, weatherTitle, providerNote));
@@ -8480,23 +8202,6 @@ namespace AppShelf
             ok.IsEnabled = _canSave;
             ok.Click += delegate
             {
-                string firstMode = (string)((ComboBoxItem)networkMode1.SelectedItem).Tag;
-                string secondMode = (string)((ComboBoxItem)networkMode2.SelectedItem).Tag;
-                NetworkChecks.Target validated; string error;
-                if (!NetworkChecks.TryParse(firstMode, networkAddress1.Text, 1,
-                    out validated, out error))
-                {
-                    MessageBox.Show(dialog, "Проверка 1: " + error,
-                        "AppShelf — настройки сети", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-                if (!NetworkChecks.TryParse(secondMode, networkAddress2.Text, 2,
-                    out validated, out error))
-                {
-                    MessageBox.Show(dialog, "Проверка 2: " + error,
-                        "AppShelf — настройки сети", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
                 dialog.DialogResult = true;
             };
             Button cancel = ActionButton("Отмена", false);
@@ -8539,15 +8244,6 @@ namespace AppShelf
                 }
                 AppConfig pending = _config.Copy();
                 pending.WeatherProvider = selectedProvider;
-                pending.ShowNetwork = network.IsChecked == true;
-                pending.NetworkCheck1Mode = (string)((ComboBoxItem)networkMode1.SelectedItem).Tag == "default"
-                    ? null : (string)((ComboBoxItem)networkMode1.SelectedItem).Tag;
-                pending.NetworkCheck1Target = pending.NetworkCheck1Mode == null
-                    ? null : networkAddress1.Text.Trim();
-                pending.NetworkCheck2Mode = (string)((ComboBoxItem)networkMode2.SelectedItem).Tag == "default"
-                    ? null : (string)((ComboBoxItem)networkMode2.SelectedItem).Tag;
-                pending.NetworkCheck2Target = pending.NetworkCheck2Mode == null
-                    ? null : networkAddress2.Text.Trim();
                 pending.BottomPanelMode = (string)((ComboBoxItem)panelMode.SelectedItem).Tag;
                 pending.BottomPanelCategories = new List<string>();
                 foreach (string category in new string[] { "network", "weather", "time" })
@@ -8560,6 +8256,11 @@ namespace AppShelf
                     if (check != null && check.IsChecked == true)
                         pending.BottomPanelFavorites.Add((string)check.Tag);
                 }
+                // Keep hidden legacy selections in their original relative slots.
+                List<string> legacyFavorites = BottomPanelFavorites(_config);
+                for (int i = 0; i < legacyFavorites.Count; i++)
+                    if (IsLegacyNetworkKey(legacyFavorites[i]))
+                        pending.BottomPanelFavorites.Insert(Math.Min(i, pending.BottomPanelFavorites.Count), legacyFavorites[i]);
                 pending.ShowWeather = weather.IsChecked == true;
                 pending.WeatherCity = city.Text.Trim();
                 pending.CloseToTray = tray.IsChecked == true;
@@ -8624,11 +8325,6 @@ namespace AppShelf
                     ShowError("Не удалось настроить автозапуск Windows.", ex);
                     return;
                 }
-                bool targetsChanged =
-                    !String.Equals(_config.NetworkCheck1Mode, pending.NetworkCheck1Mode, StringComparison.Ordinal) ||
-                    !String.Equals(_config.NetworkCheck1Target, pending.NetworkCheck1Target, StringComparison.Ordinal) ||
-                    !String.Equals(_config.NetworkCheck2Mode, pending.NetworkCheck2Mode, StringComparison.Ordinal) ||
-                    !String.Equals(_config.NetworkCheck2Target, pending.NetworkCheck2Target, StringComparison.Ordinal);
                 if (!SaveConfigChanges(pending))
                 {
                     if (attemptedRegistryChange)
@@ -8657,16 +8353,6 @@ namespace AppShelf
                 UpdatePomodoroUi();
                 UpdateCountdownUi();
                 UpdateRdpStatus();
-                if (targetsChanged)
-                {
-                    // Clear the previous targets immediately; an in-flight result
-                    // is rejected and the new checks begin once it finishes.
-                    _pingInternational.Text = "Проверка 1: обновление…";
-                    _pingRussian.Text = "Проверка 2: обновление…";
-                }
-                if (targetsChanged && _happWindow != null)
-                    _happWindow.UpdateNetworkConfig(_config.Copy());
-                RefreshNetwork();
                 if (changedCity || changedProvider) ResetWeatherSnapshot();
                 if (changedCity || changedProvider || _config.ShowWeather != _weatherSettingsVisible || _config.ShowWeather)
                     RefreshWeather();
