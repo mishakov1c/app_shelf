@@ -2456,17 +2456,30 @@ public static class Package6Tests
                 var scroller = (ScrollViewer)Get(w, "_tilesScroller");
                 var board = (FreeCanvasBoard)Get(w, "_canvasBoard");
                 w.UpdateLayout(); Drain();
+                // HeightFor can expand a manually sized card to fit wrapped tiles.
+                // Measure the real card at the test width before positioning it
+                // against the viewport edge, rather than assuming eight rows.
+                board.SetPreferred("app:Первая", new FreeCanvasRect(0, 0, 12, 8) { ManualHeight = 8 });
+                w.UpdateLayout(); Drain(); w.UpdateLayout();
+                FreeCanvasRect measured = board.Capture()["app:Первая"];
                 double width = scroller.ViewportWidth, height = scroller.ViewportHeight;
                 Assert(width > 400 && height > 200, "Unexpected initial viewport");
-                int x = (int)Math.Floor(width / 20) - 12;
-                int y = (int)Math.Floor(height / 20) - 8;
-                var fitting = new FreeCanvasRect(x, y, 12, 8) { ManualHeight = 8 };
+                int x = (int)Math.Floor(width / 20) - measured.Width;
+                int y = (int)Math.Floor(height / 20) - measured.Height;
+                Assert(x >= 0 && y >= 0, "Test card does not fit at the chosen width");
+                var fitting = new FreeCanvasRect(x, y, measured.Width, measured.Height) { ManualHeight = 8 };
                 board.SetPreferred("app:Первая", fitting);
                 w.UpdateLayout(); Drain(); w.UpdateLayout();
+                FreeCanvasRect actual = board.Capture()["app:Первая"];
+                string extent = String.Format("viewport={0}x{1}; extent={2}x{3}; card={4},{5} {6}x{7}; bars={8}/{9}",
+                    scroller.ViewportWidth, scroller.ViewportHeight, scroller.ExtentWidth, scroller.ExtentHeight,
+                    actual.X, actual.Y, actual.Width, actual.Height,
+                    scroller.ComputedHorizontalScrollBarVisibility, scroller.ComputedVerticalScrollBarVisibility);
+                Console.WriteLine("Canvas fitting diagnostic: " + extent);
                 Assert(scroller.ScrollableHeight < 1 && scroller.ScrollableWidth < 1 &&
                     scroller.ComputedVerticalScrollBarVisibility != Visibility.Visible &&
-                    scroller.ComputedHorizontalScrollBarVisibility != Visibility.Visible, "Fitting card shows scrollbars");
-                board.SetPreferred("app:Первая", new FreeCanvasRect(x + 10, y + 10, 12, 8) { ManualHeight = 8 });
+                    scroller.ComputedHorizontalScrollBarVisibility != Visibility.Visible, "Fitting card shows scrollbars: " + extent);
+                board.SetPreferred("app:Первая", new FreeCanvasRect(x + 10, y + 10, measured.Width, measured.Height) { ManualHeight = 8 });
                 w.UpdateLayout(); Drain(); w.UpdateLayout();
                 Assert(scroller.ScrollableHeight > 50 && scroller.ScrollableWidth > 50, "Actual overflow did not scroll");
                 board.SetPreferred("app:Первая", fitting);
