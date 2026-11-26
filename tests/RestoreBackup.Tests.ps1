@@ -161,7 +161,16 @@ public static class RestoreBackupTests
         }
         ToggleBackupGroup(dialog, keys[0]);
         Assert(bodies[keys[0]].Visibility == Visibility.Visible, "Automatic group did not expand");
-        ComboBox cadence = Controls<ComboBox>(bodies[keys[0]])[0];
+        List<ComboBox> automaticFields = Controls<ComboBox>(bodies[keys[0]]);
+        Assert(automaticFields.Count == 3, "Automatic backup dropdowns missing");
+        foreach (ComboBox field in automaticFields)
+        {
+            field.ApplyTemplate();
+            Assert(field.Style != null && field.Resources.MergedDictionaries.Count > 0 &&
+                field.Template.FindName("PART_Popup", field) != null && field.Foreground is SolidColorBrush && ((SolidColorBrush)field.Foreground).Color == Color.FromRgb(244, 247, 253),
+                "Backup dropdown does not use the shared dark selection style");
+        }
+        ComboBox cadence = automaticFields[0];
         int original = cadence.SelectedIndex;
         cadence.SelectedIndex = original == 0 ? 1 : 0;
         ToggleBackupGroup(dialog, keys[1]);

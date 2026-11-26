@@ -24,6 +24,8 @@ namespace AppShelf
         private readonly PluginRuntime runtime;
         private readonly string backupRoot;
         private readonly Func<InstalledPlugin, Func<Task>> prepareEnable;
+        private readonly Action<Window, bool, string> placeWidget;
+        private readonly Func<bool> canPlaceWidget;
         private List<PluginBackupItem> recovered = new List<PluginBackupItem>();
         private readonly DispatcherTimer stateTimer;
         private readonly List<Action> stateUpdates = new List<Action>();
@@ -32,12 +34,15 @@ namespace AppShelf
         private readonly Button install;
         private bool busy;
 
-        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null, Func<InstalledPlugin, Func<Task>> beforeEnable = null)
+        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null, Func<InstalledPlugin, Func<Task>> beforeEnable = null,
+            Action<Window, bool, string> placement = null, Func<bool> widgetPlacementAvailable = null)
         {
             store = packages;
             runtime = controller;
             backupRoot = selectedBackupRoot;
             prepareEnable = beforeEnable;
+            placeWidget = placement;
+            canPlaceWidget = widgetPlacementAvailable;
             Owner = owner;
             Title = "AppShelf — Плагины";
             Width = 760; Height = 580; MinWidth = 480; MinHeight = 360;
@@ -296,6 +301,18 @@ namespace AppShelf
                 };
                 actions.Children.Add(settings);
             }
+            if (placeWidget != null && manifest != null && Array.IndexOf(manifest.Capabilities, "widget") >= 0)
+            {
+                foreach (bool indicator in new[] { true, false })
+                {
+                    bool chosen = indicator;
+                    Button place = ButtonFor(chosen ? "Добавить индикатор…" : "Добавить виджет…", false);
+                    place.Tag = (chosen ? "PluginAddIndicator:" : "PluginAddWidget:") + plugin.Id;
+                    place.IsEnabled = plugin.Enabled && plugin.Error == null && (chosen || canPlaceWidget == null || canPlaceWidget());
+                    place.Click += delegate { if (!busy && place.IsEnabled) placeWidget(this, chosen, plugin.Id); };
+                    actions.Children.Add(place);
+                }
+            }
             stateUpdates.Add(delegate
             {
                 PluginRuntimeState state = runtime.State(plugin.Id);
@@ -312,7 +329,16 @@ namespace AppShelf
                 start.IsEnabled = plugin.Enabled && plugin.Error == null &&
                     state.Status != "starting" && state.Status != "stopping";
             });
-            Button update = ButtonFor("Обновить…", false);
+            if (manifest != null && manifest.Update != null)
+            {
+                body.Children.Add(Label("Источник обновлений: " + manifest.Update.Repository, 12, FluentUi.Secondary));
+                Button online = ButtonFor("Проверить обновления…", false);
+                online.Tag = "PluginCheckUpdate:" + plugin.Id;
+                online.IsEnabled = plugin.Error == null;
+                online.Click += delegate { CheckOnlineUpdate(plugin); };
+                actions.Children.Add(online);
+            }
+            Button update = ButtonFor("Обновить из файла…", false);
             update.IsEnabled = plugin.Error == null; update.Click += delegate { ChoosePackage(plugin.Id); };
             actions.Children.Add(update);
             Button remove = ButtonFor("Удалить…", false);
@@ -404,37 +430,119 @@ namespace AppShelf
             if (picker.ShowDialog(this) == true) Install(picker.FileName, expectedId);
         }
 
-        // Confirmation applies to the validated staged bytes, not to a second read
-        // of a source file which may have changed while the dialog was open.
+        private AppUpdate.PluginRelease ChooseOnlineRelease(PluginManifest installed, AppUpdate.PluginRelease[] releases)
+        {
+            Window dialog = new Window { Owner = this, Title = "AppShelf — Обновление плагина",
+                Width = 540, Height = 450, MinWidth = 360, MinHeight = 280,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner };
+            FluentUi.PrepareWindow(dialog);
+            DockPanel layout = new DockPanel { Margin = new Thickness(18) };
+            dialog.Content = layout;
+            StackPanel buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            DockPanel.SetDock(buttons, Dock.Bottom); layout.Children.Add(buttons);
+            Button installRelease = ButtonFor("Скачать и установить…", true);
+            Button cancel = ButtonFor("Отмена", false);
+            buttons.Children.Add(installRelease); buttons.Children.Add(cancel);
+            StackPanel header = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+            DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
+            header.Children.Add(Label(installed.Name + " · установлена " + installed.Version, 18, FluentUi.Foreground));
+            header.Children.Add(Label("Источник: " + installed.Update.Repository, 12, FluentUi.Secondary));
+            ComboBox choices = new ComboBox { MinHeight = 34, Margin = new Thickness(0, 8, 0, 0) };
+            FluentUi.StyleComboBox(choices);
+            foreach (AppUpdate.PluginRelease item in releases)
+                choices.Items.Add(new ComboBoxItem { Content = item.Version + (item.Preview ? " (предварительный выпуск)" : " (стабильный)"), Tag = item });
+            header.Children.Add(choices);
+            StackPanel notes = new StackPanel();
+            ScrollViewer scroll = new ScrollViewer { Content = notes, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            FluentUi.StyleSettingsScroll(scroll); layout.Children.Add(scroll);
+            AppUpdate.PluginRelease selected = null, result = null;
+            choices.SelectionChanged += delegate
+            {
+                ComboBoxItem item = choices.SelectedItem as ComboBoxItem;
+                selected = item == null ? null : (AppUpdate.PluginRelease)item.Tag;
+                installRelease.IsEnabled = selected != null;
+                notes.Children.Clear();
+                if (selected != null) ReleaseNotesView.Render(notes, selected.Notes, FluentUi.Foreground, FluentUi.Accent, false);
+            };
+            installRelease.Click += delegate { if (selected != null) { result = selected; dialog.DialogResult = true; } };
+            cancel.Click += delegate { dialog.DialogResult = false; };
+            choices.SelectedIndex = 0;
+            dialog.ShowDialog();
+            return result;
+        }
+
+        private async void CheckOnlineUpdate(InstalledPlugin plugin)
+        {
+            if (busy || plugin.Manifest == null || plugin.Manifest.Update == null) return;
+            busy = true; install.IsEnabled = false; rows.IsEnabled = false;
+            string folder = null;
+            try
+            {
+                status.Text = "Проверка GitHub Releases…";
+                AppUpdate.PluginRelease[] releases = await Task.Run(delegate {
+                    return AppUpdate.CheckPluginReleases(plugin.Manifest.Update.Repository, plugin.Manifest.Version);
+                });
+                if (releases.Length == 0) { status.Text = "Нет подходящего проверяемого обновления."; return; }
+                AppUpdate.PluginRelease chosen = ChooseOnlineRelease(plugin.Manifest, releases);
+                if (chosen == null) { status.Text = "Обновление отменено."; return; }
+                folder = Path.Combine(Path.GetTempPath(), "AppShelf-PluginUpdate-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(folder);
+                string path = Path.Combine(folder, chosen.Asset);
+                status.Text = "Загрузка и проверка SHA-256…";
+                await Task.Run(delegate { AppUpdate.DownloadPluginRelease(chosen, path); });
+                status.Text = "Проверка пакета…";
+                PluginManifest manifest = await InstallCoreAsync(path, plugin.Id, chosen);
+                status.Text = InstallStatus(manifest);
+            }
+            catch (AppUpdate.GithubRateLimitException error) { status.Text = "GitHub временно ограничил запросы. Повторите после " + error.RetryUtc.ToLocalTime().ToString("g") + "."; }
+            catch (Exception error) { status.Text = "Не удалось обновить плагин: " + error.Message; }
+            finally
+            {
+                if (folder != null) try { Directory.Delete(folder, true); } catch (Exception error) { ConfigStore.Log(error); }
+                busy = false; install.IsEnabled = true; rows.IsEnabled = true; Refresh();
+            }
+        }
+
+        private static string InstallStatus(PluginManifest manifest)
+        {
+            return manifest == null ? "Установка отменена." : "Установлен " + manifest.Name + " " + manifest.Version + ". Включите его переключателем в списке.";
+        }
+
+        // Confirmation applies to the validated staged bytes, not to a second read.
+        private Task<PluginManifest> InstallCoreAsync(string path, string expectedId, AppUpdate.PluginRelease release)
+        {
+            return Task.Run(delegate
+            {
+                return store.Install(path, delegate(PluginManifest candidate)
+                {
+                    if (release != null && (candidate.Version != release.Version || candidate.Update == null ||
+                        candidate.Update.Provider != "github" || !String.Equals(candidate.Update.Repository, release.Repository, StringComparison.OrdinalIgnoreCase)))
+                        throw new InvalidDataException("Версия или источник пакета не соответствует выбранному релизу.");
+                    return Dispatcher.Invoke(new Func<bool>(delegate
+                    {
+                        return AppDialog.Show(this, candidate.Name + " " + candidate.Version +
+                            "\nID: " + candidate.Id +
+                            "\nИздатель (не проверен): " + (String.IsNullOrWhiteSpace(candidate.Publisher) ? "не указан" : candidate.Publisher) +
+                            "\nФайл: " + Path.GetFileName(path) +
+                            "\nИсточник обновлений: " + (candidate.Update == null ? "не указан" : candidate.Update.Repository) +
+                            "\nВозможности: " + CapabilityLabels(candidate.Capabilities) +
+                            "\n\nПлагин — сторонняя программа с правами вашей учётной записи. " +
+                            "Устанавливайте только пакеты из доверенных источников. " +
+                            "После установки или обновления плагин будет отключён.\n\nДоверять этому пакету и установить его?",
+                            "AppShelf — Доверие к плагину", MessageBoxButton.YesNo,
+                            MessageBoxImage.Warning) == MessageBoxResult.Yes;
+                    }));
+                }, expectedId, runtime.BeforePackageCommit,
+                    String.IsNullOrWhiteSpace(backupRoot) ? null : BackupAutomation.ValidateRoot(backupRoot), true, release == null ? null : release.Sha256);
+            });
+        }
+
         private async void Install(string path, string expectedId)
         {
             if (busy) return;
             busy = true; install.IsEnabled = false; rows.IsEnabled = false;
             status.Text = "Проверка пакета…";
-            try
-            {
-                PluginManifest manifest = await Task.Run(delegate
-                {
-                    return store.Install(path, delegate(PluginManifest candidate)
-                    {
-                        return Dispatcher.Invoke(new Func<bool>(delegate
-                        {
-                            return AppDialog.Show(this, candidate.Name + " " + candidate.Version +
-                                "\nID: " + candidate.Id +
-                                "\nИздатель (не проверен): " + (String.IsNullOrWhiteSpace(candidate.Publisher) ? "не указан" : candidate.Publisher) +
-                                "\nФайл: " + Path.GetFileName(path) +
-                                "\nВозможности: " + CapabilityLabels(candidate.Capabilities) +
-                                "\n\nПлагин — сторонняя программа с правами вашей учётной записи. " +
-                                "Устанавливайте только пакеты из доверенных источников. " +
-                                "После установки или обновления плагин будет отключён.\n\nДоверять этому пакету и установить его?",
-                                "AppShelf — Доверие к плагину", MessageBoxButton.YesNo,
-                                MessageBoxImage.Warning) == MessageBoxResult.Yes;
-                        }));
-                    }, expectedId, runtime.BeforePackageCommit,
-                        String.IsNullOrWhiteSpace(backupRoot) ? null : BackupAutomation.ValidateRoot(backupRoot), true);
-                });
-                status.Text = manifest == null ? "Установка отменена." : "Установлен " + manifest.Name + " " + manifest.Version + ". Включите его переключателем в списке.";
-            }
+            try { status.Text = InstallStatus(await InstallCoreAsync(path, expectedId, null)); }
             catch (Exception error) { status.Text = "Не удалось установить пакет: " + error.Message; }
             finally { busy = false; install.IsEnabled = true; rows.IsEnabled = true; Refresh(); }
         }
@@ -811,7 +919,9 @@ namespace AppShelf
             {
                 PluginManagerWindow manager = null;
                 manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime(), _config.BackupDirectory,
-                    delegate(InstalledPlugin plugin) { return PrepareNetworkPluginEnable(manager, plugin); });
+                    delegate(InstalledPlugin plugin) { return PrepareNetworkPluginEnable(manager, plugin); },
+                    delegate(Window dialogOwner, bool indicator, string id) { ShowPluginWidgetPickerFor(dialogOwner, indicator, id); },
+                    delegate { return WidgetsInFreeLayout(); });
                 manager.ShowDialog();
                 if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
             }

@@ -13,6 +13,13 @@ using System.Text.RegularExpressions;
 namespace AppShelf
 {
     [DataContract]
+    internal sealed class PluginUpdateSource
+    {
+        [DataMember(Name = "provider", IsRequired = true)] public string Provider { get; set; }
+        [DataMember(Name = "repository", IsRequired = true)] public string Repository { get; set; }
+    }
+
+    [DataContract]
     internal sealed class PluginManifest
     {
         [DataMember(Name = "schemaVersion", IsRequired = true)] public int SchemaVersion { get; set; }
@@ -25,6 +32,7 @@ namespace AppShelf
         [DataMember(Name = "publisher", EmitDefaultValue = false)] public string Publisher { get; set; }
         [DataMember(Name = "capabilities", IsRequired = true)] public string[] Capabilities { get; set; }
         [DataMember(Name = "backupFiles", EmitDefaultValue = false)] public string[] BackupFiles { get; set; }
+        [DataMember(Name = "update", EmitDefaultValue = false)] public PluginUpdateSource Update { get; set; }
     }
 
     internal sealed class InstalledPlugin
@@ -201,16 +209,29 @@ namespace AppShelf
                 if (capability == null || !Capabilities.Contains(capability) || !seen.Add(capability))
                     Reject("Неизвестная или повторяющаяся возможность плагина.");
             ValidateBackupPaths(manifest.BackupFiles);
+            if (manifest.Update != null && (manifest.Update.Provider != "github" ||
+                manifest.Update.Repository == null || !Regex.IsMatch(manifest.Update.Repository,
+                    @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\z", RegexOptions.CultureInvariant) ||
+                manifest.Update.Repository.EndsWith(".", StringComparison.Ordinal)))
+                Reject("Некорректный источник обновлений плагина.");
             return manifest;
         }
 
-        private static void ExtractPackage(string package, string stage)
+        private static void ExtractPackage(string package, string stage, string expectedSha256 = null)
         {
             if (!String.Equals(Path.GetExtension(package), ".asplugin", StringComparison.OrdinalIgnoreCase))
                 Reject("Ожидается пакет .asplugin.");
             using (FileStream input = new FileStream(package, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
                 if (input.Length == 0 || input.Length > MaxArchiveBytes) Reject("Недопустимый размер пакета.");
+                // Bind the release digest to the same locked stream used for extraction.
+                if (expectedSha256 != null)
+                {
+                    using (SHA256 hash = SHA256.Create())
+                        if (!String.Equals(BitConverter.ToString(hash.ComputeHash(input)).Replace("-", ""), expectedSha256, StringComparison.OrdinalIgnoreCase))
+                            Reject("SHA-256 пакета не соответствует выбранному релизу.");
+                    input.Position = 0;
+                }
                 using (ZipArchive archive = new ZipArchive(input, ZipArchiveMode.Read))
                 {
                     if (archive.Entries.Count == 0 || archive.Entries.Count > MaxEntries)
@@ -390,7 +411,7 @@ namespace AppShelf
         // Stage and validate before replacing the installed code. Runtime reservation
         // is obtained after confirmation, before the atomic directory swap.
         internal PluginManifest Install(string package, Func<PluginManifest, bool> confirm, string expectedId = null,
-            Func<string, IDisposable> beforeCommit = null, string previousBackupRoot = null, bool requirePreviousBackup = false)
+            Func<string, IDisposable> beforeCommit = null, string previousBackupRoot = null, bool requirePreviousBackup = false, string expectedSha256 = null)
         {
             if (confirm == null) throw new ArgumentNullException("confirm");
             EnsureInstalledRoot();
@@ -400,7 +421,7 @@ namespace AppShelf
             Directory.CreateDirectory(stage);
             try
             {
-                ExtractPackage(package, stage);
+                ExtractPackage(package, stage, expectedSha256);
                 PluginManifest manifest = ReadManifest(stage);
                 if (expectedId != null && manifest.Id != expectedId)
                     Reject("Пакет относится к другому плагину.");

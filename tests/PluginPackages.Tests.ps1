@@ -180,7 +180,15 @@ public static class PluginPackageTests {
             Reject(delegate { Install(store, Package(root, Manifest("1.1.0", "../escape", 1), null, true)); }, "id");
             Assert(store.ReadInstalled("example.hello").Version == "1.0.0", "failed update preserved");
             Assert(!File.Exists(Path.Combine(root, "escape.txt")), "no escape");
-            Assert(Install(store, Package(root, v2, null, true)).Version == "1.1.0", "update");
+            string verifiedUpdate = Package(root, v2, null, true);
+            bool asked = false;
+            Reject(delegate { store.Install(verifiedUpdate, delegate { asked=true; return true; }, "example.hello", null, null, false, new string('0',64)); }, "mismatching release digest");
+            Assert(!asked && store.ReadInstalled("example.hello").Version == "1.0.0", "digest failure before trust and replacement");
+            string digest;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var stream = File.OpenRead(verifiedUpdate))
+                digest = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+            Assert(store.Install(verifiedUpdate, delegate { return true; }, "example.hello", null, null, false, digest).Version == "1.1.0", "verified update");
             Assert(File.ReadAllText(data) == "keep", "update preserved data");
             Assert(!store.List()[0].Enabled, "new version disabled");
             store.Remove("example.hello");

@@ -267,13 +267,8 @@ public static class BackgroundTests
         Case("group opacity live preview, save, and cancel", delegate {
             Seed("blue-arcs");
             MainWindow w = Open(); try {
-                StackPanel groups = (StackPanel)Get(w, "_tileHost");
-                Border group = null;
-                foreach (UIElement item in groups.Children) {
-                    Border candidate = item as Border;
-                    if (candidate != null && Object.Equals(candidate.Tag, "AppShelfMainGroupCard"))
-                        group = candidate;
-                }
+                Border group = Controls<Border>((DependencyObject)Get(w, "_tileHost"))
+                    .Find(candidate => Object.Equals(candidate.Tag, "AppShelfMainGroupCard"));
                 Assert(group != null, "No real group card to preview");
                 Brush before = group.Background;
                 settings = delegate(Window d) {

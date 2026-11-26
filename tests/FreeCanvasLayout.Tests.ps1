@@ -146,27 +146,45 @@ foreach ($key in $before.Keys) {
     Assert ($before[$key].X -eq $after[$key].X -and $before[$key].Y -eq $after[$key].Y -and $before[$key].Width -eq $after[$key].Width -and $before[$key].Height -eq $after[$key].Height) 'viewport strategy modified original placement'
 }
 Write-Host 'PASS viewport strategies and restoration'
+# A larger viewport must expose empty area, and drag cannot introduce adaptive overflow.
+[void]$type.GetMethod('SetViewportHeight',$flags).Invoke($board,[object[]]@(1000.0))
+$board.Measure((New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)))
+$board.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$board.DesiredSize.Width,$board.DesiredSize.Height))
+Assert ($board.DesiredSize.Height -ge 1000) 'canvas does not fill taller viewport'
+$outside = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 1100,700).PSObject.BaseObject))
+Assert ($null -eq $outside -and -not $temp.GetValue($board,$null)) 'drag beyond right edge accepted in adaptive mode'
+$lower = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 40,700).PSObject.BaseObject))
+Assert ($null -ne $lower) 'available lower viewport rejected'
+Write-Host 'PASS enlarged viewport and adaptive drag boundary'
 
-# All arrangement commands leave their source untouched and never overlap.
-$source = $capture.Invoke($board,$null)
-foreach ($command in @('vertical','rows','compact','left','right')) {
-    $arranged = [AppShelf.FreeCanvasLayout]::Arrange($source,$command,40)
-    Assert ($null -ne $arranged -and $arranged.Count -eq $source.Count) "arrangement lost cards: $command"
-    $keys = @($arranged.Keys)
-    for ($i=0; $i -lt $keys.Count; $i++) {
-        for ($j=$i+1; $j -lt $keys.Count; $j++) {
-            Assert (-not [AppShelf.FreeCanvasLayout]::Intersects($arranged[$keys[$i]],$arranged[$keys[$j]])) "overlap: $command"
-        }
-    }
-    Assert ($source['app:other'].X -eq 2) 'arrangement mutated source'
-    if ($command -eq 'vertical' -or $command -eq 'left') {
-        foreach ($rect in $arranged.Values) { Assert ($rect.X -eq 0) 'left alignment failed' }
-    }
-    if ($command -eq 'right') {
-        foreach ($rect in $arranged.Values) { Assert (($rect.X+$rect.Width) -eq 40) 'right alignment failed' }
-    }
-}
-Write-Host 'PASS arrangement commands'
+# Collapsed effective height must not invalidate the saved manual height or collision checks.
+$collapsedBoard = [Activator]::CreateInstance($type,$true)
+$expander = New-Object System.Windows.Controls.Expander
+$expander.Header = 'Collapsed group'
+$body = New-Object System.Windows.Controls.Border
+$body.Height = 180
+$expander.Content = $body
+$expander.IsExpanded = $false
+$card = New-Object System.Windows.Controls.Border
+$card.Child = $expander
+$pref = Rect 2 2 12 18
+$pref.ManualHeight = 18
+[void]$add.Invoke($collapsedBoard,[object[]]@('app:collapsed',$card.PSObject.BaseObject,12,$pref.PSObject.BaseObject))
+$infinite = New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)
+$collapsedBoard.Measure($infinite)
+$collapsedBoard.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$collapsedBoard.DesiredSize.Width,$collapsedBoard.DesiredSize.Height))
+$positions = $capture.Invoke($collapsedBoard,$null)
+$short = $positions['app:collapsed']
+Assert ([AppShelf.FreeCanvasLayout]::IsValid($short) -and $short.Height -lt 18 -and $short.X -eq 2) 'collapsed saved size leaves invalid effective rectangle'
+$stored = $type.GetMethod('PreferenceForEdit',$flags).Invoke($collapsedBoard,[object[]]@('app:collapsed',$short.PSObject.BaseObject))
+Assert ($stored.ManualHeight -eq 18) 'collapsed drag loses expanded manual height'
+$expander.IsExpanded = $true
+$collapsedBoard.InvalidateMeasure()
+$collapsedBoard.Measure($infinite)
+$positions = $capture.Invoke($collapsedBoard,$null)
+$expanded = $positions['app:collapsed']
+Assert ($expanded.Height -ge 18 -and $expanded.ManualHeight -eq 18 -and $expanded.X -eq 2) 'expanded height not restored'
+Write-Host 'PASS collapsed effective geometry preserves manual expanded height'
 
 # D04: a long sequence and a single movement to the same pointer must
 # produce identical geometry. In particular 56 DIP is not 360 DIP.

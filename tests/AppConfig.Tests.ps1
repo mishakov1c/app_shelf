@@ -258,6 +258,9 @@ public static class ConfigTests
         Seed();
         bool safe; string warning;
         AppConfig config = Load(out safe, out warning);
+        // Keep the one-time group layout conversion out of this shortcut rollback scenario.
+        config.GroupLayoutMode = "canvas";
+        config.CanvasInitialized = true;
         config.Items[0].Path = External("First.url");
         config.Items[0].SourcePath = null;
         ConfigStore.Save(config);

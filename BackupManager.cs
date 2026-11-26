@@ -817,7 +817,7 @@ namespace AppShelf
                         restoreSettings ? archivePositions : current.CanvasPositions, restoreSettings ? archiveStep : currentStep,
                         restoreWidgets ? archivePositions : current.CanvasPositions, restoreWidgets ? archiveStep : currentStep, targetStep);
                     restored.CanvasGridStep = restoreSettings ? archiveGridStep : current.CanvasGridStep;
-                    restored.CanvasInitialized = canvasInitialized || restored.CanvasPositions != null;
+                    restored.CanvasInitialized = canvasInitialized;
                     restored.CanvasViewportMode = viewportMode;
                     restored.MainBackgroundPreset = restoreBackgrounds ? background : current.MainBackgroundPreset;
                 }
@@ -1962,6 +1962,7 @@ namespace AppShelf
             int currentQuota = BackupAutomation.QuotaMb(_config);
             quota.SelectedIndex = currentQuota == 512 ? 0 : currentQuota == 2048 ? 2 :
                 currentQuota == 4096 ? 3 : 1;
+            foreach (ComboBox field in new[] { cadence, count, quota }) FluentUi.StyleComboBox(field);
 
             TextBlock compositionTitle = Text("Состав автоматических копий", 13, WhiteBrush);
             compositionTitle.Margin = new Thickness(0, 6, 0, 4);

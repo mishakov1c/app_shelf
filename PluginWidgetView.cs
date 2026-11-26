@@ -32,6 +32,14 @@ namespace AppShelf
             AutomationProperties.SetName(frame, widget.Title);
             StackPanel body = new StackPanel();
             frame.Child = body;
+            PluginWidgetElement singleAction = null;
+            if (indicator)
+            {
+                int actionCount = 0;
+                foreach (PluginWidgetElement element in widget.Elements)
+                    if (element.Type == "action") { singleAction = element; actionCount++; }
+                if (actionCount != 1) singleAction = null;
+            }
 
             TextBlock title = Literal(widget.Title, indicator ? 12 : tile ? 13 : 15, FluentUi.Foreground);
             title.FontWeight = FontWeights.SemiBold;
@@ -48,6 +56,7 @@ namespace AppShelf
             bool busy = false;
             foreach (PluginWidgetElement element in widget.Elements)
             {
+                if (Object.ReferenceEquals(element, singleAction)) continue;
                 FrameworkElement view;
                 switch (element.Type)
                 {
@@ -98,6 +107,26 @@ namespace AppShelf
                 elements.Children.Add(view);
             }
             body.Children.Add(error);
+            if (singleAction != null)
+            {
+                // The complete indicator is the action, including keyboard activation.
+                string command = singleAction.CommandId;
+                frame.Child = null;
+                Button primary = new Button { Content = body, Style = FluentUi.BottomCategoryButtonStyle(),
+                    Padding = new Thickness(8, 4, 8, 4), MinHeight = 26, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    IsEnabled = invoke != null, ToolTip = singleAction.Label, Tag = command };
+                AutomationProperties.SetName(primary, widget.Title + " — " + singleAction.Label);
+                primary.Click += async delegate
+                {
+                    if (busy || invoke == null) return;
+                    busy = true; primary.IsEnabled = false; error.Visibility = Visibility.Collapsed;
+                    try { await invoke(command); }
+                    catch (Exception) { error.Visibility = Visibility.Visible; }
+                    finally { busy = false; primary.IsEnabled = true; }
+                };
+                frame.Background = Brushes.Transparent; frame.BorderThickness = new Thickness(0); frame.Padding = new Thickness(0);
+                frame.Child = primary;
+            }
             return frame;
         }
 
@@ -1179,12 +1208,15 @@ namespace AppShelf
         private void ShowAddPluginIndicator() { ShowPluginWidgetPicker(true); }
 
         private void ShowPluginWidgetPicker(bool indicator)
+        { ShowPluginWidgetPickerFor(this, indicator, null); }
+
+        private void ShowPluginWidgetPickerFor(Window owner, bool indicator, string preferredId)
         {
             if ((!indicator && !WidgetsInFreeLayout()) || !_canSave || _pluginWidgetPickerOpen || _pluginRuntimeStopping || _pluginWidgets == null) return;
             _pluginWidgetPickerOpen = true;
             try
             {
-                Window dialog = new Window { Owner = this, Title = indicator ? "AppShelf — Добавить индикатор" : "AppShelf — Добавить виджет",
+                Window dialog = new Window { Owner = owner, Title = indicator ? "AppShelf — Добавить индикатор" : "AppShelf — Добавить виджет",
                     Width = 480, Height = 410, MinWidth = 360, MinHeight = 330,
                     WindowStartupLocation = WindowStartupLocation.CenterOwner };
                 FluentUi.PrepareWindow(dialog);
@@ -1197,6 +1229,7 @@ namespace AppShelf
                 hint.TextWrapping = TextWrapping.Wrap;
                 hint.Margin = new Thickness(0, 6, 0, 10); top.Children.Add(hint);
                 ComboBox packages = new ComboBox { MinHeight = 32, IsEnabled = false };
+                FluentUi.StyleComboBox(packages);
                 top.Children.Add(packages);
                 Button load = ActionButton(indicator ? "Загрузить индикаторы" : "Загрузить виджеты", false);
                 load.Margin = new Thickness(0, 8, 0, 8); load.IsEnabled = false;
@@ -1234,7 +1267,8 @@ namespace AppShelf
                         if (closed || _pluginRuntimeStopping) return;
                         foreach (InstalledPlugin plugin in installed)
                             if (plugin.Enabled && plugin.Error == null && plugin.Manifest != null &&
-                                Array.IndexOf(plugin.Manifest.Capabilities, "widget") >= 0)
+                                Array.IndexOf(plugin.Manifest.Capabilities, "widget") >= 0 &&
+                                (preferredId == null || String.Equals(plugin.Id, preferredId, StringComparison.Ordinal)))
                                 packages.Items.Add(new ComboBoxItem { Content = plugin.Manifest.Name, Tag = plugin });
                         packages.IsEnabled = packages.Items.Count > 0;
                         if (packages.Items.Count > 0)
