@@ -92,6 +92,21 @@ jobs:
             Write-Host "PASS $($test.Name)"
           }
 
+      - name: Check out pinned independent NetworkPlugin for compatibility only
+        uses: actions/checkout@v5
+        with:
+          repository: mishakov1c/app_shelf_network
+          ref: 0e9dd77e95621e69509abc2276d82ee7ba34b8a6
+          path: .network-compat
+          persist-credentials: false
+
+      - name: Verify independent NetworkPlugin against this host
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File .network-compat/tests/NetworkRuntime.Tests.ps1 -HostSourceDirectory "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) { throw "Independent NetworkPlugin compatibility failed" }
+
       - name: Verify release executable
         shell: pwsh
         run: |

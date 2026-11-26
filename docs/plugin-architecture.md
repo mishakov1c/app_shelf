@@ -216,3 +216,7 @@ Free placement retains nine named zones but measures and arranges each vertical 
 Shared dark selection resources now apply to WPF ComboBox, ComboBoxItem, ListBox, ListBoxItem and ScrollBar controls in the application. Existing specialized reminder/calendar and settings resources remain in place. The source audit covers the main executable's compiled UI files; visual acceptance of all individual dialogs is still required. Native Windows dialogs and standalone WinForms plugin windows are not restyled by host WPF resources.
 
 Regressions cover independent column overflow, compact widget group height, collapse/expand button, and shared selection controls. No plugin protocol or stored layout schema changes.
+
+## Independent production plugins
+
+Production plugins live in their own repositories with independent versions, builds and releases. [NetworkPlugin](https://github.com/mishakov1c/app_shelf_network) is the public network diagnostics package. Happ integration lives separately and is not built or distributed by this repository. Notes and Stocks remain here as demonstration/test packages, not separately maintained products. The host's normal build and example build have no dependency on production plugin sources. Public CI checks out a pinned NetworkPlugin revision only for offline compatibility tests; the plugin package is not included in the host release. Installation and enablement remain explicit. The legacy network settings transfer is handled by the host on first approved NetworkPlugin enablement.

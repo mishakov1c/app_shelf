@@ -69,13 +69,20 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload network plugin
-        uses: actions/upload-artifact@v6
+      - name: Check out pinned independent NetworkPlugin for compatibility only
+        uses: actions/checkout@v5
         with:
-          name: NetworkPlugin-${{ github.sha }}
-          path: artifacts/plugins/NetworkPlugin-1.0.0.asplugin
-          if-no-files-found: error
-          retention-days: 14
+          repository: mishakov1c/app_shelf_network
+          ref: 0e9dd77e95621e69509abc2276d82ee7ba34b8a6
+          path: .network-compat
+          persist-credentials: false
+
+      - name: Verify independent NetworkPlugin against this host
+        shell: pwsh
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File .network-compat/tests/NetworkRuntime.Tests.ps1 -HostSourceDirectory "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) { throw "Independent NetworkPlugin compatibility failed" }
 
       - name: Run full isolated Windows PowerShell 5.1 STA regression tests
         if: >-

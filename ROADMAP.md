@@ -182,3 +182,9 @@
 - Пункты выше подтверждены релизами и Windows CI. **Не возобновлять** их как новые задачи без конкретного воспроизведённого дефекта.
 
 Ссылки: [релиз 2.13.0](https://github.com/mishakov1c/app_shelf_archive/releases/tag/2.13.0), [релиз 2.14.0](https://github.com/mishakov1c/app_shelf_archive/releases/tag/2.14.0), [релиз 2.15.0](https://github.com/mishakov1c/app_shelf_archive/releases/tag/2.15.0).
+
+### Beta.3: отдельные репозитории рабочих плагинов (26.11.2026)
+
+- NetworkPlugin перенесён в публичный [app_shelf_network](https://github.com/mishakov1c/app_shelf_network), исходный коммит `0e9dd77e`; независимая сборка и совместимость с ядром подтверждены CI. В ядре остаётся проверка совместимости с закреплённым коммитом, без копии исходников рабочего плагина.
+- HappPlugin остаётся отдельным приватным проектом; Windows-сборка и ручная приёмка не подтверждены. Actions приватных репозиториев не запускать.
+- Notes и Stocks остаются в `samples/` только как примеры API и тестовые пакеты.
