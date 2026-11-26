@@ -247,7 +247,7 @@ public static class RestoreBackupTests
         EventHandler sourceHandler = (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
         window.SourceInitialized -= sourceHandler;
-        Set(window, "_networkTimer", new DispatcherTimer()); // Loaded must not start background monitors.
+        Set(window, "_weatherTimer", new DispatcherTimer()); // Loaded must not start background monitors.
         window.Opacity = 0;
         window.ShowActivated = false;
         window.ShowInTaskbar = false;

@@ -150,7 +150,7 @@ public static class ConfigTests
         EventHandler sourceHandler = (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), window,
             typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
         window.SourceInitialized -= sourceHandler;
-        Set(window, "_networkTimer", new DispatcherTimer());
+        Set(window, "_weatherTimer", new DispatcherTimer());
         window.Opacity = 0; window.ShowActivated = false; window.ShowInTaskbar = false;
         window.Show();
         window.Dispatcher.Invoke(DispatcherPriority.Loaded, new Action(delegate { }));

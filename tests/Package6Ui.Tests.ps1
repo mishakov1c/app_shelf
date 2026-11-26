@@ -28,16 +28,6 @@ try {
             $anchor = 'if (dialog.ShowDialog(this) == true) AddPaths(dialog.FileNames);'
             if (-not $text.Contains($anchor)) { throw 'Add dialog boundary missing.' }
             $text = $text.Replace($anchor, 'Package6Tests.AddDialogCalls++;')
-            # Replace only the footer's two probe calls, keeping network traffic offline.
-            foreach ($index in @(1, 2)) {
-                # Both replacements must match precisely one production call.
-                $probe = if ($index -eq 1) { 'NetworkChecks.ProbeAsync(firstTarget, 1)' } else { 'NetworkChecks.ProbeAsync(secondTarget, 2)' }
-                $mock = if ($index -eq 1) { 'Package6Tests.ControlledProbe(firstTarget, 1)' } else { 'Package6Tests.ControlledProbe(secondTarget, 2)' }
-                if ($text.Split(@($probe), [StringSplitOptions]::None).Length -ne 2) {
-                    throw 'Footer probe isolation anchor missing.'
-                }
-                $text = $text.Replace($probe, $mock)
-            }
             $anchor = 'Process.Start(new ProcessStartInfo("https://github.com/mishakov1c/app_shelf")'
             if (-not $text.Contains($anchor)) { throw 'Repository launch boundary missing.' }
             $text = $text.Replace($anchor, 'Package6Tests.OpenLink(new ProcessStartInfo("https://github.com/mishakov1c/app_shelf")')
@@ -55,11 +45,6 @@ try {
             $target = '            dialog.ShowDialog();'
             if ($text.Split(@($target), [StringSplitOptions]::None).Length -ne 2) { throw 'Backup dialog interception anchor missing.' }
             $text = $text.Replace($target, '            Package6Tests.Backup(dialog);')
-        }
-        if ($file -eq 'AppShelfExtras.cs') {
-            $target = 'Loaded += async delegate { await RefreshReportAsync(); };'
-            if ($text.Split(@($target), [StringSplitOptions]::None).Length -ne 2) { throw 'Diagnostics network isolation anchor missing.' }
-            $text = $text.Replace($target, '') # Keep real diagnostics layout, but no live network probes.
         }
         $text = $text.Replace('WindowsStartup.Apply(enable, hidden);', '').Replace('WindowsStartup.WriteRaw(previousRunValue);', '')
         $text = $text.Replace('System.Media.SystemSounds.Asterisk.Play();', '').Replace('System.Media.SystemSounds.Exclamation.Play();', '')
@@ -97,13 +82,6 @@ public static class Package6Tests
     {
         dialog.ShowInTaskbar = false; dialog.Show(); Drain();
         try { backup(dialog); } finally { dialog.Close(); }
-    }
-    internal static Func<NetworkChecks.Target, int, Task<string>> NetworkProbeHook;
-    internal static Task<string> ControlledProbe(NetworkChecks.Target target, int index)
-    {
-        return NetworkProbeHook != null
-            ? NetworkProbeHook(target, index)
-            : NetworkChecks.ProbeAsync(target, index);
     }
     private static int rdpConfirmations;
     private static MessageBoxResult rdpAnswer = MessageBoxResult.No;
@@ -188,7 +166,7 @@ public static class Package6Tests
     {
         MainWindow w = new MainWindow();
         w.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), w, typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(w, "_networkTimer", new DispatcherTimer());
+        Set(w, "_weatherTimer", new DispatcherTimer());
         w.ShowInTaskbar = false; w.Show(); Drain();
         PresentationSource source = PresentationSource.FromVisual(w);
         Assert(source != null && source.CompositionTarget != null, "No native WPF source");
@@ -315,28 +293,6 @@ public static class Package6Tests
         foreach (Button button in Controls<Button>(d))
             if (Object.Equals(button.Tag, tag)) return button;
         throw new Exception("Settings button missing: " + tag);
-    }
-    private static ComboBox NetworkMode(Window d, int slot)
-    {
-        foreach (ComboBox c in Controls<ComboBox>(d))
-            if (Object.Equals(c.Tag, "NetworkTargetMode" + slot)) return c;
-        throw new Exception("Network check mode control missing: " + slot);
-    }
-    private static TextBox NetworkAddress(Window d, int slot)
-    {
-        foreach (TextBox t in Controls<TextBox>(d))
-            if (Object.Equals(t.Tag, "NetworkTargetAddress" + slot)) return t;
-        throw new Exception("Network check target control missing: " + slot);
-    }
-    private static string FavoriteName(Window d, string key)
-    {
-        foreach (ListBoxItem row in Controls<ListBox>(d)[0].Items)
-        {
-            CheckBox check = row.Content as CheckBox;
-            if (check != null && Object.Equals(check.Tag, key))
-                return Convert.ToString(check.Content);
-        }
-        throw new Exception("Missing favorite key: " + key);
     }
     private static Border AccordionHeader(Window d, string key)
     {
@@ -828,80 +784,6 @@ public static class Package6Tests
                 open.Invoke(w, new object[0]);
             } finally { w.Close(); }
         });
-        Case("network detailed report keeps dark vertical and horizontal scrolling", delegate {
-            HappDiagnosticsWindow diagnostics = new HappDiagnosticsWindow(new AppConfig());
-            TextBox report = (TextBox)typeof(HappDiagnosticsWindow)
-                .GetField("_report", Private).GetValue(diagnostics);
-            Assert(report != null, "Network report text box missing");
-                Expander owner = report.Parent as Expander;
-            Assert(owner != null, "Network report lost its detailed-report expander");
-                owner.IsExpanded = true;
-            List<string> lines = new List<string>();
-            for (int i = 0; i < 45; i++) lines.Add(i + ": " + new string('W', 220));
-            report.Text = String.Join(Environment.NewLine, lines.ToArray());
-                Window sample = diagnostics;
-                sample.Width = sample.MinWidth; sample.Height = sample.MinHeight;
-            try {
-                sample.Show(); Drain(); report.ApplyTemplate(); report.UpdateLayout(); Drain();
-                report.BringIntoView(); Drain();
-                ScrollViewer host = report.Template.FindName("PART_ContentHost", report) as ScrollViewer;
-                Assert(host != null, "Network report is missing its text input viewport");
-                host.ApplyTemplate(); host.UpdateLayout(); Drain();
-                System.Windows.Controls.Primitives.ScrollBar vertical =
-                    host.Template.FindName("PART_VerticalScrollBar", host)
-                        as System.Windows.Controls.Primitives.ScrollBar;
-                System.Windows.Controls.Primitives.ScrollBar horizontal =
-                    host.Template.FindName("PART_HorizontalScrollBar", host)
-                        as System.Windows.Controls.Primitives.ScrollBar;
-                Assert(vertical != null && horizontal != null,
-                    "Network report lost one of its scrollbars");
-                Assert(vertical.ActualWidth > 0 && vertical.ActualWidth <= 12.5 &&
-                    horizontal.ActualHeight > 0 && horizontal.ActualHeight <= 12.5,
-                    "Network report still uses a wide native scrollbar");
-                Dark(Visual<Border>(vertical).Background, "Network report vertical scrollbar");
-                Dark(Visual<Border>(horizontal).Background, "Network report horizontal scrollbar");
-                System.Windows.Shapes.Rectangle corner =
-                    Visual<System.Windows.Shapes.Rectangle>(host);
-                Assert(corner != null, "Network report scrollbar corner missing");
-                Dark(corner.Fill, "Network report scrollbar corner");
-                System.Windows.Controls.Primitives.Track track =
-                    horizontal.Template.FindName("PART_Track", horizontal)
-                        as System.Windows.Controls.Primitives.Track;
-                Assert(track != null && track.Orientation == Orientation.Horizontal,
-                    "Horizontal scrollbar track uses vertical orientation");
-                Assert(host.ScrollableWidth > 0 && host.ScrollableHeight > 0,
-                    "Network report does not overflow in both directions");
-                host.ScrollToRightEnd(); Drain();
-                Assert(host.HorizontalOffset > 0, "Network report could not scroll horizontally");
-                double right = host.HorizontalOffset;
-                // ScrollToEnd also resets HorizontalOffset to zero in WPF.
-                // Move only the vertical axis, then verify both positions together.
-                host.ScrollToVerticalOffset(host.ScrollableHeight); Drain();
-                Assert(Math.Abs(host.HorizontalOffset - right) < 0.5 && host.VerticalOffset > 0,
-                    "Network report could not scroll horizontally and vertically");
-                host.ScrollToHome(); Drain();
-                report.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120)
-                    { RoutedEvent = Mouse.MouseWheelEvent });
-                Drain();
-                Assert(host.VerticalOffset > 0, "Network report does not respond to the mouse wheel");
-                host.ScrollToHome(); Drain();
-                foreach (System.Windows.Controls.Primitives.ScrollBar bar in new[] { horizontal, vertical }) {
-                    System.Windows.Controls.Primitives.Track dragTrack =
-                        bar.Template.FindName("PART_Track", bar) as System.Windows.Controls.Primitives.Track;
-                    Assert(dragTrack != null && dragTrack.Thumb != null, "Network report drag thumb missing");
-                    bool across = bar.Orientation == Orientation.Horizontal;
-                    double before = across ? host.HorizontalOffset : host.VerticalOffset;
-                    dragTrack.Thumb.RaiseEvent(new System.Windows.Controls.Primitives.DragDeltaEventArgs(
-                        across ? 25 : 0, across ? 0 : 25)
-                        { RoutedEvent = System.Windows.Controls.Primitives.Thumb.DragDeltaEvent });
-                    Drain();
-                    Assert((across ? host.HorizontalOffset : host.VerticalOffset) > before,
-                        "Network report thumb does not scroll " + bar.Orientation);
-                }
-                Assert(host.HorizontalOffset > 0 && host.VerticalOffset > 0,
-                    "Network report thumb scrolling did not preserve both axes");
-            } finally { sample.Close(); diagnostics.Close(); }
-        });
         Case("main tile list uses narrow dark scrollbar and remains scrollable", delegate {
             Seed("normal", 30);
             MainWindow w = Open();
@@ -1364,10 +1246,9 @@ public static class Package6Tests
                 DispatcherTimer[] timers = new DispatcherTimer[] {
                     new DispatcherTimer { Interval = TimeSpan.FromHours(1) },
                     new DispatcherTimer { Interval = TimeSpan.FromHours(1) },
-                    new DispatcherTimer { Interval = TimeSpan.FromHours(1) },
                     new DispatcherTimer { Interval = TimeSpan.FromHours(1) }
                 };
-                string[] fields = new string[] { "_networkTimer", "_weatherTimer", "_rdpTimer", "_pomodoroTimer" };
+                string[] fields = new string[] { "_weatherTimer", "_rdpTimer", "_pomodoroTimer" };
                 for (int i = 0; i < fields.Length; i++) { timers[i].Start(); Set(w, fields[i], timers[i]); }
                 Call(w, "UpdateCountdownAvailability");
                 Call(w, "ToggleBottomModuleWindow", "countdown"); Call(w, "ToggleCountdown");
@@ -1381,7 +1262,7 @@ public static class Package6Tests
                 Call(w, "ToggleBottomModuleWindow", "pomodoro");
                 Assert((bool)Get(w, "_pomodoroRunning") && (DateTime)Get(w, "_pomodoroDeadlineUtc") == deadline,
                     "Closing Pomodoro stopped/reset its countdown");
-                foreach (string key in new string[] { "weather", "reminders", "route" }) {
+                foreach (string key in new string[] { "weather", "reminders" }) {
                     Call(w, "ToggleBottomModuleWindow", key); Call(w, "ToggleBottomModuleWindow", key);
                 }
                 for (int i = 0; i < fields.Length; i++) Assert(timers[i].IsEnabled && Get(w, fields[i]) == timers[i],
@@ -1480,137 +1361,6 @@ public static class Package6Tests
                 last.Focus(); KeyPress(last, Key.Enter);
                 Assert(invoked == 1 && !menu.IsOpen, "Last menu command did not invoke/close normally");
             } finally { menu.IsOpen = false; w.Close(); }
-        });
-        Case("network footer rejects old targets during a saved settings change", delegate {
-            Seed("normal", 1);
-            AppConfig config = Load();
-            config.ShowNetwork = true;
-            config.NetworkCheck1Mode = "https";
-            config.NetworkCheck1Target = "https://old.example/path";
-            config.NetworkCheck2Mode = "icmp";
-            config.NetworkCheck2Target = "127.0.0.2";
-            ConfigStore.Save(config);
-            TaskCompletionSource<string> old1 = new TaskCompletionSource<string>();
-            TaskCompletionSource<string> old2 = new TaskCompletionSource<string>();
-            TaskCompletionSource<string> fresh1 = new TaskCompletionSource<string>();
-            TaskCompletionSource<string> fresh2 = new TaskCompletionSource<string>();
-            int calls1 = 0, calls2 = 0;
-            NetworkProbeHook = delegate(NetworkChecks.Target target, int index) {
-                if (index == 1) {
-                    calls1++;
-                    if (calls1 == 1) {
-                        Assert(target.Mode == "https", "Old target did not start");
-                        return old1.Task;
-                    }
-                    Assert(target.Mode == "icmp" && target.Host == "127.0.0.1",
-                        "Restarted check used stale target 1");
-                    return fresh1.Task;
-                }
-                calls2++;
-                Assert(target.Mode == "icmp" && target.Host == "127.0.0.2",
-                    "Second slot changed unexpectedly");
-                return calls2 == 1 ? old2.Task : fresh2.Task;
-            };
-            MainWindow w = Open();
-            try {
-                Call(w, "RefreshNetwork");
-                Assert(calls1 == 1 && calls2 == 1, "Expected two pending original probes");
-                settings = delegate(Window d) {
-                    NetworkMode(d, 1).SelectedIndex = 1; // ICMP
-                    NetworkAddress(d, 1).Text = "127.0.0.1";
-                    Click(ButtonNamed(d, "Сохранить"));
-                };
-                Call(w, "ShowSettings");
-                Assert(Load().NetworkCheck1Target == "127.0.0.1",
-                    "New network setting was not saved");
-                TextBlock indicator = (TextBlock)Get(w, "_pingInternational");
-                Assert(indicator.Text.Contains("обновление"), "Old footer was not cleared after save");
-                Assert(calls1 == 1 && calls2 == 1,
-                    "Overlapping probes began before the old request completed");
-
-                old1.SetResult("HTTPS https://old.example/path: 333 мс");
-                old2.SetResult("ICMP 127.0.0.2: 2 мс");
-                Drain();
-                Assert(!indicator.Text.Contains("old.example"), "Old network result overwrote new settings");
-                Assert(calls1 == 2 && calls2 == 2,
-                    "Latest targets were not rechecked after the old request completed");
-
-                fresh1.SetResult("ICMP 127.0.0.1: 1 мс");
-                fresh2.SetResult("ICMP 127.0.0.2: 1 мс");
-                Drain();
-                Assert(indicator.Text == "ICMP 127.0.0.1: 1 мс",
-                    "Newest network result not published after a saved settings change");
-                Assert(!((bool)Get(w, "_networkPending")), "Network pending flag remained set");
-            } finally {
-                NetworkProbeHook = null;
-                w.Close();
-            }
-        });
-        Case("network targets replace legacy values, survive save and cancel", delegate {
-            Seed("normal", 1); MainWindow w = Open(); try {
-                settings = delegate(Window d) {
-                    Assert(NetworkMode(d, 1).SelectedIndex == 0 &&
-                        NetworkMode(d, 2).SelectedIndex == 0,
-                        "Legacy network targets were not selected");
-                    bool hintFound = false;
-                    foreach (TextBlock hint in Controls<TextBlock>(d)) {
-                        if (!hint.Text.StartsWith("Две проверки вместо стандартных", StringComparison.Ordinal))
-                            continue;
-                        hintFound = true;
-                        Assert(hint.TextWrapping == TextWrapping.Wrap,
-                            "Long network settings description is clipped without wrapping");
-                    }
-                    Assert(hintFound, "Network settings description missing");
-                    Assert(NetworkAddress(d, 1).Text == "1.1.1.1" &&
-                        NetworkAddress(d, 2).Text == "ya.ru",
-                        "Old network hosts changed by default");
-                    Assert(FavoriteName(d, "network1") == "Проверка сети 1" &&
-                        FavoriteName(d, "network2") == "Проверка сети 2",
-                        "Legacy network favorite labels depend on hard-coded addresses");
-                    NetworkMode(d, 1).SelectedIndex = 1; // ICMP
-                    NetworkAddress(d, 1).Text = "192.168.1.1";
-                    NetworkMode(d, 2).SelectedIndex = 3; // TCP
-                    NetworkAddress(d, 2).Text = "server.company.local:8443";
-                    Click(ButtonNamed(d, "Сохранить"));
-                };
-                Call(w, "ShowSettings");
-                AppConfig saved = Load();
-                Assert(saved.NetworkCheck1Mode == "icmp" &&
-                    saved.NetworkCheck1Target == "192.168.1.1" &&
-                    saved.NetworkCheck2Mode == "tcp" &&
-                    saved.NetworkCheck2Target == "server.company.local:8443",
-                    "Network check choices were not saved");
-                settings = delegate(Window d) {
-                    Assert(NetworkMode(d, 1).SelectedIndex == 1 &&
-                        NetworkMode(d, 2).SelectedIndex == 3 &&
-                        NetworkAddress(d, 1).Text == "192.168.1.1",
-                        "Network target selections were not restored");
-                    Assert(FavoriteName(d, "network1") == "Проверка сети 1" &&
-                        FavoriteName(d, "network2") == "Проверка сети 2",
-                        "Custom network addresses leaked into favorites labels");
-                    NetworkMode(d, 1).SelectedIndex = 2; // HTTPS
-                    NetworkAddress(d, 1).Text = "https://example.com/path";
-                    Click(ButtonNamed(d, "Отмена"));
-                };
-                Call(w, "ShowSettings");
-                Assert(Load().NetworkCheck1Mode == "icmp" &&
-                    Load().NetworkCheck1Target == "192.168.1.1",
-                    "Cancelled network values leaked into apps.json");
-                settings = delegate(Window d) {
-                    NetworkMode(d, 1).SelectedIndex = 0; // Original targets
-                    NetworkMode(d, 2).SelectedIndex = 0;
-                    Assert(!NetworkAddress(d, 1).IsEnabled &&
-                        !NetworkAddress(d, 2).IsEnabled,
-                        "Built-in mode must not allow arbitrary host overrides");
-                    Click(ButtonNamed(d, "Сохранить"));
-                };
-                Call(w, "ShowSettings");
-                Assert(Load().NetworkCheck1Mode == null &&
-                    Load().NetworkCheck1Target == null &&
-                    Load().NetworkCheck2Mode == null &&
-                    Load().NetworkCheck2Target == null,
-                    "Legacy defaults were not restored");
-            } finally { w.Close(); }
         });
         Case("plugin manager displays installed and invalid packages", delegate {
             Seed("normal", 1); MainWindow w = Open();
@@ -1855,7 +1605,7 @@ public static class Package6Tests
                         "Reopen ignored the saved Bottom panel subsection");
                     Assert(Controls<CheckBox>(Body(d, "appearance-tiles")).Contains(Check(d, "Группировка приложений")) &&
                         Controls<CheckBox>(Body(d, "windows")).Contains(Check(d, "Не давать простаивать")) &&
-                        Controls<CheckBox>(Body(d, "network")).Contains(Check(d, "Показывать сетевые проверки")) &&
+                        Controls<Button>(Body(d, "network")).Contains(ButtonWithTag(d, "NetworkPluginSettings")) &&
                         Controls<CheckBox>(Body(d, "weather")).Contains(Check(d, "Показывать погоду")) &&
                         Controls<CheckBox>(Body(d, "time")).Contains(Check(d, "Включить звуки")) &&
                         Controls<CheckBox>(Body(d, "collections")).Contains(Check(d, "Включить модуль «Подборки»")) &&
@@ -2187,14 +1937,14 @@ public static class Package6Tests
                     Click(ButtonNamed(d, "Сохранить"));
                 };
                 Call(w, "ShowSettings");
-                Assert(Load().BottomPanelMode == "compact" && Load().BottomPanelFavorites[0] == "route" &&
-                    !Load().BottomPanelFavorites.Contains("weather"), "Settings failed to persist favorites");
+                Assert(Load().BottomPanelMode == "compact" && Load().BottomPanelFavorites.Contains("route") && Load().BottomPanelFavorites.Contains("reminders") &&
+                    !Load().BottomPanelFavorites.Contains("countdown"), "Settings failed to persist favorites");
                 settings = delegate(Window d) {
                     ListBox list = Controls<ListBox>(Body(d, "appearance-panel"))[0];
                     Assert(BottomPanelMode(d).SelectedIndex == 0 &&
-                        (string)((CheckBox)((ListBoxItem)list.Items[0]).Content).Tag == "route", "Reopened favorites changed order");
+                        (string)((CheckBox)((ListBoxItem)list.Items[0]).Content).Tag == "weather", "Reopened favorites changed order");
                     foreach (ListBoxItem row in list.Items)
-                        if ((string)((CheckBox)row.Content).Tag == "weather")
+                        if ((string)((CheckBox)row.Content).Tag == "countdown")
                             Assert(((CheckBox)row.Content).IsChecked == false, "Unchecked favorite not persisted");
                 };
                 Call(w, "ShowSettings");
@@ -2205,10 +1955,10 @@ public static class Package6Tests
                 Seed("normal", 1); MainWindow w = Open(); try {
                     w.Width = w.MinWidth; w.Height = 580;
                     Live(w).BottomPanelMode = m;
-                    Live(w).ShowNetwork = true; Live(w).ShowWeather = true; Live(w).ShowPomodoro = true;
-                    Live(w).BottomPanelFavorites = new List<string> { "route", "weather", "countdown", "reminders" };
+                    Live(w).RdpKeepAwake = true; Live(w).ShowWeather = true; Live(w).ShowPomodoro = true;
+                    Live(w).BottomPanelFavorites = new List<string> { "rdp", "weather", "countdown", "reminders" };
                     // Fixture data verifies presentation bindings, not network/weather availability.
-                    ((TextBlock)Get(w, "_route")).Text = "Маршрут: Test interface";
+                    ((TextBlock)Get(w, "_rdpStatus")).Text = "RDP: Test interface";
                     ((TextBlock)Get(w, "_weather")).Text = "Погода · Test city: -7 °C · ощущается как -9 °C · Облачно";
                     ((TextBlock)Get(w, "_pomodoro")).Text = "Помодоро: Работа 04:32 ▶";
                     Call(w, "ApplyBottomPanelMode"); Drain();
@@ -2231,16 +1981,16 @@ public static class Package6Tests
                         Picture(w, "bottom-categories-min-fixture");
                         w.Width = 900; Drain(); foreach (Button card in cards.Children) Inside(card, panel, "Wide category card");
                         Picture(w, "bottom-categories-wide-fixture");
-                        ((TextBlock)Get(w, "_route")).Text = "Маршрут: Changed interface";
+                        ((TextBlock)Get(w, "_rdpStatus")).Text = "RDP: Changed interface";
                         ((TextBlock)Get(w, "_pomodoro")).Text = "Помодоро: Работа 04:31 ▶";
                         Drain();
                         Assert(labels.Exists(t => t.Text == "Changed interface") &&
                             labels.Exists(t => t.Text == "Работа 04:31 ▶"), "Network/time bindings stale");
                         AppConfig changed = Live(w).Copy();
-                        changed.ShowNetwork = false; changed.ShowWeather = false; changed.ShowPomodoro = false;
+                        changed.RdpKeepAwake = false; changed.ShowWeather = false; changed.ShowPomodoro = false;
                         changed.ShowCountdownTimer = false;
                         Call(w, "SaveConfigChanges", changed, true); Call(w, "ApplyBottomPanelMode"); Drain();
-                        Assert(labels.Exists(t => t.Text == "Мониторинг выключен") &&
+                        Assert(labels.Exists(t => t.Text == "RDP выключен") &&
                             labels.Exists(t => t.Text == "Погода выключена") &&
                             labels.Exists(t => t.Text == "Таймеры выключены"), "Saved visibility settings leave stale summaries");
                     } else if (m == "compact") {

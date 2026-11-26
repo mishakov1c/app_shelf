@@ -508,7 +508,7 @@ namespace AppShelf
                 if (next.WidgetIndicators.Count >= 6)
                     throw new InvalidOperationException("Недостаточно места для переноса сетевых индикаторов. Освободите место в нижней панели и повторите.");
                 string title = key == "route" ? "Сеть" :
-                    NetworkChecks.Label(NetworkChecks.Resolve(source, key == "network1" ? 1 : 2), key == "network1" ? 1 : 2);
+                    LegacyNetworkTargets.Label(LegacyNetworkTargets.Resolve(source, key == "network1" ? 1 : 2), key == "network1" ? 1 : 2);
                 if (title.Length > 100) title = title.Substring(0, 99) + "…";
                 next.WidgetIndicators.Add(new PluginWidgetPlacementConfig {
                     PluginId = Id, WidgetId = key, Version = version, Title = title, Size = "indicator"
@@ -518,9 +518,9 @@ namespace AppShelf
             string path = Path.Combine(directory, "network-settings.json");
             if (!File.Exists(path))
             {
-                NetworkChecks.Target target; string error;
-                if (!NetworkChecks.TryParse(source.NetworkCheck1Mode, source.NetworkCheck1Target, 1, out target, out error) ||
-                    !NetworkChecks.TryParse(source.NetworkCheck2Mode, source.NetworkCheck2Target, 2, out target, out error))
+                LegacyNetworkTargets.Target target; string error;
+                if (!LegacyNetworkTargets.TryParse(source.NetworkCheck1Mode, source.NetworkCheck1Target, 1, out target, out error) ||
+                    !LegacyNetworkTargets.TryParse(source.NetworkCheck2Mode, source.NetworkCheck2Target, 2, out target, out error))
                     throw new InvalidDataException(error);
                 string temp = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp");
                 try
@@ -559,7 +559,7 @@ namespace AppShelf
             if (!_canSave) { ShowSaveDisabled(); return false; }
             if (AppDialog.Show(owner, "Перенести прежние настройки сетевых проверок в плагин «Сеть»?\n\n" +
                 "Существующий файл настроек плагина не будет заменён. Сетевые индикаторы перейдут в панель индикаторов плагинов; " +
-                "встроенный монитор будет выключен. Настройки прежней версии сохранятся для отката.",
+                "встроенный монитор больше не входит в ядро. Настройки прежней версии сохранятся для отката.",
                 "AppShelf — перенос сети", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return false;
             List<string> keys = new List<string>();
             if (_config.ShowNetwork)
@@ -572,7 +572,6 @@ namespace AppShelf
             PluginPackageStore store = new PluginPackageStore(ConfigStore.DirectoryPath);
             AppConfig pending = NetworkPluginMigration.Prepare(_config, plugin.Manifest.Version, keys, store.GetDataDirectory(plugin.Id));
             if (!SaveConfigChanges(pending)) return false;
-            if (_happWindow != null) _happWindow.Close();
             if (_pluginWidgets != null) _pluginWidgets.RestoreLayout(_config.WidgetGroups, _config.WidgetIndicators);
             UpdateMonitorVisibility();
             RenderTiles();

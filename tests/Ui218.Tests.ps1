@@ -15,18 +15,13 @@ try {
             $anchor = 'Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AppShelf"'
             if ($text.Split(@($anchor), [StringSplitOptions]::None).Length -ne 2) { throw 'Isolation anchor missing.' }
             $text = $text.Replace($anchor, 'Environment.GetEnvironmentVariable("APPSHELF_TEST_DATA"), "AppShelf"')
-            $text = $text.Replace('if (_networkTimer == null) StartMonitors();', '')
+            $text = $text.Replace('if (_weatherTimer == null) StartMonitors();', '')
             $text = $text.Replace('startupState = WindowsStartup.Read();', 'startupState = new WindowsStartup.State();')
             $text = $text.Replace('            ContextMenu tools = new ContextMenu();',
                 '            ContextMenu tools = new ContextMenu(); Ui218Probe.Tools = tools;')
             $errorDialog = 'MessageBox.Show\(this, title \+ "\\n\\n" \+ error.Message \+\s*"[^"\r\n]*" \+ ConfigStore.LogPath, "AppShelf", MessageBoxButton.OK, MessageBoxImage.Error\);'
             if ([regex]::Matches($text, $errorDialog).Count -ne 1) { throw 'Error boundary missing.' }
             $text = [regex]::Replace($text, $errorDialog, 'Ui218Probe.SaveErrors++;')
-        }
-        if ($file -eq 'AppShelfExtras.cs') {
-            $anchor = 'Loaded += async delegate { await RefreshReportAsync(); };'
-            if ($text.Split(@($anchor), [StringSplitOptions]::None).Length -ne 2) { throw 'Diagnostics isolation missing.' }
-            $text = $text.Replace($anchor, '')
         }
         $text = $text.Replace('dialog.ShowDialog()', 'Ui218Probe.Modal(dialog)')
         $text = $text.Replace('WindowsStartup.Apply(enable, hidden);', '').Replace('WindowsStartup.WriteRaw(previousRunValue);', '')
