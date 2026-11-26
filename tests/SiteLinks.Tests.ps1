@@ -179,7 +179,7 @@ public static class SiteTests
         ConfigStore.Save(new AppConfig { TileDisplayMode = mode, GroupingEnabled = true, Groups = new List<string>(new string[] { "A", "B" }), ShowWeather = false, ShowNetwork = false, MinimizeToTray = false });
         ReminderStore.Save(new ReminderDocument()); MainWindow w = new MainWindow();
         w.SourceInitialized -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), w, typeof(MainWindow).GetMethod("OnWindowSourceInitialized", Private));
-        Set(w, "_networkTimer", new DispatcherTimer()); w.ShowInTaskbar = false; w.Show(); Drain(); return w;
+        Set(w, "_weatherTimer", new DispatcherTimer()); w.ShowInTaskbar = false; w.Show(); Drain(); return w;
     }
     private static Uri Url(string value) { Uri uri; Assert(SiteLinks.TryNormalize(value, out uri), "Bad fixture URI"); return uri; }
     private static void Picture(FrameworkElement view, string name)
