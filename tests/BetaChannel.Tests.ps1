@@ -47,6 +47,31 @@ namespace AppShelf
             throw new Exception(name);
         }
 
+
+        private static string PluginEntry(string tag, bool preview, string repository, string hash)
+        {
+            return "{\"tag_name\":\"" + tag + "\",\"prerelease\":" + (preview ? "true" : "false") +
+                ",\"assets\":[{\"name\":\"Sample.asplugin\",\"size\":100,\"digest\":\"" + hash +
+                "\",\"browser_download_url\":\"https://github.com/" + repository + "/releases/download/" + tag + "/Sample.asplugin\"}]}";
+        }
+
+        private static void PluginReleaseChecks()
+        {
+            const string repository = "example/plugin";
+            string hash = "sha256:" + new string('a', 64);
+            string stable = PluginEntry("v1.1.0", false, repository, hash);
+            string preview = PluginEntry("v1.2.0", true, repository, hash);
+            string wrong = PluginEntry("v9.0.0", false, "other/repo", hash);
+            string unsigned = PluginEntry("v8.0.0", false, repository, "");
+            string older = PluginEntry("v0.9.0", false, repository, hash);
+            AppUpdate.PluginRelease[] result = AppUpdate.SelectPluginReleasesFromJson("[" +
+                String.Join(",", stable, preview, wrong, unsigned, older) + "]", repository, "1.0.0");
+            Assert(result.Length == 2 && result[0].Version == "1.1.0" && !result[0].Preview &&
+                result[1].Version == "1.2.0" && result[1].Preview, "plugin releases select verified newer versions only");
+            Assert(AppUpdate.SelectPluginReleasesFromJson("[" + stable + "]", repository, "1.1.0").Length == 0,
+                "plugin equal version offered");
+            Reject(delegate { AppUpdate.SelectPluginReleasesFromJson("[]", "example/../evil", "1.0.0"); }, "invalid plugin repository");
+        }
         private static void CacheChecks()
         {
             string root = Path.Combine(Path.GetTempPath(), "AppShelf-UpdateCache-" + Guid.NewGuid().ToString("N"));
@@ -128,6 +153,7 @@ namespace AppShelf
 
         public static int Run()
         {
+            PluginReleaseChecks();
             CacheChecks();
             RenamedExecutableChecks();
             Assert(AppUpdate.CompareReleaseVersions("2.24.0-beta.10", "2.24.0-beta.2") > 0, "numeric beta order");

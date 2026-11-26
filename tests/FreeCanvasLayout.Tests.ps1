@@ -148,7 +148,8 @@ foreach ($key in $before.Keys) {
 Write-Host 'PASS viewport strategies and restoration'
 # A larger viewport must expose empty area, and drag cannot introduce adaptive overflow.
 [void]$type.GetMethod('SetViewportHeight',$flags).Invoke($board,[object[]]@(1000.0))
-Layout
+$board.Measure((New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)))
+$board.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$board.DesiredSize.Width,$board.DesiredSize.Height))
 Assert ($board.DesiredSize.Height -ge 1000) 'canvas does not fill taller viewport'
 $outside = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 1100,700).PSObject.BaseObject))
 Assert ($null -eq $outside -and -not $temp.GetValue($board,$null)) 'drag beyond right edge accepted in adaptive mode'
