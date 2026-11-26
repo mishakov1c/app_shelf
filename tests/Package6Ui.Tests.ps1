@@ -659,8 +659,13 @@ public static class Package6Tests
             Border indicator = PluginWidgetView.Create(new PluginWidget { Id = "vpn", Title = "VPN", Kind = "indicator",
                 Elements = new[] { new PluginWidgetElement { Type = "text", Label = "Подключён" },
                     new PluginWidgetElement { Type = "action", Label = "Подробнее", CommandId = "open" } } }, null);
+            int indicatorCalls = 0;
+            Border clickable = PluginWidgetView.Create(new PluginWidget { Id = "network", Title = "Network", Kind = "indicator",
+                Elements = new[] { new PluginWidgetElement { Type = "text", Label = "OK" },
+                    new PluginWidgetElement { Type = "action", Label = "Details", CommandId = "open" } } },
+                delegate(string id) { Assert(id == "open", "Incorrect indicator action"); indicatorCalls++; return Task.FromResult(true); });
             StackPanel panel = new StackPanel { Width = 320, Margin = new Thickness(12) };
-            panel.Children.Add(view); panel.Children.Add(tile); panel.Children.Add(indicator);
+            panel.Children.Add(view); panel.Children.Add(tile); panel.Children.Add(indicator); panel.Children.Add(clickable);
             Window window = new Window { Width = 400, Height = 620, ShowInTaskbar = false, Content = panel };
             try {
                 window.Show(); Drain();
@@ -671,6 +676,9 @@ public static class Package6Tests
                     "Widget content was not rendered literally");
                 List<ProgressBar> bars = Controls<ProgressBar>(view);
                 Assert(bars.Count == 1 && bars[0].Value == 24 && bars[0].Maximum == 100, "Progress data missing");
+                Button primary = clickable.Child as Button;
+                Assert(primary != null && Controls<Button>(clickable).Count == 1 && primary.IsEnabled, "Indicator surface is not the only action");
+                Click(primary); Drain(); Assert(indicatorCalls == 1, "Indicator action not invoked");
                 List<Button> buttons = Controls<Button>(view);
                 Assert(buttons.Count == 2 && buttons[0].IsEnabled && !Controls<Button>(indicator)[0].IsEnabled,
                     "Widget action availability wrong");
@@ -1833,9 +1841,11 @@ public static class Package6Tests
                         Assert(favorites.Children.Count == 2,
                             "Compact panel must show only enabled favorites in saved order");
                         Click((Button)compact.Children[0]);
-                        Assert(full.Visibility == Visibility.Visible, "Compact expand did not reveal details");
+                        Assert(full.Visibility == Visibility.Visible && favorites.Visibility == Visibility.Collapsed && full.Parent == compact,
+                            "Compact expand did not replace favorites with details");
                         Click((Button)compact.Children[0]);
-                        Assert(full.Visibility == Visibility.Collapsed, "Compact collapse did not restore short view");
+                        Assert(full.Visibility == Visibility.Collapsed && favorites.Visibility == Visibility.Visible && favorites.Children.Count == 2,
+                            "Compact collapse did not restore short view");
                     }
                     if (expectedMode == "categories")
                     {

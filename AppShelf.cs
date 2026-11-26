@@ -384,6 +384,7 @@ namespace AppShelf
         private string dragKey;
         private Vector dragOffset;
         private double viewportWidth = Double.PositiveInfinity;
+        private double viewportHeight;
         private string viewportMode = "scroll";
         private string activeMode = "scroll";
         private double displayScale = 1;
@@ -416,6 +417,13 @@ namespace AppShelf
             mode = FreeCanvasLayout.NormalizeViewportMode(mode);
             if (viewportMode == mode && (viewportWidth == width || Math.Abs(viewportWidth - width) < 0.5)) return;
             viewportWidth = width; viewportMode = mode;
+            InvalidateMeasure();
+        }
+
+        internal void SetViewportHeight(double height)
+        {
+            if (Double.IsNaN(height) || Double.IsInfinity(height) || height <= 0 || Math.Abs(viewportHeight - height) < 0.5) return;
+            viewportHeight = height;
             InvalidateMeasure();
         }
 
@@ -500,6 +508,9 @@ namespace AppShelf
         private int HeightFor(Entry entry, int width, int manual)
         {
             entry.Card.Measure(new Size(width * CellStep - Gap, Double.PositiveInfinity));
+            // Manual expanded height must not leave a large empty collapsed card.
+            Expander expander = entry.Card.Child as Expander;
+            if (expander != null && !expander.IsExpanded) manual = 0;
             return (int)Math.Min(FreeCanvasLayout.MaxCells, Math.Max(Math.Max(2, manual),
                 Math.Ceiling((entry.Card.DesiredSize.Height + Gap) / CellStep)));
         }
@@ -559,7 +570,7 @@ namespace AppShelf
                 entry.Compact.Visibility = Visibility.Hidden;
                 entry.Grip.Visibility = IsTemporaryLayout ? Visibility.Hidden : Visibility.Visible;
             }
-            return new Size(naturalWidth * displayScale, naturalHeight * displayScale);
+            return new Size(naturalWidth * displayScale, Math.Max(viewportHeight, naturalHeight * displayScale));
         }
 
         private Size MeasureTemporary(double width)
@@ -668,6 +679,10 @@ namespace AppShelf
             FreeCanvasRect rect = new FreeCanvasRect(FreeCanvasLayout.Snap(point.X, CellStep),
                 FreeCanvasLayout.Snap(point.Y, CellStep), entry.Effective.Width, entry.Effective.Height)
             { ManualHeight = entry.Effective.ManualHeight };
+            // In non-scroll strategies an edit must not create horizontal overflow and
+            // unexpectedly switch every group into a temporary layout.
+            if (viewportMode != "scroll" && !Double.IsInfinity(viewportWidth) &&
+                (rect.X + rect.Width) * CellStep > viewportWidth + 0.5) return null;
             return CanPlace(entry, rect) ? rect : null;
         }
 
@@ -690,6 +705,8 @@ namespace AppShelf
             HeightFor(entry, entry.Effective.Width, entry.Effective.ManualHeight);
             FreeCanvasRect rect = new FreeCanvasRect(entry.Effective.X, entry.Effective.Y, width, height)
             { ManualHeight = manual };
+            if (viewportMode != "scroll" && !Double.IsInfinity(viewportWidth) &&
+                (rect.X + rect.Width) * CellStep > viewportWidth + 0.5) return null;
             return CanPlace(entry, rect) ? rect : null;
         }
 
@@ -3185,7 +3202,7 @@ namespace AppShelf
             scroller.SizeChanged += delegate { UpdateGroupWidths(); };
             scroller.ScrollChanged += delegate(object sender, ScrollChangedEventArgs e)
             {
-                if (Math.Abs(e.ViewportWidthChange) > 0.5) UpdateGroupWidths();
+                if (Math.Abs(e.ViewportWidthChange) > 0.5 || Math.Abs(e.ViewportHeightChange) > 0.5) UpdateGroupWidths();
             };
             _tileHost = new StackPanel { AllowDrop = true };
             scroller.AllowDrop = true;
@@ -3625,7 +3642,7 @@ namespace AppShelf
         {
             if (_bottomExpandButton == null || _bottomCompactItems == null) return;
             double height = 0;
-            foreach (UIElement child in _bottomCompactItems.Children)
+            foreach (UIElement child in (_bottomCompactExpanded ? _bottomFullMonitors : _bottomCompactItems).Children)
             {
                 FrameworkElement item = child as FrameworkElement;
                 if (item != null && item.ActualHeight > height)
@@ -3714,6 +3731,7 @@ namespace AppShelf
             _bottomCategoryDetails = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
             _bottomPanelLayout.Children.Add(_bottomCategoryDetails);
             _bottomPanelLayout.Children.Add(_bottomFullMonitors);
+            _bottomFullMonitors.SizeChanged += delegate { if (_bottomCompactExpanded) AlignCompactExpandButton(); };
 
             ContextMenu menu = new ContextMenu();
             foreach (string mode in new string[] { "compact", "categories", "detailed" })
@@ -3816,8 +3834,21 @@ namespace AppShelf
             _bottomCategoryTabs.Visibility = mode == "categories" ? Visibility.Visible : Visibility.Collapsed;
             _bottomFullMonitors.Visibility = mode == "detailed" ||
                 (mode == "compact" && _bottomCompactExpanded) ? Visibility.Visible : Visibility.Collapsed;
+            bool expanded = mode == "compact" && _bottomCompactExpanded;
+            // Keep the toggle visible, but show exactly one set of built-in indicators.
+            if (expanded && _bottomFullMonitors.Parent != _bottomCompactRow)
+            {
+                _bottomPanelLayout.Children.Remove(_bottomFullMonitors);
+                _bottomCompactRow.Children.Add(_bottomFullMonitors);
+            }
+            else if (!expanded && _bottomFullMonitors.Parent == _bottomCompactRow)
+            {
+                _bottomCompactRow.Children.Remove(_bottomFullMonitors);
+                _bottomPanelLayout.Children.Insert(_bottomPanelLayout.Children.IndexOf(_bottomCategoryDetails) + 1, _bottomFullMonitors);
+            }
+            _bottomCompactItems.Visibility = expanded ? Visibility.Collapsed : Visibility.Visible;
             _bottomCompactItems.Children.Clear();
-            if (mode == "compact")
+            if (mode == "compact" && !expanded)
             {
                 foreach (string key in BottomPanelFavorites(_config))
                     if (BottomIndicatorEnabled(key))
@@ -5400,6 +5431,9 @@ namespace AppShelf
                 double outer = _tilesScroller.ActualWidth > 1 ? _tilesScroller.ActualWidth : Width;
                 double viewport = outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
                 _canvasBoard.SetViewport(Math.Max(1, viewport), _config.CanvasViewportMode);
+                double height = _tilesScroller.ViewportHeight;
+                if (height <= 0 || Double.IsInfinity(height)) height = _tilesScroller.ActualHeight - _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
+                _canvasBoard.SetViewportHeight(height);
                 _canvasBoard.InvalidateMeasure();
                 return;
             }

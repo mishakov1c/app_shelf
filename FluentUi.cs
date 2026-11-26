@@ -1515,6 +1515,13 @@ namespace AppShelf
             return resources;
         }
 
+        public static void StyleComboBox(ComboBox field)
+        {
+            ResourceDictionary resources = SelectionResources();
+            field.Resources.MergedDictionaries.Add(resources);
+            field.Style = (Style)resources[typeof(ComboBox)];
+        }
+
         public static void StyleBottomPanelInputs(ComboBox mode, ListBox favorites)
         {
             ResourceDictionary resources = SelectionResources();

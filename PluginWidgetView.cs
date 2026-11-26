@@ -32,6 +32,14 @@ namespace AppShelf
             AutomationProperties.SetName(frame, widget.Title);
             StackPanel body = new StackPanel();
             frame.Child = body;
+            PluginWidgetElement singleAction = null;
+            if (indicator)
+            {
+                int actionCount = 0;
+                foreach (PluginWidgetElement element in widget.Elements)
+                    if (element.Type == "action") { singleAction = element; actionCount++; }
+                if (actionCount != 1) singleAction = null;
+            }
 
             TextBlock title = Literal(widget.Title, indicator ? 12 : tile ? 13 : 15, FluentUi.Foreground);
             title.FontWeight = FontWeights.SemiBold;
@@ -48,6 +56,7 @@ namespace AppShelf
             bool busy = false;
             foreach (PluginWidgetElement element in widget.Elements)
             {
+                if (Object.ReferenceEquals(element, singleAction)) continue;
                 FrameworkElement view;
                 switch (element.Type)
                 {
@@ -98,6 +107,26 @@ namespace AppShelf
                 elements.Children.Add(view);
             }
             body.Children.Add(error);
+            if (singleAction != null)
+            {
+                // The complete indicator is the action, including keyboard activation.
+                string command = singleAction.CommandId;
+                frame.Child = null;
+                Button primary = new Button { Content = body, Style = FluentUi.BottomCategoryButtonStyle(),
+                    Padding = new Thickness(8, 4, 8, 4), MinHeight = 26, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    IsEnabled = invoke != null, ToolTip = singleAction.Label, Tag = command };
+                AutomationProperties.SetName(primary, widget.Title + " — " + singleAction.Label);
+                primary.Click += async delegate
+                {
+                    if (busy || invoke == null) return;
+                    busy = true; primary.IsEnabled = false; error.Visibility = Visibility.Collapsed;
+                    try { await invoke(command); }
+                    catch (Exception) { error.Visibility = Visibility.Visible; }
+                    finally { busy = false; primary.IsEnabled = true; }
+                };
+                frame.Background = Brushes.Transparent; frame.BorderThickness = new Thickness(0); frame.Padding = new Thickness(0);
+                frame.Child = primary;
+            }
             return frame;
         }
 
