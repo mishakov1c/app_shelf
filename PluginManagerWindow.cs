@@ -586,6 +586,7 @@ namespace AppShelf
             NetworkPluginMigration.Prepare(_config, plugin.Manifest.Version, keys, directory);
             return async delegate
             {
+                Exception failure = null;
                 try
                 {
                     await runtime.SetEnabledAsync(plugin.Id, true);
@@ -595,16 +596,18 @@ namespace AppShelf
                     if (!SaveConfigChanges(pending, false))
                         throw new IOException("Не удалось сохранить раскладку после переноса сети.");
                 }
-                catch (Exception original)
+                catch (Exception original) { failure = original; }
+                // C# 5 does not permit await inside a catch block.
+                if (failure != null)
                 {
                     try { await runtime.SetEnabledAsync(plugin.Id, false); }
                     catch (Exception rollback)
                     {
-                        ConfigStore.Log(original);
+                        ConfigStore.Log(failure);
                         ConfigStore.Log(rollback);
-                        throw new IOException("Перенос не завершён, не удалось отключить плагин: " + rollback.Message, original);
+                        throw new IOException("Перенос не завершён, не удалось отключить плагин: " + rollback.Message, failure);
                     }
-                    throw;
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
                 }
                 if (_pluginWidgets != null) _pluginWidgets.RestoreLayout(_config.WidgetGroups, _config.WidgetIndicators);
                 UpdateMonitorVisibility();
