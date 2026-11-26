@@ -1118,7 +1118,17 @@ public static class BackupTests
             { "app:Work", new FreeCanvasRect(2, 3, 12, 8) },
             { "widget:1", new FreeCanvasRect(20, 3, 20, 10) }
         };
+        const string monitor = "DISPLAY1|1920x1080|96x96", emptyMonitor = "DISPLAY2|1280x720|96x96";
+        source.CanvasMonitorPositions = new Dictionary<string, Dictionary<string, FreeCanvasRect>> {
+            { monitor, new Dictionary<string, FreeCanvasRect> {
+                { "app:Work", new FreeCanvasRect(4, 3, 12, 8) },
+                { "widget:1", new FreeCanvasRect(22, 3, 20, 10) } } },
+            { emptyMonitor, new Dictionary<string, FreeCanvasRect>() }
+        };
         ConfigStore.Save(source);
+        Assert(Loaded().CanvasMonitorPositions[monitor]["app:Work"].X == 4 &&
+            Loaded().CanvasMonitorPositions[emptyMonitor].Count == 0, "Monitor profiles lost on roundtrip");
+        Assert(!File.ReadAllText(ConfigStore.FilePath).Contains("canvasMonitorPositions"), "Monitor geometry leaked into shared file");
         Assert(!File.ReadAllText(ConfigStore.FilePath).Contains("canvasPositions"), "Canvas positions leaked into shared file");
         Assert(Loaded().CanvasPositions["widget:1"].X == 20 && Loaded().CanvasInitialized, "Sidecar lost canvas position");
         string archive = Path.Combine(Root, "canvas.zip");
@@ -1129,17 +1139,30 @@ public static class BackupTests
             { "app:Work", new FreeCanvasRect(7, 9, 24, 16) },
             { "widget:1", new FreeCanvasRect(50, 9, 40, 20) }
         };
+        current.CanvasMonitorPositions[monitor]["app:Work"].X = 11;
+        current.CanvasMonitorPositions[monitor]["widget:1"].X = 55;
         ConfigStore.Save(current);
         BackupStore.RestoreSelected(archive, null, BackupComponents.WidgetLayout);
         AppConfig after = Loaded();
+        Assert(after.CanvasMonitorPositions[monitor]["app:Work"].X == 11 &&
+            after.CanvasMonitorPositions[monitor]["widget:1"].X == 44 &&
+            after.CanvasMonitorPositions[emptyMonitor].Count == 0, "Widget-only restore changed monitor app geometry");
         Assert(after.CanvasGridStep == 10 && after.CanvasPositions["app:Work"].X == 7 &&
             after.CanvasPositions["widget:1"].X == 40, "Widget-only restore did not preserve app positions or convert grid");
         current = Loaded();
-        current.CanvasPositions["widget:1"].X = 60; ConfigStore.Save(current);
+        current.CanvasPositions["widget:1"].X = 60;
+        current.CanvasMonitorPositions[monitor]["widget:1"].X = 66;
+        ConfigStore.Save(current);
         BackupStore.RestoreSelected(archive, null, BackupComponents.Settings);
         after = Loaded();
         Assert(after.CanvasGridStep == 20 && after.CanvasPositions["app:Work"].X == 2 &&
             after.CanvasPositions["widget:1"].X == 30, "Settings-only restore did not preserve widget coordinates");
+        Assert(after.CanvasMonitorPositions[monitor]["app:Work"].X == 4 &&
+            after.CanvasMonitorPositions[monitor]["widget:1"].X == 33 &&
+            after.CanvasMonitorPositions[emptyMonitor].Count == 0, "Settings-only restore changed monitor widget geometry");
+        BackupStore.RestoreSelected(archive, null, BackupComponents.Settings | BackupComponents.WidgetLayout);
+        after = Loaded();
+        Assert(after.CanvasMonitorPositions[monitor]["widget:1"].X == 22, "Full monitor restore lost geometry");
         string settingsOnly = Path.Combine(Root, "canvas-settings-only.zip");
         BackupStore.ExportSelected(settingsOnly, source, Reminders("A"), null, BackupComponents.Settings);
         using (ZipArchive zip = ZipFile.OpenRead(settingsOnly))

@@ -1210,15 +1210,15 @@ namespace AppShelf
             {
                 AppConfig pending = _config.Copy();
                 pending.WidgetGroups = _pluginWidgets.CaptureLayout();
-                if (pending.CanvasPositions != null)
+                foreach (var layout in pending.AllCanvasLayouts())
                 {
                     HashSet<string> keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     if (pending.WidgetGroups != null)
                         foreach (PluginWidgetGroupConfig group in pending.WidgetGroups)
                             keys.Add("widget:" + group.Number.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                    foreach (string key in new List<string>(pending.CanvasPositions.Keys))
+                    foreach (string key in new List<string>(layout.Keys))
                         if (key.StartsWith("widget:", StringComparison.OrdinalIgnoreCase) && !keys.Contains(key))
-                            pending.CanvasPositions.Remove(key);
+                            layout.Remove(key);
                 }
                 pending.WidgetIndicators = _pluginWidgets.CaptureIndicators();
                 saved = SaveConfigChanges(pending);

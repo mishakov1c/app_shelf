@@ -186,6 +186,10 @@ AdaptiveLayout 1600 600
 $savedPositions = $capture.Invoke($adaptive,$null)
 AdaptiveLayout 1100 600
 Assert ($temp.GetValue($adaptive,$null)) 'adaptation did not activate'
+$editable = $type.GetMethod('CaptureEditableLayout',$flags).Invoke($adaptive,$null)
+Assert ($editable['widget:personal'].X -eq 45 -and $editable['widget:personal'].Y -eq 16 -and $editable['app:tools'].Y -eq 20) 'personal layout did not capture adapted positions'
+$editable['app:work'].X = 5
+Assert ($capture.Invoke($adaptive,$null)['app:work'].X -eq 0) 'personal snapshot changed original geometry'
 Assert ((Position $work).X -eq 0 -and (Position $work).Y -eq 20 -and $work.RenderSize.Width -eq 392) 'fitting work group changed'
 Assert ((Position $tools).X -eq 0 -and (Position $tools).Y -eq 400 -and $tools.RenderSize.Width -eq 392) 'fitting tools group changed'
 Assert ((Position $personal).X -eq 900 -and (Position $personal).Y -eq 320 -and $personal.RenderSize.Width -eq 192) 'right group was not moved minimally'
@@ -197,10 +201,28 @@ Assert ($null -eq $candidate.Invoke($adaptive,[object[]]@('widget:personal',(New
 AdaptiveLayout 1100 600
 Assert ((Position $personal).X -eq 900 -and (Position $personal).Y -eq 320) 'adaptation not repeatable'
 AdaptiveLayout 300 600
+$narrowEditable = $type.GetMethod('CaptureEditableLayout',$flags).Invoke($adaptive,$null)
+Assert ($null -ne $narrowEditable -and $narrowEditable.Count -eq 3 -and $narrowEditable['app:work'].Width -le 15) 'narrow fallback cannot create editable layout'
 Assert ($work.RenderSize.Width -eq 292 -and (Position $personal).X -eq 0 -and (Position $tools).Y -gt (Position $personal).Y) 'insufficient width did not fall back to vertical layout'
 AdaptiveLayout 1600 600
 Assert (-not $temp.GetValue($adaptive,$null) -and (Position $personal).X -eq 1300 -and (Position $personal).Y -eq 320 -and (Position $tools).Y -eq 400) 'large viewport did not restore composition'
 Write-Host 'PASS adaptive canvas preserves fitting groups, moves only overflow, falls back and restores'
+$monitorA = [AppShelf.FreeCanvasLayout]::MonitorKey('DISPLAY1',1920,1080,96,96)
+$monitorB = [AppShelf.FreeCanvasLayout]::MonitorKey('DISPLAY2',1920,1080,96,96)
+Assert ($monitorA -ne $monitorB -and $monitorA -ne [AppShelf.FreeCanvasLayout]::MonitorKey('DISPLAY1',1920,1080,144,144)) 'monitor keys collide'
+Assert ($monitorA -eq [AppShelf.FreeCanvasLayout]::MonitorKey('display1',1920,1080,96,96)) 'monitor identity case unstable'
+$personalBoard = [Activator]::CreateInstance($type,$true)
+$pCard = New-Object System.Windows.Controls.Border
+$pCard.MinHeight = 152
+[void]$add.Invoke($personalBoard,[object[]]@('widget:personal',$pCard.PSObject.BaseObject,10,$editable['widget:personal'].PSObject.BaseObject))
+[void]$viewport.Invoke($personalBoard,[object[]]@(1100.0,'scroll'))
+$personalSize = New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)
+$personalBoard.Measure($personalSize)
+$personalBoard.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$personalBoard.DesiredSize.Width,$personalBoard.DesiredSize.Height))
+Assert (-not $temp.GetValue($personalBoard,$null)) 'personal layout not editable'
+Assert ($null -ne $candidate.Invoke($personalBoard,[object[]]@('widget:personal',(New-Object System.Windows.Point -ArgumentList 20,40).PSObject.BaseObject))) 'personal drag rejected'
+Assert ($null -ne $resize.Invoke($personalBoard,[object[]]@('widget:personal',280.0,180.0))) 'personal resize rejected'
+Write-Host 'PASS independent monitor key and editable snapshot'
 # A larger viewport must expose empty area, and drag cannot introduce adaptive overflow.
 [void]$type.GetMethod('SetViewportHeight',$flags).Invoke($board,[object[]]@(1000.0))
 $board.Measure((New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)))

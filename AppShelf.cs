@@ -318,6 +318,65 @@ namespace AppShelf
             distance = total; verticalDistance = vertical;
         }
 
+        // A monitor profile is opt-in; an empty map is a valid reset layout.
+        // Device name identifies the Windows display in this topology, not its physical size.
+        public static string MonitorKey(string device, int width, int height, int dpiX, int dpiY)
+        {
+            if (String.IsNullOrWhiteSpace(device) || width <= 0 || height <= 0 || dpiX <= 0 || dpiY <= 0) return null;
+            return String.Format(CultureInfo.InvariantCulture, "{0}|{1}x{2}|{3}x{4}",
+                device.ToUpperInvariant(), width, height, dpiX, dpiY);
+        }
+
+        public static Dictionary<string, Dictionary<string, FreeCanvasRect>> CopyMonitorPositions(
+            Dictionary<string, Dictionary<string, FreeCanvasRect>> source, bool? widgets)
+        {
+            if (source == null) return null;
+            var result = new Dictionary<string, Dictionary<string, FreeCanvasRect>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var profile in source)
+            {
+                if (String.IsNullOrWhiteSpace(profile.Key) || profile.Key.Length > 256 || profile.Value == null) continue;
+                var positions = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+                foreach (var item in profile.Value)
+                    if (IsValid(item.Value) && (item.Key.StartsWith("app:", StringComparison.OrdinalIgnoreCase) ||
+                        item.Key.StartsWith("widget:", StringComparison.OrdinalIgnoreCase)) &&
+                        (!widgets.HasValue || item.Key.StartsWith(widgets.Value ? "widget:" : "app:", StringComparison.OrdinalIgnoreCase)))
+                        positions[item.Key] = item.Value.Copy();
+                result[profile.Key] = positions;
+            }
+            return result.Count == 0 ? null : result;
+        }
+
+        public static Dictionary<string, Dictionary<string, FreeCanvasRect>> MergeMonitorPositions(
+            Dictionary<string, Dictionary<string, FreeCanvasRect>> apps, Dictionary<string, FreeCanvasRect> appDefault, int appStep,
+            Dictionary<string, Dictionary<string, FreeCanvasRect>> widgets, Dictionary<string, FreeCanvasRect> widgetDefault, int widgetStep,
+            int targetStep)
+        {
+            apps = CopyMonitorPositions(apps, false);
+            widgets = CopyMonitorPositions(widgets, true);
+            var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (apps != null) keys.UnionWith(apps.Keys);
+            if (widgets != null) keys.UnionWith(widgets.Keys);
+            if (keys.Count == 0) return null;
+            var result = new Dictionary<string, Dictionary<string, FreeCanvasRect>>(StringComparer.OrdinalIgnoreCase);
+            foreach (string key in keys)
+            {
+                Dictionary<string, FreeCanvasRect> left, right;
+                if (apps == null || !apps.TryGetValue(key, out left)) left = appDefault;
+                if (widgets == null || !widgets.TryGetValue(key, out right)) right = widgetDefault;
+                result[key] = MergePositions(left, appStep, right, widgetStep, targetStep) ??
+                    new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            }
+            return result;
+        }
+
+        public static bool HasMonitorWidgetPositions(Dictionary<string, Dictionary<string, FreeCanvasRect>> source)
+        {
+            if (source != null)
+                foreach (var profile in source.Values)
+                    if (SelectPositions(profile, true).Count != 0) return true;
+            return false;
+        }
+
         public static Dictionary<string, FreeCanvasRect> SelectPositions(Dictionary<string, FreeCanvasRect> source, bool widgets)
         {
             Dictionary<string, FreeCanvasRect> result = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
@@ -387,7 +446,7 @@ namespace AppShelf
             internal bool TemporarilyExpanded;
             internal Rect DisplayRect, CompactRect;
             internal int Columns;
-            internal FreeCanvasRect Preferred, Effective;
+            internal FreeCanvasRect Preferred, Effective, DisplayGeometry;
         }
         private readonly List<Entry> entries = new List<Entry>();
         private readonly Border preview;
@@ -561,6 +620,7 @@ namespace AppShelf
                 int height = HeightFor(entry, width, manual);
                 entry.Grip.Measure(new Size(18, 18));
                 entry.Effective = null;
+                entry.DisplayGeometry = null;
                 if (entry.Preferred == null) continue;
                 FreeCanvasRect candidate = new FreeCanvasRect(entry.Preferred.X, entry.Preferred.Y, width, height) { ManualHeight = manual };
                 if (FreeCanvasLayout.CanPlace(candidate, occupied))
@@ -660,6 +720,7 @@ namespace AppShelf
                 entry.Compact.Visibility = Visibility.Hidden;
                 entry.Grip.Visibility = Visibility.Hidden;
                 entry.CompactRect = new Rect(0, 0, 0, 0);
+                entry.DisplayGeometry = positions[entry].Copy();
                 entry.DisplayRect = PixelRect(positions[entry]);
                 bottom = Math.Max(bottom, entry.DisplayRect.Bottom);
             }
@@ -811,6 +872,42 @@ namespace AppShelf
             return result;
         }
 
+        // Snapshot visible adapted positions for an explicitly requested monitor
+        // layout. If the view had to stack/scale/collapse, pack within the
+        // current width; vertical scrolling remains available for editing.
+        internal Dictionary<string, FreeCanvasRect> CaptureEditableLayout()
+        {
+            int columns = Double.IsInfinity(viewportWidth) ? InitialColumns :
+                Math.Max(MinimumColumns, (int)Math.Min(FreeCanvasLayout.MaxCells, Math.Floor(viewportWidth / CellStep)));
+            var result = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            var occupied = new List<FreeCanvasRect>();
+            var displaced = new List<Entry>();
+            foreach (Entry entry in entries)
+            {
+                FreeCanvasRect rect = entry.DisplayGeometry ?? entry.Effective;
+                if (rect == null) return null;
+                if (rect.X + rect.Width <= columns && FreeCanvasLayout.CanPlace(rect, occupied))
+                { occupied.Add(rect); result[entry.Key] = PreferenceForEdit(entry.Key, rect); }
+                else displaced.Add(entry);
+            }
+            foreach (Entry entry in displaced)
+            {
+                FreeCanvasRect original = entry.Effective;
+                int width = Math.Min(columns, original.Width);
+                int manual = original.ManualHeight;
+                int height = HeightFor(entry, width, manual);
+                var target = new FreeCanvasRect(original.X, original.Y, width, height) { ManualHeight = manual };
+                FreeCanvasRect rect = FreeCanvasLayout.FindNearestFree(target, columns, FreeCanvasLayout.MaxCells, occupied)
+                    ?? FreeCanvasLayout.FindFirstFree(width, height, columns, occupied);
+                if (rect == null) return null;
+                rect.ManualHeight = manual;
+                occupied.Add(rect);
+                result[entry.Key] = PreferenceForEdit(entry.Key, rect);
+            }
+            foreach (FreeCanvasRect rect in result.Values) if (!FreeCanvasLayout.IsValid(rect)) return null;
+            return result;
+        }
+
         internal void SetPreferred(string key, FreeCanvasRect rect)
         {
             Entry entry = Find(key);
@@ -862,6 +959,7 @@ namespace AppShelf
                 foreach (KeyValuePair<string, FreeCanvasRect> item in CanvasPositions)
                     if (FreeCanvasLayout.IsValid(item.Value)) copy.CanvasPositions[item.Key] = item.Value.Copy();
             }
+            copy.CanvasMonitorPositions = FreeCanvasLayout.CopyMonitorPositions(CanvasMonitorPositions, null);
             copy.WidgetGroups = WidgetGroups == null ? null : WidgetGroups.ConvertAll(delegate(PluginWidgetGroupConfig g) { return g == null ? null : g.Copy(); });
             copy.WidgetIndicators = WidgetIndicators == null ? null : WidgetIndicators.ConvertAll(delegate(PluginWidgetPlacementConfig p) { return p == null ? null : p.Copy(); });
             copy.SnoozeQuickMinutes = SnoozeQuickMinutes == null ? null : (int[])SnoozeQuickMinutes.Clone();
@@ -907,6 +1005,17 @@ namespace AppShelf
 
         [DataMember(Name = "canvasPositions", EmitDefaultValue = false)]
         public Dictionary<string, FreeCanvasRect> CanvasPositions;
+
+        [DataMember(Name = "canvasMonitorPositions", EmitDefaultValue = false)]
+        public Dictionary<string, Dictionary<string, FreeCanvasRect>> CanvasMonitorPositions;
+
+        internal IEnumerable<Dictionary<string, FreeCanvasRect>> AllCanvasLayouts()
+        {
+            if (CanvasPositions != null) yield return CanvasPositions;
+            if (CanvasMonitorPositions != null)
+                foreach (var positions in CanvasMonitorPositions.Values)
+                    if (positions != null) yield return positions;
+        }
 
         [DataMember(Name = "canvasGridStep", EmitDefaultValue = false)]
         public int? CanvasGridStep;
@@ -1129,6 +1238,7 @@ namespace AppShelf
         [DataMember(Name = "version", IsRequired = true)]
         public int Version = 1;
         [DataMember(Name = "canvasPositions", EmitDefaultValue = false)] public Dictionary<string, FreeCanvasRect> CanvasPositions;
+        [DataMember(Name = "canvasMonitorPositions", EmitDefaultValue = false)] public Dictionary<string, Dictionary<string, FreeCanvasRect>> CanvasMonitorPositions;
         [DataMember(Name = "canvasGridStep", EmitDefaultValue = false)] public int? CanvasGridStep;
         [DataMember(Name = "canvasViewportMode", EmitDefaultValue = false)] public string CanvasViewportMode;
         [DataMember(Name = "canvasInitialized", EmitDefaultValue = false)] public bool CanvasInitialized;
@@ -1158,6 +1268,7 @@ namespace AppShelf
             return new PluginSettingsDocument {
                 CanvasPositions = c.CanvasPositions, CanvasGridStep = c.CanvasGridStep, CanvasViewportMode = c.CanvasViewportMode,
                 CanvasInitialized = c.CanvasInitialized,
+                CanvasMonitorPositions = FreeCanvasLayout.CopyMonitorPositions(c.CanvasMonitorPositions, null),
                 WidgetGroups = c.WidgetGroups, WidgetIndicators = c.WidgetIndicators,
                 BackupExecutable = c.BackupExecutable, BackupPluginPackages = c.BackupPluginPackages,
                 BackupReminders = c.BackupReminders, BackupCollections = c.BackupCollections,
@@ -1172,6 +1283,7 @@ namespace AppShelf
             PluginWidgetGroupConfig.Validate(WidgetGroups, WidgetIndicators);
             c.CanvasPositions = FreeCanvasLayout.MergePositions(CanvasPositions, FreeCanvasLayout.NormalizeStep(CanvasGridStep),
                 CanvasPositions, FreeCanvasLayout.NormalizeStep(CanvasGridStep), FreeCanvasLayout.NormalizeStep(CanvasGridStep));
+            c.CanvasMonitorPositions = FreeCanvasLayout.CopyMonitorPositions(CanvasMonitorPositions, null);
             c.CanvasGridStep = CanvasGridStep; c.CanvasViewportMode = CanvasViewportMode;
             c.CanvasInitialized = CanvasInitialized;
             c.WidgetGroups = WidgetGroups; c.WidgetIndicators = WidgetIndicators;
@@ -2483,6 +2595,8 @@ namespace AppShelf
         private bool _canSave;
         private DispatcherTimer _windowPlacementSaveTimer;
         private bool _windowPlacementTrackingReady;
+        private string _canvasMonitorKey;
+        private bool _canvasMonitorRefreshQueued;
         private bool _lastNonMinimizedWasMaximized;
         private StackPanel _tileHost;
         private ScrollViewer _tilesScroller;
@@ -2751,6 +2865,7 @@ namespace AppShelf
                 if (_config.GroupingEnabled && NormalizeGroupLayoutMode(_config.GroupLayoutMode) != "canvas")
                     RenderTiles();
                 _windowPlacementTrackingReady = true;
+                RefreshCanvasMonitor();
                 if (_startupHidePending)
                 {
                     _startupHidePending = false;
@@ -3060,17 +3175,28 @@ namespace AppShelf
             tileModes.Items.Add(_tileModeLabeledMenuItem);
             quick.Items.Add(tileModes);
             UpdateTileModeMenu();
+            MenuItem configureMonitor = new MenuItem { Header = "Настроить раскладку для этого экрана" };
+            configureMonitor.Click += delegate { ConfigureCanvasMonitor(); };
+            quick.Items.Add(configureMonitor);
             MenuItem resetCanvas = new MenuItem { Header = "Сбросить расположение групп" };
             resetCanvas.Click += delegate
             {
                 if (!_canSave || _canvasBoard == null) return;
-                if (AppDialog.Show(this, "Сбросить расположение и размеры групп? Ярлыки и виджеты сохранятся.",
+                string question = HasCanvasMonitorLayout(_config)
+                    ? "Сбросить расположение и размеры групп только для этого экрана? Остальные раскладки, ярлыки и виджеты сохранятся."
+                    : "Сбросить общую раскладку групп? Индивидуальные раскладки экранов, ярлыки и виджеты сохранятся.";
+                if (AppDialog.Show(this, question,
                     "AppShelf — Свободное полотно", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
                     ArrangeCanvas("reset");
             };
             quick.Items.Add(resetCanvas);
-            quick.SubmenuOpened += delegate { resetCanvas.IsEnabled = _canSave && _canvasBoard != null &&
-                (_search == null || String.IsNullOrWhiteSpace(_search.Text)); };
+            quick.SubmenuOpened += delegate {
+                bool enabled = _canSave && _canvasBoard != null && (_search == null || String.IsNullOrWhiteSpace(_search.Text));
+                resetCanvas.IsEnabled = enabled;
+                configureMonitor.IsEnabled = enabled && _canvasMonitorKey != null && !HasCanvasMonitorLayout(_config);
+                configureMonitor.Header = HasCanvasMonitorLayout(_config)
+                    ? "Индивидуальная раскладка этого экрана активна" : "Настроить раскладку для этого экрана";
+            };
             _pinMenuItem = new MenuItem { Header = "Поверх остальных окон",
                 IsCheckable = true, IsChecked = _config.AlwaysOnTop };
             _pinMenuItem.Click += delegate
@@ -3407,10 +3533,48 @@ namespace AppShelf
             }
             catch (Exception ex) { ConfigStore.Log(ex); }
             RegisterGlobalShortcut(sender, e);
+            QueueCanvasMonitorRefresh();
+        }
+
+        private string CurrentCanvasMonitorKey()
+        {
+            if (!IsVisible || WindowState == WindowState.Minimized) return null;
+            try
+            {
+                IntPtr handle = new WindowInteropHelper(this).Handle;
+                if (handle == IntPtr.Zero) return null;
+                Forms.Screen screen = Forms.Screen.FromHandle(handle);
+                PresentationSource source = PresentationSource.FromVisual(this);
+                if (source == null || source.CompositionTarget == null) return null;
+                Matrix transform = source.CompositionTarget.TransformToDevice;
+                return FreeCanvasLayout.MonitorKey(screen.DeviceName, screen.Bounds.Width, screen.Bounds.Height,
+                    (int)Math.Round(transform.M11 * 96), (int)Math.Round(transform.M22 * 96));
+            }
+            catch (Exception ex) { ConfigStore.Log(ex); return null; }
+        }
+
+        private void QueueCanvasMonitorRefresh()
+        {
+            if (_canvasMonitorRefreshQueued || Dispatcher.HasShutdownStarted) return;
+            _canvasMonitorRefreshQueued = true;
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(delegate {
+                _canvasMonitorRefreshQueued = false;
+                RefreshCanvasMonitor();
+            }));
+        }
+
+        private void RefreshCanvasMonitor()
+        {
+            if (!_windowPlacementTrackingReady) return;
+            string key = CurrentCanvasMonitorKey();
+            if (key == null || String.Equals(key, _canvasMonitorKey, StringComparison.OrdinalIgnoreCase)) return;
+            _canvasMonitorKey = key;
+            if (_canvasBoard != null) RenderTiles();
         }
 
         private void OnWindowGeometryChanged(object sender, EventArgs e)
         {
+            QueueCanvasMonitorRefresh();
             if (!_windowPlacementTrackingReady || !_canSave || _windowPlacementSaveTimer == null)
                 return;
             _windowPlacementSaveTimer.Stop();
@@ -3492,6 +3656,7 @@ namespace AppShelf
 
         private IntPtr GlobalHotKeyMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
+            if (msg == 0x007E || msg == 0x02E0) QueueCanvasMonitorRefresh(); // WM_DISPLAYCHANGE / WM_DPICHANGED
             if (msg == WmHotkey && wParam.ToInt32() == HotKeyId)
             {
                 if (IsVisible && WindowState != WindowState.Minimized && IsActive)
@@ -4444,10 +4609,37 @@ namespace AppShelf
             return DragDropEffects.None;
         }
 
+        private bool HasCanvasMonitorLayout(AppConfig config)
+        {
+            return _canvasMonitorKey != null && config.CanvasMonitorPositions != null &&
+                config.CanvasMonitorPositions.ContainsKey(_canvasMonitorKey);
+        }
+
+        private Dictionary<string, FreeCanvasRect> ActiveCanvasPositions(AppConfig config)
+        {
+            return HasCanvasMonitorLayout(config) ? config.CanvasMonitorPositions[_canvasMonitorKey] : config.CanvasPositions;
+        }
+
+        private void ConfigureCanvasMonitor()
+        {
+            if (!_canSave || _canvasBoard == null || (_search != null && !String.IsNullOrWhiteSpace(_search.Text))) return;
+            RefreshCanvasMonitor();
+            if (_canvasMonitorKey == null || _canvasBoard == null || HasCanvasMonitorLayout(_config)) return;
+            _tilesScroller.UpdateLayout();
+            var positions = _canvasBoard.CaptureEditableLayout();
+            if (positions == null) { ShowStatusMessage("Не удалось подготовить раскладку экрана.", true); return; }
+            AppConfig pending = _config.Copy();
+            if (pending.CanvasMonitorPositions == null)
+                pending.CanvasMonitorPositions = new Dictionary<string, Dictionary<string, FreeCanvasRect>>(StringComparer.OrdinalIgnoreCase);
+            pending.CanvasMonitorPositions[_canvasMonitorKey] = positions;
+            if (SaveConfigChanges(pending)) RenderTiles();
+        }
+
         private FreeCanvasRect CanvasPosition(string key)
         {
-            if (_config.CanvasPositions != null)
-                foreach (KeyValuePair<string, FreeCanvasRect> item in _config.CanvasPositions)
+            var positions = ActiveCanvasPositions(_config);
+            if (positions != null)
+                foreach (KeyValuePair<string, FreeCanvasRect> item in positions)
                     if (String.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase)) return item.Value;
             return null;
         }
@@ -4469,7 +4661,9 @@ namespace AppShelf
                 (_search != null && !String.IsNullOrWhiteSpace(_search.Text))) return;
             AppConfig pending = _config.Copy();
             pending.CanvasInitialized = true;
-            pending.CanvasPositions = null;
+            if (HasCanvasMonitorLayout(pending))
+                pending.CanvasMonitorPositions[_canvasMonitorKey] = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            else pending.CanvasPositions = null;
             if (SaveConfigChanges(pending)) RenderTiles();
         }
 
@@ -4512,19 +4706,22 @@ namespace AppShelf
             if (_canvasBoard == null || !CanEditCanvas() || !FreeCanvasLayout.IsValid(candidate)) return false;
             AppConfig pending = _config.Copy();
             pending.CanvasInitialized = true;
-            if (pending.CanvasPositions == null)
-                pending.CanvasPositions = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
+            string currentMonitor = CurrentCanvasMonitorKey();
+            if (currentMonitor != null && !String.Equals(currentMonitor, _canvasMonitorKey, StringComparison.OrdinalIgnoreCase))
+            { QueueCanvasMonitorRefresh(); return false; }
+            var layout = ActiveCanvasPositions(pending);
+            if (layout == null) pending.CanvasPositions = layout = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
             Dictionary<string, FreeCanvasRect> positions = _canvasBoard.Capture();
             // Do not turn temporary collision reflow into permanent geometry.
             // Initialize unsaved cards; change only the explicitly edited card.
             Dictionary<string, FreeCanvasRect> changes = new Dictionary<string, FreeCanvasRect>(StringComparer.OrdinalIgnoreCase);
             foreach (KeyValuePair<string, FreeCanvasRect> item in positions)
-                if (!pending.CanvasPositions.ContainsKey(item.Key)) changes[item.Key] = item.Value;
+                if (!layout.ContainsKey(item.Key)) changes[item.Key] = item.Value;
             FreeCanvasRect preference = _canvasBoard.PreferenceForEdit(key, candidate);
             if (preference == null) return false;
             changes[key] = preference;
             foreach (KeyValuePair<string, FreeCanvasRect> item in changes)
-                pending.CanvasPositions[item.Key] = item.Value.Copy();
+                layout[item.Key] = item.Value.Copy();
             if (!SaveConfigChanges(pending)) return false;
             foreach (KeyValuePair<string, FreeCanvasRect> item in changes)
                 _canvasBoard.SetPreferred(item.Key, item.Value);
@@ -5491,7 +5688,9 @@ namespace AppShelf
             {
                 double outer = _tilesScroller.ActualWidth > 1 ? _tilesScroller.ActualWidth : Width;
                 double viewport = outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
-                _canvasBoard.SetViewport(Math.Max(1, viewport), _config.CanvasViewportMode);
+                // A personal monitor layout stays editable even if the window
+                // is temporarily smaller than the saved geometry.
+                _canvasBoard.SetViewport(Math.Max(1, viewport), HasCanvasMonitorLayout(_config) ? "scroll" : _config.CanvasViewportMode);
                 double height = _tilesScroller.ViewportHeight;
                 if (height <= 0 || Double.IsInfinity(height)) height = _tilesScroller.ActualHeight - _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
                 _canvasBoard.SetViewportHeight(height);
@@ -6540,14 +6739,14 @@ namespace AppShelf
                     pending.Groups[i] = newName;
             foreach (AppItem item in pending.Items)
                 if (String.Equals(GroupOf(item), name, StringComparison.OrdinalIgnoreCase)) item.Group = newName;
-            if (pending.CanvasPositions != null)
+            foreach (var layout in pending.AllCanvasLayouts())
             {
-                foreach (string key in new List<string>(pending.CanvasPositions.Keys))
+                foreach (string key in new List<string>(layout.Keys))
                     if (String.Equals(key, "app:" + name, StringComparison.OrdinalIgnoreCase))
                     {
-                        FreeCanvasRect rect = pending.CanvasPositions[key];
-                        pending.CanvasPositions.Remove(key);
-                        pending.CanvasPositions["app:" + newName] = rect;
+                        FreeCanvasRect rect = layout[key];
+                        layout.Remove(key);
+                        layout["app:" + newName] = rect;
                         break;
                     }
             }
@@ -6589,10 +6788,10 @@ namespace AppShelf
             { return String.Equals(group, name, StringComparison.OrdinalIgnoreCase); });
             foreach (AppItem item in pending.Items)
                 if (String.Equals(GroupOf(item), name, StringComparison.OrdinalIgnoreCase)) item.Group = "";
-            if (pending.CanvasPositions != null)
-                foreach (string key in new List<string>(pending.CanvasPositions.Keys))
+            foreach (var layout in pending.AllCanvasLayouts())
+                foreach (string key in new List<string>(layout.Keys))
                     if (String.Equals(key, "app:" + name, StringComparison.OrdinalIgnoreCase))
-                        pending.CanvasPositions.Remove(key);
+                        layout.Remove(key);
             if (pending.GroupZoneOverrides != null)
             {
                 foreach (string key in new List<string>(pending.GroupZoneOverrides.Keys))
@@ -8217,9 +8416,9 @@ namespace AppShelf
                 int previousCanvasStep = FreeCanvasLayout.NormalizeStep(pending.CanvasGridStep);
                 if (newCanvasStep != previousCanvasStep)
                 {
-                    if (pending.CanvasPositions != null)
-                        foreach (string key in new List<string>(pending.CanvasPositions.Keys))
-                            pending.CanvasPositions[key] = FreeCanvasLayout.ConvertStep(pending.CanvasPositions[key], previousCanvasStep, newCanvasStep);
+                    foreach (var layout in pending.AllCanvasLayouts())
+                        foreach (string key in new List<string>(layout.Keys))
+                            layout[key] = FreeCanvasLayout.ConvertStep(layout[key], previousCanvasStep, newCanvasStep);
                     pending.CanvasGridStep = newCanvasStep;
                 }
                 pending.AlwaysOnTop = topmostSetting.IsChecked == true;
