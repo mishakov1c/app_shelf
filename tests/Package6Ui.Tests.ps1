@@ -2405,6 +2405,47 @@ public static class Package6Tests
                 Assert(Load().GroupLayoutMode == "canvas", "Settings reverted migration");
             } finally { w.Close(); }
         });
+        Case("monitor layout creation, switching, editing and isolated reset", delegate {
+            Seed("normal", 4);
+            AppConfig c = Load();
+            c.GroupLayoutMode = "canvas"; c.CanvasInitialized = true; c.CanvasGridStep = 20;
+            c.CanvasPositions = new Dictionary<string,FreeCanvasRect> {
+                { "app:Первая", new FreeCanvasRect(55, 2, 12, 10) }
+            };
+            const string other = "TEST-DISPLAY|2560x1440|96x96";
+            c.CanvasMonitorPositions = new Dictionary<string,Dictionary<string,FreeCanvasRect>> {
+                { other, new Dictionary<string,FreeCanvasRect> {
+                    { "app:Первая", new FreeCanvasRect(7, 3, 12, 10) }
+                } }
+            };
+            ConfigStore.Save(c);
+            MainWindow w = Open();
+            try {
+                string actual = (string)Get(w, "_canvasMonitorKey");
+                Assert(!String.IsNullOrEmpty(actual), "Current monitor not detected");
+                Assert(!Load().CanvasMonitorPositions.ContainsKey(actual), "Profile was silently created");
+                Call(w, "ApplyCanvasMonitorKey", other);
+                Assert(((FreeCanvasRect)Call(w, "CanvasPosition", "app:Первая")).X == 7, "Other monitor did not select its own positions");
+                Call(w, "ApplyCanvasMonitorKey", actual);
+                Assert(((FreeCanvasRect)Call(w, "CanvasPosition", "app:Первая")).X == 55, "Default layout not restored");
+                Call(w, "ConfigureCanvasMonitor"); Drain();
+                AppConfig saved = Load();
+                Assert(saved.CanvasMonitorPositions.ContainsKey(actual) && saved.CanvasPositions["app:Первая"].X == 55 &&
+                    saved.CanvasMonitorPositions[other]["app:Первая"].X == 7, "Personal layout creation changed other layouts");
+                FreeCanvasBoard board = (FreeCanvasBoard)Get(w, "_canvasBoard");
+                Assert(!board.IsTemporaryLayout, "New personal layout not editable");
+                var candidate = new FreeCanvasRect(0, 45, 12, 10);
+                Assert((bool)Call(w, "SaveCanvasPlacement", "app:Первая", candidate), "Personal placement save failed");
+                saved = Load();
+                Assert(saved.CanvasMonitorPositions[actual]["app:Первая"].Y == 45 &&
+                    saved.CanvasPositions["app:Первая"].Y == 2 && saved.CanvasMonitorPositions[other]["app:Первая"].Y == 3,
+                    "Personal edit changed another layout");
+                Call(w, "ArrangeCanvas", "reset"); Drain();
+                saved = Load();
+                Assert(saved.CanvasMonitorPositions[actual].Count == 0 && saved.CanvasPositions["app:Первая"].X == 55 &&
+                    saved.CanvasMonitorPositions[other]["app:Первая"].X == 7, "Personal reset changed another layout");
+            } finally { w.Close(); }
+        });
         Console.WriteLine("Package6 scenarios passed=" + passed + "; failed=" + failed);
         app.Shutdown(); if (failed != 0) throw new Exception("Package6 failures: " + failed);
     }
