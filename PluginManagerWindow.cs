@@ -23,7 +23,7 @@ namespace AppShelf
         private readonly PluginPackageStore store;
         private readonly PluginRuntime runtime;
         private readonly string backupRoot;
-        private readonly Func<InstalledPlugin, bool> prepareEnable;
+        private readonly Func<InstalledPlugin, Func<Task>> prepareEnable;
         private List<PluginBackupItem> recovered = new List<PluginBackupItem>();
         private readonly DispatcherTimer stateTimer;
         private readonly List<Action> stateUpdates = new List<Action>();
@@ -32,7 +32,7 @@ namespace AppShelf
         private readonly Button install;
         private bool busy;
 
-        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null, Func<InstalledPlugin, bool> beforeEnable = null)
+        internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null, Func<InstalledPlugin, Func<Task>> beforeEnable = null)
         {
             store = packages;
             runtime = controller;
@@ -247,12 +247,17 @@ namespace AppShelf
             enabled.Click += delegate
             {
                 bool enable = enabled.IsChecked == true;
+                Func<Task> action = delegate { return runtime.SetEnabledAsync(plugin.Id, enable); };
                 if (enable && prepareEnable != null)
                 {
-                    try { if (!prepareEnable(plugin)) { enabled.IsChecked = false; return; } }
+                    try
+                    {
+                        action = prepareEnable(plugin);
+                        if (action == null) { enabled.IsChecked = false; return; }
+                    }
                     catch (Exception error) { enabled.IsChecked = false; status.Text = error.Message; return; }
                 }
-                RunAction(delegate { return runtime.SetEnabledAsync(plugin.Id, enable); }, "Состояние сохранено.");
+                RunAction(action, "Состояние сохранено.");
             };
             body.Children.Add(enabled);
             body.Children.Add(liveState);
@@ -553,14 +558,19 @@ namespace AppShelf
         private bool _pluginMenuBusy;
         private bool _pluginRuntimeStopping;
 
-        private bool PrepareNetworkPluginEnable(Window owner, InstalledPlugin plugin)
+        private Func<Task> PrepareNetworkPluginEnable(Window owner, InstalledPlugin plugin)
         {
-            if (plugin.Id != NetworkPluginMigration.Id || _config.NetworkPluginMigrated) return true;
-            if (!_canSave) { ShowSaveDisabled(); return false; }
+            PluginRuntime runtime = GetPluginRuntime();
+            if (plugin.Id != NetworkPluginMigration.Id || _config.NetworkPluginMigrated)
+                return delegate { return runtime.SetEnabledAsync(plugin.Id, true); };
+            if (!_canSave) { ShowSaveDisabled(); return null; }
+            foreach (string capability in new[] { "background", "widget", "settings", "command" })
+                if (Array.IndexOf(plugin.Manifest.Capabilities, capability) < 0)
+                    throw new InvalidDataException("Пакет не поддерживает перенос прежних сетевых проверок.");
             if (AppDialog.Show(owner, "Перенести прежние настройки сетевых проверок в плагин «Сеть»?\n\n" +
                 "Существующий файл настроек плагина не будет заменён. Сетевые индикаторы перейдут в панель индикаторов плагинов; " +
                 "встроенный монитор больше не входит в ядро. Настройки прежней версии сохранятся для отката.",
-                "AppShelf — перенос сети", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return false;
+                "AppShelf — перенос сети", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return null;
             List<string> keys = new List<string>();
             if (_config.ShowNetwork)
             {
@@ -570,12 +580,40 @@ namespace AppShelf
                     keys.AddRange(new[] { "network1", "network2", "route" });
             }
             PluginPackageStore store = new PluginPackageStore(ConfigStore.DirectoryPath);
-            AppConfig pending = NetworkPluginMigration.Prepare(_config, plugin.Manifest.Version, keys, store.GetDataDirectory(plugin.Id));
-            if (!SaveConfigChanges(pending)) return false;
-            if (_pluginWidgets != null) _pluginWidgets.RestoreLayout(_config.WidgetGroups, _config.WidgetIndicators);
-            UpdateMonitorVisibility();
-            RenderTiles();
-            return true;
+            string directory = store.GetDataDirectory(plugin.Id);
+            // Validate capacity and seed data before launching the replacement.
+            // Only commit placement/marker after the plugin successfully starts.
+            NetworkPluginMigration.Prepare(_config, plugin.Manifest.Version, keys, directory);
+            return async delegate
+            {
+                try
+                {
+                    await runtime.SetEnabledAsync(plugin.Id, true);
+                    // Rebase on live config: geometry/reminder timers may have saved
+                    // unrelated fields while the plugin process was starting.
+                    AppConfig pending = NetworkPluginMigration.Prepare(_config, plugin.Manifest.Version, keys, directory);
+                    if (!SaveConfigChanges(pending, false))
+                        throw new IOException("Не удалось сохранить раскладку после переноса сети.");
+                }
+                catch (Exception original)
+                {
+                    try { await runtime.SetEnabledAsync(plugin.Id, false); }
+                    catch (Exception rollback)
+                    {
+                        ConfigStore.Log(original);
+                        ConfigStore.Log(rollback);
+                        throw new IOException("Перенос не завершён, не удалось отключить плагин: " + rollback.Message, original);
+                    }
+                    throw;
+                }
+                if (_pluginWidgets != null) _pluginWidgets.RestoreLayout(_config.WidgetGroups, _config.WidgetIndicators);
+                UpdateMonitorVisibility();
+                RenderTiles();
+                if (_pluginWidgets != null && !_pluginRuntimeStopping)
+                    await _pluginWidgets.RefreshVisibleAsync(
+                        delegate { return !_pluginRuntimeStopping && WidgetsInFreeLayout() && IsVisible && WindowState != WindowState.Minimized; },
+                        delegate { return !_pluginRuntimeStopping && IsVisible && WindowState != WindowState.Minimized; });
+            };
         }
 
         private PluginRuntime GetPluginRuntime()
