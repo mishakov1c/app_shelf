@@ -3566,7 +3566,11 @@ namespace AppShelf
         private void RefreshCanvasMonitor()
         {
             if (!_windowPlacementTrackingReady) return;
-            string key = CurrentCanvasMonitorKey();
+            ApplyCanvasMonitorKey(CurrentCanvasMonitorKey());
+        }
+
+        private void ApplyCanvasMonitorKey(string key)
+        {
             if (key == null || String.Equals(key, _canvasMonitorKey, StringComparison.OrdinalIgnoreCase)) return;
             _canvasMonitorKey = key;
             if (_canvasBoard != null) RenderTiles();
@@ -8416,9 +8420,9 @@ namespace AppShelf
                 int previousCanvasStep = FreeCanvasLayout.NormalizeStep(pending.CanvasGridStep);
                 if (newCanvasStep != previousCanvasStep)
                 {
-                    foreach (var layout in pending.AllCanvasLayouts())
-                        foreach (string key in new List<string>(layout.Keys))
-                            layout[key] = FreeCanvasLayout.ConvertStep(layout[key], previousCanvasStep, newCanvasStep);
+                    foreach (var monitorLayout in pending.AllCanvasLayouts())
+                        foreach (string key in new List<string>(monitorLayout.Keys))
+                            monitorLayout[key] = FreeCanvasLayout.ConvertStep(monitorLayout[key], previousCanvasStep, newCanvasStep);
                     pending.CanvasGridStep = newCanvasStep;
                 }
                 pending.AlwaysOnTop = topmostSetting.IsChecked == true;
