@@ -73,7 +73,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: mishakov1c/app_shelf_network
-          ref: 0e9dd77e95621e69509abc2276d82ee7ba34b8a6
+          ref: 989d970f7d5637bb8ddf8906620d07e21d345b6e
           path: .network-compat
           persist-credentials: false
 
