@@ -157,27 +157,6 @@ $lower = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Win
 Assert ($null -ne $lower) 'available lower viewport rejected'
 Write-Host 'PASS enlarged viewport and adaptive drag boundary'
 
-# All arrangement commands leave their source untouched and never overlap.
-$source = $capture.Invoke($board,$null)
-foreach ($command in @('vertical','rows','compact','left','right')) {
-    $arranged = [AppShelf.FreeCanvasLayout]::Arrange($source,$command,40)
-    Assert ($null -ne $arranged -and $arranged.Count -eq $source.Count) "arrangement lost cards: $command"
-    $keys = @($arranged.Keys)
-    for ($i=0; $i -lt $keys.Count; $i++) {
-        for ($j=$i+1; $j -lt $keys.Count; $j++) {
-            Assert (-not [AppShelf.FreeCanvasLayout]::Intersects($arranged[$keys[$i]],$arranged[$keys[$j]])) "overlap: $command"
-        }
-    }
-    Assert ($source['app:other'].X -eq 2) 'arrangement mutated source'
-    if ($command -eq 'vertical' -or $command -eq 'left') {
-        foreach ($rect in $arranged.Values) { Assert ($rect.X -eq 0) 'left alignment failed' }
-    }
-    if ($command -eq 'right') {
-        foreach ($rect in $arranged.Values) { Assert (($rect.X+$rect.Width) -eq 40) 'right alignment failed' }
-    }
-}
-Write-Host 'PASS arrangement commands'
-
 # D04: a long sequence and a single movement to the same pointer must
 # produce identical geometry. In particular 56 DIP is not 360 DIP.
 $pointerResize = $type.GetMethod('ResizeFromPointer',$flags)
