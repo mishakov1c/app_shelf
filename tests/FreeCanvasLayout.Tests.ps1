@@ -167,3 +167,22 @@ foreach ($command in @('vertical','rows','compact','left','right')) {
     }
 }
 Write-Host 'PASS arrangement commands'
+
+# D04: a long sequence and a single movement to the same pointer must
+# produce identical geometry. In particular 56 DIP is not 360 DIP.
+$pointerResize = $type.GetMethod('ResizeFromPointer',$flags)
+$original = $capture.Invoke($board,$null)['app:other']
+$start = (New-Object System.Windows.Point -ArgumentList 100,100).PSObject.BaseObject
+$result = $null
+for ($i=1; $i -le 12; $i++) {
+    $point = (New-Object System.Windows.Point -ArgumentList (100+56.0*$i/12),(100+40.0*$i/12)).PSObject.BaseObject
+    $result = $pointerResize.Invoke($board,[object[]]@('app:other',$original.PSObject.BaseObject,$start,$point))
+}
+$end = (New-Object System.Windows.Point -ArgumentList 156,140).PSObject.BaseObject
+$single = $pointerResize.Invoke($board,[object[]]@('app:other',$original.PSObject.BaseObject,$start,$end))
+Assert ($null -ne $result -and $null -ne $single) 'D04 valid resize rejected'
+Assert ($result.Width -eq $single.Width -and $result.Height -eq $single.Height) 'D04 resize depends on event count'
+Assert ($result.Width -eq ($original.Width + 3) -and $result.Height -eq ($original.Height + 2)) 'D04 displacement did not follow pointer'
+$back = $pointerResize.Invoke($board,[object[]]@('app:other',$original.PSObject.BaseObject,$start,$start))
+Assert ($back.Width -eq $original.Width -and $back.Height -eq $original.Height) 'D04 returning pointer did not restore original size'
+Write-Host 'PASS D04 absolute resize pointer'

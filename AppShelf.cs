@@ -465,18 +465,20 @@ namespace AppShelf
             compact.Click += delegate { ToggleTemporaryGroup(key); };
             Children.Add(compact);
             FreeCanvasRect initial = null, candidate = null;
-            double dx = 0, dy = 0;
+            Point start = new Point();
             grip.DragStarted += delegate
             {
                 if (entry.Effective == null || IsTemporaryLayout || (CanEdit != null && !CanEdit())) return;
                 initial = entry.Effective.Copy(); candidate = initial.Copy();
-                dx = dy = 0; ShowGrid(true);
+                start = Mouse.GetPosition(this);
+                ShowGrid(true);
             };
-            grip.DragDelta += delegate(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
+            grip.DragDelta += delegate
             {
                 if (initial == null) return;
-                dx += e.HorizontalChange; dy += e.VerticalChange;
-                candidate = ResizeCandidate(key, initial.Width * CellStep + dx, initial.Height * CellStep + dy);
+                // Thumb can report a displacement from its unchanged starting
+                // geometry on every event. Never accumulate those values.
+                candidate = ResizeFromPointer(key, initial, start, Mouse.GetPosition(this));
                 ShowPreview(candidate);
             };
             grip.DragCompleted += delegate(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
@@ -668,6 +670,13 @@ namespace AppShelf
                 FreeCanvasLayout.Snap(point.Y, CellStep), entry.Effective.Width, entry.Effective.Height)
             { ManualHeight = entry.Effective.ManualHeight };
             return CanPlace(entry, rect) ? rect : null;
+        }
+
+        internal FreeCanvasRect ResizeFromPointer(string key, FreeCanvasRect initial, Point start, Point current)
+        {
+            if (!FreeCanvasLayout.IsValid(initial)) return null;
+            Vector delta = current - start;
+            return ResizeCandidate(key, initial.Width * CellStep + delta.X, initial.Height * CellStep + delta.Y);
         }
 
         internal FreeCanvasRect ResizeCandidate(string key, double widthDip, double heightDip)
@@ -5649,7 +5658,7 @@ namespace AppShelf
                         card.HorizontalAlignment = align == "right" ? HorizontalAlignment.Right :
                             align == "center" ? HorizontalAlignment.Center : HorizontalAlignment.Left;
                         card.Margin = new Thickness(0, 0, grid ? 9 : 0, 8);
-                        group.Heading.MaxWidth = Math.Max(85, width - 84);
+                        group.Heading.MaxWidth = Math.Max(1, width - 84);
                     }
                     else
                     {
@@ -5804,8 +5813,9 @@ namespace AppShelf
                         "  ·  " + inGroup, 15, WhiteBrush);
                     heading.FontWeight = FontWeights.SemiBold;
                     heading.Margin = new Thickness(5, 0, 0, 4);
-                    heading.TextTrimming = canvasMode ? TextTrimming.None : TextTrimming.CharacterEllipsis;
-                    if (canvasMode) heading.TextWrapping = TextWrapping.Wrap;
+                    heading.TextTrimming = TextTrimming.None;
+                    heading.TextWrapping = TextWrapping.Wrap;
+                    heading.ToolTip = heading.Text;
                     DockPanel headerPanel = new DockPanel { LastChildFill = true };
                     if (group.Length != 0)
                     {
@@ -5915,13 +5925,26 @@ namespace AppShelf
                             : "Перетащи на заголовок другой группы, чтобы поменять группы местами";
                         DockPanel.SetDock(grip, Dock.Right);
                         headerPanel.Children.Add(grip);
+                        Point canvasDragStart = new Point();
                         grip.PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
                         {
-                            _groupDragCandidate = selectedGroup;
+                            if (!_canSave || _groupDragInProgress || (canvasMode && !CanEditCanvas())) return;
                             _groupDragStart = e.GetPosition(this);
+                            if (_canvasBoard != null) canvasDragStart = e.GetPosition(_canvasBoard);
+                            _groupDragCandidate = grip.CaptureMouse() ? selectedGroup : null;
                             e.Handled = true;
                         };
-                        section.PreviewMouseMove += delegate(object sender, MouseEventArgs e)
+                        grip.PreviewMouseLeftButtonUp += delegate
+                        {
+                            _groupDragCandidate = null;
+                            if (grip.IsMouseCaptured) grip.ReleaseMouseCapture();
+                        };
+                        grip.LostMouseCapture += delegate
+                        {
+                            if (String.Equals(_groupDragCandidate, selectedGroup, StringComparison.OrdinalIgnoreCase))
+                                _groupDragCandidate = null;
+                        };
+                        grip.PreviewMouseMove += delegate(object sender, MouseEventArgs e)
                         {
                             if (!_canSave || _groupDragInProgress ||
                                 !String.Equals(_groupDragCandidate, selectedGroup,
@@ -5932,12 +5955,13 @@ namespace AppShelf
                                 Math.Abs(current.Y - _groupDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
                             _groupDragCandidate = null;
                             _groupDragInProgress = true;
+                            if (grip.IsMouseCaptured) grip.ReleaseMouseCapture();
                             try
                             {
                                 DataObject data = new DataObject();
                                 data.SetData(GroupDragFormat, selectedGroup);
                                 if (freeMode) ShowFreeGroupZoneHints(true);
-                                if (_canvasBoard != null) _canvasBoard.BeginGroupDrag("app:" + selectedGroup, Mouse.GetPosition(_canvasBoard));
+                                if (_canvasBoard != null) _canvasBoard.BeginGroupDrag("app:" + selectedGroup, canvasDragStart);
                                 DragDrop.DoDragDrop(grip, data, DragDropEffects.Move);
                             }
                             catch (Exception ex)

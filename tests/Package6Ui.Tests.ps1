@@ -2584,6 +2584,24 @@ public static class Package6Tests
                         "Wide free placement did not restore three columns");
             } finally { w.Close(); }
         });
+        Case("D03 group headings wrap in all four layouts", delegate {
+            Seed("normal", 2);
+            AppConfig c = Load();
+            c.GroupWidthMode = "content";
+            ConfigStore.Save(c);
+            MainWindow w = Open(); try {
+                w.Width = 900; w.Height = 700; Drain();
+                foreach (string mode in new string[] { "vertical", "grid", "free", "canvas" })
+                {
+                    Call(w, "SetGroupLayoutMode", mode); Drain();
+                    DockPanel header = (DockPanel)Group(w, 0).Header;
+                    TextBlock heading = (TextBlock)header.Children[header.Children.Count - 1];
+                    Assert(heading.TextWrapping == TextWrapping.Wrap &&
+                        heading.TextTrimming == TextTrimming.None &&
+                        Object.Equals(heading.ToolTip, heading.Text), "D03 heading truncation policy in " + mode);
+                }
+            } finally { w.Close(); }
+        });
         Case("legacy nine-zone geometry migrates to the shared canvas and old layout survives", delegate {
             Seed("normal", 4);
             AppConfig c = Load();
