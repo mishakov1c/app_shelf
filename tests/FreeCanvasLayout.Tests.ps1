@@ -173,14 +173,16 @@ $pref.ManualHeight = 18
 $infinite = New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)
 $collapsedBoard.Measure($infinite)
 $collapsedBoard.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$collapsedBoard.DesiredSize.Width,$collapsedBoard.DesiredSize.Height))
-$short = $capture.Invoke($collapsedBoard,$null)['app:collapsed']
+$positions = $capture.Invoke($collapsedBoard,$null)
+$short = $positions['app:collapsed']
 Assert ([AppShelf.FreeCanvasLayout]::IsValid($short) -and $short.Height -lt 18 -and $short.X -eq 2) 'collapsed saved size leaves invalid effective rectangle'
 $stored = $type.GetMethod('PreferenceForEdit',$flags).Invoke($collapsedBoard,[object[]]@('app:collapsed',$short.PSObject.BaseObject))
 Assert ($stored.ManualHeight -eq 18) 'collapsed drag loses expanded manual height'
 $expander.IsExpanded = $true
 $collapsedBoard.InvalidateMeasure()
 $collapsedBoard.Measure($infinite)
-$expanded = $capture.Invoke($collapsedBoard,$null)['app:collapsed']
+$positions = $capture.Invoke($collapsedBoard,$null)
+$expanded = $positions['app:collapsed']
 Assert ($expanded.Height -ge 18 -and $expanded.ManualHeight -eq 18 -and $expanded.X -eq 2) 'expanded height not restored'
 Write-Host 'PASS collapsed effective geometry preserves manual expanded height'
 

@@ -167,7 +167,7 @@ public static class RestoreBackupTests
         {
             field.ApplyTemplate();
             Assert(field.Style != null && field.Resources.MergedDictionaries.Count > 0 &&
-                field.Template.FindName("PART_Popup", field) != null && field.Foreground.Equals(FluentUi.Foreground),
+                field.Template.FindName("PART_Popup", field) != null && field.Foreground is SolidColorBrush && ((SolidColorBrush)field.Foreground).Color == Color.FromRgb(244, 247, 253),
                 "Backup dropdown does not use the shared dark selection style");
         }
         ComboBox cadence = automaticFields[0];

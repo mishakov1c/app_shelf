@@ -494,6 +494,7 @@ namespace AppShelf
                 PluginManifest manifest = await InstallCoreAsync(path, plugin.Id, chosen);
                 status.Text = InstallStatus(manifest);
             }
+            catch (AppUpdate.GithubRateLimitException error) { status.Text = "GitHub временно ограничил запросы. Повторите после " + error.RetryUtc.ToLocalTime().ToString("g") + "."; }
             catch (Exception error) { status.Text = "Не удалось обновить плагин: " + error.Message; }
             finally
             {
@@ -532,7 +533,7 @@ namespace AppShelf
                             MessageBoxImage.Warning) == MessageBoxResult.Yes;
                     }));
                 }, expectedId, runtime.BeforePackageCommit,
-                    String.IsNullOrWhiteSpace(backupRoot) ? null : BackupAutomation.ValidateRoot(backupRoot), true);
+                    String.IsNullOrWhiteSpace(backupRoot) ? null : BackupAutomation.ValidateRoot(backupRoot), true, release == null ? null : release.Sha256);
             });
         }
 
