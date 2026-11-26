@@ -359,8 +359,8 @@ public static class IndependentAudit
             Call(w, "ShowSettings");
             string warning; bool safe;
             AppConfig loaded = ConfigStore.Load(out warning, out safe);
-            Assert(loaded.BottomPanelMode == "compact" && loaded.BottomPanelFavorites.Count == 2 &&
-                loaded.BottomPanelFavorites[0] == "reminders" && loaded.BottomPanelFavorites[1] == "countdown",
+            Assert(loaded.BottomPanelMode == "compact" && loaded.BottomPanelFavorites.Count == 3 && loaded.BottomPanelFavorites[0] == "route" &&
+                loaded.BottomPanelFavorites[1] == "reminders" && loaded.BottomPanelFavorites[2] == "countdown",
                 "Settings dialog lost favorite order or mode");
             WrapPanel items = (WrapPanel)Get(w, "_bottomCompactItems");
             Assert(items.Children.Count == 2 &&
