@@ -584,11 +584,17 @@ public static class Package6Tests
         Case("plugin indicators persist and refresh independently of free layout", delegate {
             PluginRuntimeState running = new PluginRuntimeState { Status = "running", Version = "1.0.0", ProcessId = 42 };
             PluginWidget indicator = new PluginWidget { Id = "market", Kind = "indicator", Title = "Market demo",
-                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "200" } } };
+                Elements = new[] { new PluginWidgetElement { Type = "metric", Label = "AAPL", Value = "200" },
+                    new PluginWidgetElement { Type = "action", Label = "Open details", CommandId = "open" } } };
             PluginWidgetSnapshot snapshot = new PluginWidgetSnapshot { Version = "1.0.0", ProcessId = 42, Widgets = new[] { indicator } };
-            int changes = 0, reads = 0;
+            int changes = 0, reads = 0, actions = 0;
             PluginWidgetWorkspace workspace = new PluginWidgetWorkspace(delegate { return running; },
-                delegate { return Task.FromResult(snapshot); }, delegate { return Task.FromResult(true); }, delegate { changes++; });
+                delegate { return Task.FromResult(snapshot); }, delegate(string id, string version, int process, string command) {
+                    Assert(id == "example.stocks" && version == "1.0.0" && process == 42 && command == "open",
+                        "Indicator menu used the wrong plugin action");
+                    actions++;
+                    return Task.FromResult(true);
+                }, delegate { changes++; });
             workspace.ConfigureBoard(new[] { "top-left" }, delegate(string key) { return key; }, delegate { return null; }, delegate { return false; });
             workspace.ConfigureIndicatorEditing(delegate { return true; });
             Assert(workspace.AddIndicator("example.stocks", "1.0.0", snapshot, "market") &&
@@ -615,6 +621,11 @@ public static class Package6Tests
             Assert(reads == 1 && Controls<TextBlock>(panel).Exists(delegate(TextBlock t) { return t.Text == "200"; }),
                 "Indicator did not refresh outside free layout");
             ContentControl item = (ContentControl)panel.Children[0];
+            Click(Menu(item.ContextMenu, "Open details")); Drain();
+            Assert(actions == 1, "Indicator menu did not invoke its API v1 action");
+            running.Status = "stopped";
+            workspace.InvalidateStopped();
+            Assert(item.ContextMenu.Items.Count == 2, "Unavailable plugin still offers stale actions");
             Click((MenuItem)item.ContextMenu.Items[1]);
             Assert(workspace.IndicatorHost.Visibility == Visibility.Collapsed && workspace.CaptureIndicators() == null &&
                 changes == 2, "Indicator removal did not collapse bottom strip");
@@ -1137,7 +1148,7 @@ public static class Package6Tests
                     menu.IsOpen = false;
                     foreach (ContextMenu other in new ContextMenu[] {
                         AddMenu, Tiles(w)[0].ContextMenu, ((Border)Get(w, "_weatherChip")).ContextMenu,
-                        ((Border)Get(w, "_monitorBorder")).ContextMenu
+                        ((Border)Get(w, "_footerBorder")).ContextMenu
                     }) {
                         Assert(other != null, "Other context menu missing");
                         other.PlacementTarget = w; other.IsOpen = true; Drain();
@@ -1694,8 +1705,8 @@ public static class Package6Tests
                         Body(d, "appearance-tiles").Visibility == Visibility.Collapsed,
                         "Bottom-panel context menu did not open its nested section");
                 };
-                Border footer = (Border)Get(w, "_monitorBorder");
-                Click(Menu(footer.ContextMenu, "Настроить нижнюю панель…"));
+                Border footer = (Border)Get(w, "_footerBorder");
+                Click(Menu(footer.ContextMenu, "Состав, порядок и настройки панели…"));
                 Assert(Load().SettingsLastSection == "panel",
                     "Bottom-panel context navigation lost its historical saved key");
                 settings = delegate(Window d) {
@@ -1845,13 +1856,44 @@ public static class Package6Tests
                 FrameworkElement reminder = (FrameworkElement)Get(w, "_remindersChip");
                 Assert(Math.Abs(indicator.TranslatePoint(new Point(0,0), full).Y - reminder.TranslatePoint(new Point(0,0), full).Y) <= 1,
                     "Indicator did not use spare space on detailed first row");
+                Assert(Math.Abs(indicator.ActualHeight - reminder.ActualHeight) <= 1 &&
+                    Math.Abs(indicator.ActualWidth - reminder.ActualWidth) > 2,
+                    "Detailed row did not share height while preserving content widths");
+                Picture(w, "2243-footer-detailed");
+                Assert(w.ContextMenu == null && ((Border)Get(w, "_monitorBorder")).ContextMenu == null &&
+                    reminder.ContextMenu != null && indicator.ContextMenu != null &&
+                    !Object.ReferenceEquals(reminder.ContextMenu, indicator.ContextMenu),
+                    "Footer and indicators do not own independent menus");
+                Button footerMenu = Controls<Button>(w).Find(button => Object.Equals(button.Tag, "BottomPanelMenu"));
+                ContextMenu general = ((Border)Get(w, "_footerBorder")).ContextMenu;
+                Assert(footerMenu != null && general != null, "Missing access to the common footer menu");
+                w.Width = w.MinWidth; Drain();
+                Click(footerMenu); Drain();
+                Assert(general.IsOpen && general.PlacementTarget == footerMenu && !indicator.ContextMenu.IsOpen,
+                    "Common menu not available when the footer wraps");
+                Picture(general, "2243-footer-general-menu");
+                general.IsOpen = false; w.Width = 1050; Drain();
+                foreach (FrameworkElement card in new FrameworkElement[] { reminder, indicator })
+                {
+                    card.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Right) {
+                        RoutedEvent = UIElement.PreviewMouseRightButtonUpEvent
+                    });
+                    Drain();
+                    Assert(card.ContextMenu.IsOpen && !general.IsOpen, "Right click opened the wrong context menu");
+                    Picture(card.ContextMenu, card == reminder ? "2243-footer-builtin-menu" : "2243-footer-plugin-menu");
+                    card.ContextMenu.IsOpen = false;
+                }
                 Live(w).BottomPanelMode = "compact";
                 Call(w, "ApplyBottomPanelMode"); Drain();
                 Assert(indicator.Parent == favorites && favorites.Children.Count == 3, "Compact indicator missing or duplicated");
                 Assert(Math.Abs(indicator.TranslatePoint(new Point(0,0), favorites).Y -
                     ((FrameworkElement)favorites.Children[0]).TranslatePoint(new Point(0,0), favorites).Y) <= 1,
                     "Compact indicator did not use spare first row");
+                Assert(Math.Abs(indicator.ActualHeight - ((FrameworkElement)favorites.Children[0]).ActualHeight) <= 1,
+                    "Compact indicator row has unequal heights");
+                Picture(w, "2243-footer-compact");
                 Click((Button)compact.Children[0]);
+                Drain(); Picture(w, "2243-footer-expanded");
                 Assert(indicator.Parent == full && favorites.Children.Count == 0, "Expanded compact lost or duplicated indicator");
                 Click((Button)compact.Children[0]);
                 Assert(indicator.Parent == favorites && favorites.Children.Count == 3, "Collapsed compact lost indicator");
@@ -1859,6 +1901,9 @@ public static class Package6Tests
                 Call(w, "ApplyBottomPanelMode"); Drain();
                 Assert(indicator.Parent == workspace.IndicatorHost && workspace.IndicatorHost.Visibility == Visibility.Visible,
                     "Category mode lost indicator host");
+                Assert(Controls<Button>((DependencyObject)Get(w, "_bottomCategoryTabs")).TrueForAll(button => button.ContextMenu != null),
+                    "Category tabs inherited the common menu");
+                Picture(w, "2243-footer-categories");
                 Live(w).BottomPanelMode = "detailed";
                 Call(w, "ApplyBottomPanelMode"); Drain();
                 Assert(indicator.Parent == full && workspace.IndicatorHost.Children.Count == 0 &&
@@ -2421,6 +2466,7 @@ public static class Package6Tests
             ConfigStore.Save(c);
             MainWindow w = Open();
             try {
+                w.Height = 800; w.UpdateLayout(); Drain();
                 string actual = (string)Get(w, "_canvasMonitorKey");
                 Assert(!String.IsNullOrEmpty(actual), "Current monitor not detected");
                 Assert(!Load().CanvasMonitorPositions.ContainsKey(actual), "Profile was silently created");
@@ -2440,6 +2486,16 @@ public static class Package6Tests
                 Assert(saved.CanvasMonitorPositions[actual]["app:Первая"].Y == 45 &&
                     saved.CanvasPositions["app:Первая"].Y == 2 && saved.CanvasMonitorPositions[other]["app:Первая"].Y == 3,
                     "Personal edit changed another layout");
+                var scroller = (ScrollViewer)Get(w, "_tilesScroller");
+                w.UpdateLayout(); Drain(); w.UpdateLayout();
+                Assert(scroller.ComputedVerticalScrollBarVisibility == Visibility.Visible,
+                    String.Format("Personal layout did not scroll to its overflow: viewport={0}; extent={1}; y={2}",
+                        scroller.ViewportHeight, scroller.ExtentHeight, board.Capture()["app:Первая"].Y));
+                Call(w, "ApplyCanvasMonitorKey", other);
+                w.UpdateLayout(); Drain(); w.UpdateLayout();
+                Assert(scroller.ComputedVerticalScrollBarVisibility != Visibility.Visible,
+                    "Vertical bar from another monitor layout stuck after switching");
+                Call(w, "ApplyCanvasMonitorKey", actual);
                 Call(w, "ArrangeCanvas", "reset"); Drain();
                 saved = Load();
                 Assert(saved.CanvasMonitorPositions[actual].Count == 0 && saved.CanvasPositions["app:Первая"].X == 55 &&
@@ -2455,17 +2511,17 @@ public static class Package6Tests
             try {
                 var scroller = (ScrollViewer)Get(w, "_tilesScroller");
                 var board = (FreeCanvasBoard)Get(w, "_canvasBoard");
-                w.UpdateLayout(); Drain();
+                w.Width = 900; w.Height = 720; w.UpdateLayout(); Drain();
                 // HeightFor can expand a manually sized card to fit wrapped tiles.
                 // Measure the real card at the test width before positioning it
                 // against the viewport edge, rather than assuming eight rows.
-                board.SetPreferred("app:Первая", new FreeCanvasRect(0, 0, 12, 8) { ManualHeight = 8 });
+                board.SetPreferred("app:Первая", new FreeCanvasRect(0, 0, 24, 8) { ManualHeight = 8 });
                 w.UpdateLayout(); Drain(); w.UpdateLayout();
                 FreeCanvasRect measured = board.Capture()["app:Первая"];
                 double width = scroller.ViewportWidth, height = scroller.ViewportHeight;
                 Assert(width > 400 && height > 200, "Unexpected initial viewport");
-                int x = (int)Math.Floor(width / 20) - measured.Width;
-                int y = (int)Math.Floor(height / 20) - measured.Height;
+                int x = (int)Math.Floor((width + 8) / 20) - measured.Width;
+                int y = (int)Math.Floor((height + 8) / 20) - measured.Height;
                 Assert(x >= 0 && y >= 0, "Test card does not fit at the chosen width");
                 var fitting = new FreeCanvasRect(x, y, measured.Width, measured.Height) { ManualHeight = 8 };
                 board.SetPreferred("app:Первая", fitting);
@@ -2479,12 +2535,41 @@ public static class Package6Tests
                 Assert(scroller.ScrollableHeight < 1 && scroller.ScrollableWidth < 1 &&
                     scroller.ComputedVerticalScrollBarVisibility != Visibility.Visible &&
                     scroller.ComputedHorizontalScrollBarVisibility != Visibility.Visible, "Fitting card shows scrollbars: " + extent);
-                board.SetPreferred("app:Первая", new FreeCanvasRect(x + 10, y + 10, measured.Width, measured.Height) { ManualHeight = 8 });
+                Assert(Math.Abs(scroller.ExtentWidth - ((actual.X + actual.Width) * 20 - 8)) < 1 &&
+                    Math.Abs(scroller.ExtentHeight - ((actual.Y + actual.Height) * 20 - 8)) < 1,
+                    "The scroll extent includes space outside the card: " + extent);
+                Assert(board.ActualWidth >= width - 1 && board.ActualHeight >= height - 1,
+                    "The board does not cover the visible drop area");
+                Picture(w, "2243-canvas-fits");
+                Assert((bool)Call(w, "SaveCanvasPlacement", "app:Первая", fitting), "Could not persist fitting placement");
+                w.Width -= 180; w.Height -= 140;
                 w.UpdateLayout(); Drain(); w.UpdateLayout();
-                Assert(scroller.ScrollableHeight > 50 && scroller.ScrollableWidth > 50, "Actual overflow did not scroll");
-                board.SetPreferred("app:Первая", fitting);
+                Assert(scroller.ScrollableHeight > 50 && scroller.ScrollableWidth > 50 &&
+                    scroller.ComputedHorizontalScrollBarVisibility == Visibility.Visible &&
+                    scroller.ComputedVerticalScrollBarVisibility == Visibility.Visible, "Actual overflow on resize did not scroll");
+                Picture(w, "2243-canvas-overflow");
+                w.Width += 180; w.Height += 140;
                 w.UpdateLayout(); Drain(); w.UpdateLayout();
-                Assert(scroller.ScrollableHeight < 1 && scroller.ScrollableWidth < 1, "Scrollbars stuck after overflow removed");
+                Assert(scroller.ScrollableHeight < 1 && scroller.ScrollableWidth < 1, "Scrollbars stuck after resizing back");
+                FreeCanvasRect persisted = Load().CanvasPositions["app:Первая"];
+                Assert(persisted.X == x && persisted.Y == y && persisted.Width == fitting.Width &&
+                    persisted.ManualHeight == fitting.ManualHeight, "Resizing rewrote the configured placement");
+
+                // Give the other axis room so an individual bar cannot cause cross-axis overflow.
+                w.Width += 60; w.Height += 60; w.UpdateLayout(); Drain();
+                foreach (bool horizontal in new[] { true, false })
+                {
+                    var overflow = new FreeCanvasRect(x + (horizontal ? 10 : 0), y + (horizontal ? 0 : 10),
+                        fitting.Width, fitting.Height) { ManualHeight = fitting.ManualHeight };
+                    Assert((bool)Call(w, "SaveCanvasPlacement", "app:Первая", overflow), "Could not move the group");
+                    w.UpdateLayout(); Drain(); w.UpdateLayout();
+                    Assert(horizontal ? scroller.ScrollableWidth > 50 && scroller.ScrollableHeight < 1 :
+                        scroller.ScrollableHeight > 50 && scroller.ScrollableWidth < 1, "Unexpected axes after moving the group");
+                    Assert((bool)Call(w, "SaveCanvasPlacement", "app:Первая", fitting), "Could not move the group back");
+                    w.UpdateLayout(); Drain(); w.UpdateLayout();
+                    Assert(scroller.ComputedHorizontalScrollBarVisibility != Visibility.Visible &&
+                        scroller.ComputedVerticalScrollBarVisibility != Visibility.Visible, "Scrollbars stuck after moving back");
+                }
             } finally { w.Close(); }
         });
         Console.WriteLine("Package6 scenarios passed=" + passed + "; failed=" + failed);

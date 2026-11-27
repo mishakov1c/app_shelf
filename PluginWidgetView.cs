@@ -13,7 +13,7 @@ namespace AppShelf
 {
     internal static class PluginWidgetView
     {
-        internal static Border Create(PluginWidget widget, Func<string, Task> invoke)
+        internal static Border Create(PluginWidget widget, Func<string, Task> invoke, List<Button> indicatorActions = null)
         {
             if (widget == null) throw new ArgumentNullException("widget");
             bool indicator = widget.Kind == "indicator";
@@ -27,10 +27,11 @@ namespace AppShelf
                 BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(indicator ? 8 : 12),
                 Padding = new Thickness(indicator ? 8 : 12),
                 MaxWidth = indicator ? 360 : tile ? 200 : 440,
-                VerticalAlignment = VerticalAlignment.Top, Tag = widget.Id
+                VerticalAlignment = indicator ? VerticalAlignment.Stretch : VerticalAlignment.Top, Tag = widget.Id
             };
             AutomationProperties.SetName(frame, widget.Title);
             StackPanel body = new StackPanel();
+            if (indicator) body.VerticalAlignment = VerticalAlignment.Center;
             frame.Child = body;
             PluginWidgetElement singleAction = null;
             if (indicator)
@@ -126,7 +127,9 @@ namespace AppShelf
                 };
                 frame.Background = Brushes.Transparent; frame.BorderThickness = new Thickness(0); frame.Padding = new Thickness(0);
                 frame.Child = primary;
+                actions.Add(primary);
             }
+            if (indicatorActions != null) indicatorActions.AddRange(actions);
             return frame;
         }
 
@@ -817,8 +820,10 @@ namespace AppShelf
 
         private void WireIndicator(Placement entry)
         {
-            entry.Host = new ContentControl { Margin = new Thickness(0, 0, 6, 3), MaxWidth = 360, MaxHeight = 70,
-                VerticalAlignment = VerticalAlignment.Top, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            entry.Host = new ContentControl { Margin = new Thickness(0, 0, 8, 8), MaxWidth = 360,
+                Focusable = true, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                VerticalContentAlignment = VerticalAlignment.Stretch };
+            AutomationProperties.SetName(entry.Host, entry.Title);
             ContextMenu menu = new ContextMenu();
             MenuItem refresh = new MenuItem { Header = "Обновить индикатор" };
             refresh.Click += async delegate { await Refresh(entry); };
@@ -826,7 +831,7 @@ namespace AppShelf
             remove.Click += delegate { Remove(entry); };
             menu.Items.Add(refresh); menu.Items.Add(remove);
             menu.Opened += delegate { remove.IsEnabled = canEditIndicators(); };
-            entry.Host.ContextMenu = menu;
+            MainWindow.AttachBottomContextMenu(entry.Host, menu);
         }
 
         private void WirePlacement(Placement entry)
@@ -976,13 +981,40 @@ namespace AppShelf
             changed();
         }
 
+        private sealed class IndicatorScrollViewer : ScrollViewer
+        {
+            protected override Size MeasureOverride(Size constraint)
+            {
+                // Bound the height contributed by plugin content, while letting
+                // WrapPanel stretch the card to a taller neighbor in its row.
+                return base.MeasureOverride(new Size(constraint.Width, Math.Min(70, constraint.Height)));
+            }
+        }
+
         private void Display(Placement entry, PluginWidget widget, Func<string, Task> action)
         {
-            Border view = PluginWidgetView.Create(widget, action);
+            List<Button> indicatorActions = entry.Group == null ? new List<Button>() : null;
+            Border view = PluginWidgetView.Create(widget, action, indicatorActions);
             if (entry.Group == null)
             {
-                entry.Host.Content = new ScrollViewer { Content = view, MaxHeight = 70,
+                entry.Host.Content = new IndicatorScrollViewer { Content = view,
                     VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+                ContextMenu menu = entry.Host.ContextMenu;
+                while (menu.Items.Count > 2) menu.Items.RemoveAt(menu.Items.Count - 1);
+                if (indicatorActions.Count > 0) menu.Items.Add(new Separator());
+                foreach (Button button in indicatorActions)
+                {
+                    Button command = button;
+                    MenuItem item = new MenuItem {
+                        Header = PluginUiActions.LiteralMenuText(command.ToolTip as string ?? AutomationProperties.GetName(command))
+                    };
+                    item.SetBinding(MenuItem.IsEnabledProperty, new System.Windows.Data.Binding("IsEnabled") { Source = command });
+                    item.Click += delegate
+                    {
+                        if (command.IsEnabled) command.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    };
+                    menu.Items.Add(item);
+                }
                 return;
             }
             WireWidgetDrag(entry, view);
