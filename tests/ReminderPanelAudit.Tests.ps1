@@ -368,7 +368,7 @@ public static class IndependentAudit
                 "Compact display differs from saved favorite order");
             Button expand = (Button)((DockPanel)Get(w, "_bottomCompactRow")).Children[0];
             Click(expand);
-            ContextMenu menu = ((Border)Get(w, "_monitorBorder")).ContextMenu;
+            ContextMenu menu = ((Border)Get(w, "_footerBorder")).ContextMenu;
             ((MenuItem)menu.Items[1]).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             System.Windows.Controls.Primitives.UniformGrid groups =
                 (System.Windows.Controls.Primitives.UniformGrid)Get(w, "_bottomCategoryTabs");

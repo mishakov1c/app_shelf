@@ -73,6 +73,8 @@ $third.MinHeight = 140
 [void]$add.Invoke($board, [object[]]@('app:work',$first.PSObject.BaseObject,20,(Rect 0 0 20 6).PSObject.BaseObject))
 [void]$add.Invoke($board, [object[]]@('widget:1',$second.PSObject.BaseObject,20,(Rect 20 0 20 6).PSObject.BaseObject))
 [void]$add.Invoke($board, [object[]]@('app:other',$third.PSObject.BaseObject,20,$null))
+[void]$type.GetMethod('SetViewport',$flags).Invoke($board,[object[]]@(900.0,'scroll'))
+[void]$type.GetMethod('SetViewportHeight',$flags).Invoke($board,[object[]]@(600.0))
 function Layout {
     $board.Measure((New-Object System.Windows.Size -ArgumentList 900,600))
     $board.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$board.DesiredSize.Width,$board.DesiredSize.Height))
@@ -233,6 +235,37 @@ Assert ($null -eq $outside -and -not $temp.GetValue($board,$null)) 'drag beyond 
 $lower = $candidate.Invoke($board,[object[]]@('app:other',(New-Object System.Windows.Point -ArgumentList 40,700).PSObject.BaseObject))
 Assert ($null -ne $lower) 'available lower viewport rejected'
 Write-Host 'PASS enlarged viewport and adaptive drag boundary'
+
+# Near-edge cards must not create a scroll extent from unused cells.
+$edgeBoard = [Activator]::CreateInstance($type,$true)
+$edgeCard = New-Object System.Windows.Controls.Border
+$edgeCard.MinHeight = 72
+[void]$add.Invoke($edgeBoard,[object[]]@('app:edge',$edgeCard.PSObject.BaseObject,10,(Rect 29 25 10 4).PSObject.BaseObject))
+function EdgeLayout([double]$width,[double]$height,[string]$mode) {
+    [void]$viewport.Invoke($edgeBoard,[object[]]@($width,$mode))
+    [void]$heightMethod.Invoke($edgeBoard,[object[]]@($height))
+    $edgeBoard.Measure((New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)))
+    $edgeBoard.Arrange((New-Object System.Windows.Rect -ArgumentList 0,0,$edgeBoard.DesiredSize.Width,$edgeBoard.DesiredSize.Height))
+}
+foreach ($mode in @('adaptive','scroll','scale','collapse')) {
+    EdgeLayout 800 600 $mode
+    Assert ($edgeBoard.DesiredSize.Width -eq 800 -and $edgeBoard.DesiredSize.Height -eq 600) "fitting cards create extra extent in $mode"
+}
+EdgeLayout 780 572 'scroll'
+Assert ($edgeBoard.DesiredSize.Width -eq 780 -and $edgeBoard.DesiredSize.Height -eq 572) 'trailing grid gap creates overflow'
+EdgeLayout 700 500 'scroll'
+Assert ($edgeBoard.DesiredSize.Width -eq 772 -and $edgeBoard.DesiredSize.Height -eq 572) 'real overflow lost or padded'
+EdgeLayout 1000 800 'scroll'
+Assert ($edgeBoard.DesiredSize.Width -eq 1000 -and $edgeBoard.DesiredSize.Height -eq 800) 'larger viewport not filled'
+Assert ($null -ne $candidate.Invoke($edgeBoard,[object[]]@('app:edge',(New-Object System.Windows.Point -ArgumentList 800,700).PSObject.BaseObject))) 'free viewport lost drag surface'
+$edgeSaved = $capture.Invoke($edgeBoard,$null)['app:edge']
+Assert ($edgeSaved.X -eq 29 -and $edgeSaved.Y -eq 25) 'viewport extent change mutated geometry'
+$emptyBoard = [Activator]::CreateInstance($type,$true)
+[void]$viewport.Invoke($emptyBoard,[object[]]@(300.0,'scroll'))
+[void]$heightMethod.Invoke($emptyBoard,[object[]]@(240.0))
+$emptyBoard.Measure((New-Object System.Windows.Size -ArgumentList ([double]::PositiveInfinity),([double]::PositiveInfinity)))
+Assert ($emptyBoard.DesiredSize.Width -eq 300 -and $emptyBoard.DesiredSize.Height -eq 240) 'empty canvas creates overflow'
+Write-Host 'PASS canvas extents match visible content and fill viewport without artificial overflow'
 
 # Collapsed effective height must not invalidate the saved manual height or collision checks.
 $collapsedBoard = [Activator]::CreateInstance($type,$true)

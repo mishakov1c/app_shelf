@@ -461,6 +461,7 @@ namespace AppShelf
         private double displayScale = 1;
         internal bool IsTemporaryLayout { get { return activeMode == "adaptive" || activeMode == "collapse" || displayScale < 0.999; } }
         internal double DisplayScale { get { return displayScale; } }
+        internal bool FillViewportOnArrange { get; set; }
         internal Func<string, FreeCanvasRect, bool> CommitPlacement;
         internal Func<bool> CanEdit;
 
@@ -647,9 +648,10 @@ namespace AppShelf
                 columns = Math.Max(columns, rect.X + rect.Width);
                 rows = Math.Max(rows, rect.Y + rect.Height);
             }
-            double contentWidth = columns * CellStep;
-            double naturalWidth = Math.Min(FreeCanvasLayout.MaxCells, Math.Max(InitialColumns, columns) + 4) * CellStep;
-            double naturalHeight = Math.Min(FreeCanvasLayout.MaxCells, Math.Max((int)Math.Ceiling(400.0 / CellStep), rows) + 4) * CellStep;
+            // The trailing grid gap and four extra cells are not visible content.
+            // Fill the viewport for dragging, but do not invent scrollable space.
+            double contentWidth = Math.Max(0, columns * CellStep - Gap);
+            double contentHeight = Math.Max(0, rows * CellStep - Gap);
             bool finite = !Double.IsInfinity(viewportWidth);
             bool overflow = finite && contentWidth > viewportWidth + 0.5;
             string next = overflow ? viewportMode : "scroll";
@@ -657,8 +659,16 @@ namespace AppShelf
                 foreach (Entry entry in entries) entry.TemporarilyExpanded = false;
             activeMode = next;
             displayScale = next == "scale" ? Math.Max(0.75, Math.Min(1, viewportWidth / Math.Max(1, contentWidth))) : 1;
-            if (finite)
-                naturalWidth = Math.Max(viewportWidth, viewportMode == "scroll" ? naturalWidth : contentWidth);
+            // A ScrollContentPresenter stretches its content during arrange.
+            // Reporting the preceding viewport as desired size makes Auto bars
+            // compete with stale sizes after a resize or a change on the other axis.
+            double naturalWidth = contentWidth * displayScale;
+            double naturalHeight = contentHeight * displayScale;
+            if (!FillViewportOnArrange)
+            {
+                naturalWidth = Math.Max(finite ? viewportWidth : InitialColumns * CellStep, naturalWidth);
+                naturalHeight = Math.Max(viewportHeight > 0 ? viewportHeight : 400, naturalHeight);
+            }
             if (activeMode == "adaptive")
             {
                 Size? adapted = MeasureAdaptive(Math.Max(1, viewportWidth), rows);
@@ -672,7 +682,7 @@ namespace AppShelf
                 entry.Compact.Visibility = Visibility.Hidden;
                 entry.Grip.Visibility = IsTemporaryLayout || CardCollapsed(entry) ? Visibility.Hidden : Visibility.Visible;
             }
-            return new Size(naturalWidth * displayScale, Math.Max(viewportHeight, naturalHeight * displayScale));
+            return new Size(naturalWidth, naturalHeight);
         }
 
         private Size? MeasureAdaptive(double width, int originalRows)
@@ -724,7 +734,8 @@ namespace AppShelf
                 entry.DisplayRect = PixelRect(positions[entry]);
                 bottom = Math.Max(bottom, entry.DisplayRect.Bottom);
             }
-            return new Size(width, Math.Max(1, Math.Max(viewportHeight, bottom)));
+            return FillViewportOnArrange ? new Size(0, bottom) :
+                new Size(width, Math.Max(1, Math.Max(viewportHeight, bottom)));
         }
 
         private Size MeasureTemporary(double width)
@@ -762,7 +773,7 @@ namespace AppShelf
                     top += height + Gap;
                 }
             }
-            return new Size(width, Math.Max(1, top));
+            return new Size(FillViewportOnArrange ? 0 : width, Math.Max(1, top - Gap));
         }
 
         internal bool ToggleTemporaryGroup(string key)
@@ -2598,7 +2609,7 @@ namespace AppShelf
         private string _canvasMonitorKey;
         private bool _canvasMonitorRefreshQueued;
         private bool _lastNonMinimizedWasMaximized;
-        private StackPanel _tileHost;
+        private Grid _tileHost;
         private ScrollViewer _tilesScroller;
         private readonly List<GroupLayoutCard> _groupLayoutCards = new List<GroupLayoutCard>();
         private Grid _freeLayoutGrid;
@@ -3336,7 +3347,11 @@ namespace AppShelf
             _rdpChip.MouseLeftButtonUp += delegate { ShowSettingsSection("windows"); };
             _weatherChip.ToolTip = "Нажми для прогноза на 7 дней. Правая кнопка — параметры.";
             _weatherChip.MouseLeftButtonUp += delegate { ToggleBottomModuleWindow("weather"); };
-            AttachWeatherContextMenu(_weatherChip);
+            AttachBottomIndicatorMenu(_weatherChip, "weather", false);
+            AttachBottomIndicatorMenu(_pomodoroChip, "pomodoro", false);
+            AttachBottomIndicatorMenu(_countdownChip, "countdown", false);
+            AttachBottomIndicatorMenu(_rdpChip, "rdp", false);
+            AttachBottomIndicatorMenu(_remindersChip, "reminders", false);
             monitors.Children.Add(_weatherChip);
             monitors.Children.Add(_pomodoroChip);
             monitors.Children.Add(_countdownChip);
@@ -3359,7 +3374,25 @@ namespace AppShelf
                 Margin = new Thickness(0, 2, 0, 0),
                 Child = _status
             };
-            footerStack.Children.Add(statusBackdrop);
+            DockPanel statusRow = new DockPanel();
+            Button footerMenu = ActionButton("⋯", false);
+            footerMenu.Tag = "BottomPanelMenu";
+            footerMenu.ToolTip = "Меню нижней панели";
+            System.Windows.Automation.AutomationProperties.SetName(footerMenu, "Меню нижней панели");
+            footerMenu.MinHeight = 0;
+            footerMenu.Padding = new Thickness(9, 0, 9, 0);
+            footerMenu.Margin = new Thickness(6, 2, 0, 0);
+            footerMenu.Click += delegate
+            {
+                ContextMenu menu = _footerBorder.ContextMenu;
+                menu.PlacementTarget = footerMenu;
+                menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Top;
+                menu.IsOpen = true;
+            };
+            DockPanel.SetDock(footerMenu, Dock.Right);
+            statusRow.Children.Add(footerMenu);
+            statusRow.Children.Add(statusBackdrop);
+            footerStack.Children.Add(statusRow);
             _statusMessageTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
             _statusMessageTimer.Tick += delegate
             {
@@ -3389,12 +3422,10 @@ namespace AppShelf
             {
                 if (Math.Abs(e.ViewportWidthChange) > 0.5 || Math.Abs(e.ViewportHeightChange) > 0.5) UpdateGroupWidths();
             };
-            _tileHost = new StackPanel { AllowDrop = true };
+            _tileHost = new Grid { AllowDrop = true };
             scroller.AllowDrop = true;
             contentGrid.AllowDrop = true;
-            StackPanel workspace = new StackPanel();
-            workspace.Children.Add(_tileHost);
-            scroller.Content = workspace;
+            scroller.Content = _tileHost;
             contentGrid.Children.Add(scroller);
             _empty = Text("Здесь пока нет приложений.\n\nПеретащи ярлык из Проводника\nили нажми «Добавить приложение».", 16, MutedBrush);
             _empty.TextAlignment = TextAlignment.Center;
@@ -3852,13 +3883,13 @@ namespace AppShelf
             Button button = ActionButton("", false);
             button.Content = label;
             button.ToolTip = BottomIndicatorName(key) + ". Нажми для открытия инструмента.";
-            button.Margin = new Thickness(0, 0, 5, 5);
+            button.Margin = new Thickness(0, 0, 8, 8);
             button.MinHeight = 32;
             button.Click += delegate
             {
                 ToggleBottomModuleWindow(key);
             };
-            if (key == "weather") AttachWeatherContextMenu(button);
+            AttachBottomIndicatorMenu(button, key, compact);
             if (compact)
                 button.SizeChanged += delegate { AlignCompactExpandButton(); };
             return button;
@@ -3948,7 +3979,16 @@ namespace AppShelf
                 button.Content = card;
                 button.ToolTip = category == "network" ? "Антипростой RDP" :
                     category == "weather" ? "Прогноз погоды" : "Таймер, Помодоро и напоминания";
-                if (category == "weather") AttachWeatherContextMenu(button);
+                if (category == "weather") AttachBottomIndicatorMenu(button, "weather", false);
+                else
+                {
+                    ContextMenu categoryMenu = new ContextMenu();
+                    categoryMenu.Items.Add(MenuAction("Раскрыть или свернуть категорию",
+                        delegate { button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); }));
+                    categoryMenu.Items.Add(MenuAction("Настроить нижнюю панель…",
+                        delegate { ShowSettingsSection("appearance-panel"); }));
+                    AttachBottomContextMenu(button, categoryMenu);
+                }
                 button.Click += delegate
                 {
                     _bottomOpenCategory = _bottomOpenCategory == chosen ? null : chosen;
@@ -3977,14 +4017,19 @@ namespace AppShelf
                 menu.Items.Add(item);
             }
             menu.Items.Add(new Separator());
-            MenuItem configure = new MenuItem { Header = "Настроить нижнюю панель…" };
+            MenuItem configure = new MenuItem { Header = "Состав, порядок и настройки панели…" };
             configure.Click += delegate { ShowSettingsSection("appearance-panel"); };
             menu.Items.Add(configure);
             MenuItem indicator = new MenuItem { Header = "Добавить индикатор плагина…" };
             indicator.Click += delegate { ShowAddPluginIndicator(); };
             menu.Items.Add(indicator);
             menu.Opened += delegate { indicator.IsEnabled = _canSave; };
-            _monitorBorder.ContextMenu = menu;
+            _footerBorder.ContextMenu = menu;
+            menu.Closed += delegate
+            {
+                menu.ClearValue(ContextMenu.PlacementTargetProperty);
+                menu.ClearValue(ContextMenu.PlacementProperty);
+            };
         }
 
         private sealed class BottomCategorySummary : System.Windows.Data.IMultiValueConverter
@@ -4220,12 +4265,32 @@ namespace AppShelf
             return provider == "openmeteo" ? provider : "metno";
         }
 
-        private void AttachWeatherContextMenu(FrameworkElement indicator)
+        private void AttachBottomIndicatorMenu(FrameworkElement indicator, string key, bool compact)
         {
-            ContextMenu menu = CreateWeatherContextMenu();
+            ContextMenu menu = key == "weather" ? CreateWeatherContextMenu() : new ContextMenu();
+            if (key != "weather")
+                menu.Items.Add(MenuAction("Открыть: " + BottomIndicatorName(key),
+                    delegate { ToggleBottomModuleWindow(key); }));
+            if (compact)
+            {
+                MenuItem hide = MenuAction("Убрать из компактной панели", delegate
+                {
+                    AppConfig pending = _config.Copy();
+                    pending.BottomPanelFavorites = BottomPanelFavorites(pending);
+                    pending.BottomPanelFavorites.Remove(key);
+                    if (SaveConfigChanges(pending)) ApplyBottomPanelMode();
+                });
+                hide.IsEnabled = _canSave;
+                menu.Items.Add(new Separator());
+                menu.Items.Add(hide);
+            }
+            AttachBottomContextMenu(indicator, menu);
+        }
+
+        internal static void AttachBottomContextMenu(FrameworkElement indicator, ContextMenu menu)
+        {
             indicator.ContextMenu = menu;
-            // The lower-panel container also has a menu. Handle the right click
-            // at the weather indicator, before it can select the container's menu.
+            // Open just the indicator's own menu on right click.
             // ContextMenu remains attached for the keyboard context-menu key.
             indicator.PreviewMouseRightButtonUp += delegate(object sender, MouseButtonEventArgs e)
             {
@@ -5691,10 +5756,14 @@ namespace AppShelf
             if (_canvasBoard != null)
             {
                 double outer = _tilesScroller.ActualWidth > 1 ? _tilesScroller.ActualWidth : Width;
+                string mode = HasCanvasMonitorLayout(_config) ? "scroll" : FreeCanvasLayout.NormalizeViewportMode(_config.CanvasViewportMode);
                 double viewport = outer - _tilesScroller.Padding.Left - _tilesScroller.Padding.Right - SystemParameters.VerticalScrollBarWidth;
-                // A personal monitor layout stays editable even if the window
-                // is temporarily smaller than the saved geometry.
-                _canvasBoard.SetViewport(Math.Max(1, viewport), HasCanvasMonitorLayout(_config) ? "scroll" : _config.CanvasViewportMode);
+                // In scrolling mode use the actual available width, not a
+                // hypothetical vertical bar. Other strategies keep the stable
+                // reserved width to avoid oscillating between layouts.
+                if (mode == "scroll" && _tilesScroller.ViewportWidth > 0 && !Double.IsInfinity(_tilesScroller.ViewportWidth))
+                    viewport = _tilesScroller.ViewportWidth;
+                _canvasBoard.SetViewport(Math.Max(1, viewport), mode);
                 double height = _tilesScroller.ViewportHeight;
                 if (height <= 0 || Double.IsInfinity(height)) height = _tilesScroller.ActualHeight - _tilesScroller.Padding.Top - _tilesScroller.Padding.Bottom;
                 _canvasBoard.SetViewportHeight(height);
@@ -5838,9 +5907,13 @@ namespace AppShelf
                 bool freeMode = layoutMode == "free";
                 bool canvasMode = layoutMode == "canvas";
                 WrapPanel gridHost = null;
+                StackPanel legacyList = null;
                 if (canvasMode)
                 {
                     _canvasBoard = new FreeCanvasBoard(FreeCanvasLayout.NormalizeStep(_config.CanvasGridStep));
+                    _canvasBoard.FillViewportOnArrange = true;
+                    _canvasBoard.HorizontalAlignment = HorizontalAlignment.Stretch;
+                    _canvasBoard.VerticalAlignment = VerticalAlignment.Stretch;
                     _canvasBoard.CommitPlacement = SaveCanvasPlacement;
                     _canvasBoard.CanEdit = CanEditCanvas;
                     _tilesScroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
@@ -5850,6 +5923,11 @@ namespace AppShelf
                 {
                     gridHost = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
                     _tileHost.Children.Add(gridHost);
+                }
+                if (!canvasMode && !gridMode && !freeMode)
+                {
+                    legacyList = new StackPanel { VerticalAlignment = VerticalAlignment.Top };
+                    _tileHost.Children.Add(legacyList);
                 }
                 if (freeMode)
                 {
@@ -6120,7 +6198,7 @@ namespace AppShelf
                     }
                     else if (gridHost != null) gridHost.Children.Add(groupCard);
                     else if (freeMode) _freeZoneHosts[GroupZoneFor(group)].Children.Add(groupCard);
-                    else _tileHost.Children.Add(groupCard);
+                    else legacyList.Children.Add(groupCard);
                 }
             }
             if (WidgetsInFreeLayout() && _pluginWidgets != null)

@@ -210,7 +210,7 @@ public static class WeatherTests
     private static void RightClickWeather(MainWindow window, FrameworkElement indicator, string mode)
     {
         Assert(indicator.ContextMenu != null, mode + ": weather menu is missing");
-        Border panel = (Border)Get(window, "_monitorBorder");
+        Border panel = (Border)Get(window, "_footerBorder");
         ContextMenu panelMenu = panel.ContextMenu;
         Assert(panelMenu != null, mode + ": original lower-panel settings menu missing");
         MouseButtonEventArgs click = new MouseButtonEventArgs(
