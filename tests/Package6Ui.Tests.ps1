@@ -45,6 +45,9 @@ try {
             $target = 'try { dialog.ShowDialog(); } // Automatic update center boundary.'
             if ($text.Split(@($target), [StringSplitOptions]::None).Length -ne 2) { throw 'Automatic update window boundary missing.' }
             $text = $text.Replace($target, 'try { Package6Tests.AutomaticUpdates(dialog); }')
+            $network = 'AppUpdate.CheckWithDetails, AppUpdate.CheckPluginReleases, cancel.Token'
+            if ($text.Split(@($network), [StringSplitOptions]::None).Length -ne 2) { throw 'Automatic update network boundary missing.' }
+            $text = $text.Replace($network, 'Package6Tests.CheckAutomaticCore, Package6Tests.CheckAutomaticPlugin, cancel.Token')
         }
         if ($file -eq 'BackupManager.cs') {
             $target = '            dialog.ShowDialog();'
@@ -83,6 +86,17 @@ public static class Package6Tests
     private static Action<Window> about;
     private static Action<Window> settings;
     private static Action<Window> backup, automaticUpdates;
+    private static int automaticCoreCalls;
+    private static System.Threading.ManualResetEvent automaticCheckGate;
+    internal static AppUpdate.CheckResult CheckAutomaticCore(bool beta)
+    {
+        System.Threading.Interlocked.Increment(ref automaticCoreCalls);
+        if (automaticCheckGate != null && !automaticCheckGate.WaitOne(3000))
+            throw new Exception("Automatic check fixture timed out");
+        return new AppUpdate.CheckResult { Releases = new[] { new AppUpdate.Release { VersionText = "9.0.0" } } };
+    }
+    internal static AppUpdate.PluginRelease[] CheckAutomaticPlugin(string repository, string installed)
+    { return new AppUpdate.PluginRelease[0]; }
     public static void AutomaticUpdates(Window dialog)
     {
         dialog.ShowInTaskbar = false; dialog.Show(); Drain();
@@ -1644,6 +1658,25 @@ public static class Package6Tests
                     Assert(saved.AutoCheckCoreUpdates == false && saved.AutoCheckPluginUpdates == true &&
                         saved.AutoUpdateIntervalHours == 6 && saved.AutoCheckUpdatesAtStartup == false && saved.AutoCheckPluginPreviews,
                         "Automatic settings not persisted");
+                    // Manual check includes the core even when its automatic source is off.
+                    automaticCoreCalls = 0;
+                    automaticCheckGate = new System.Threading.ManualResetEvent(false);
+                    try
+                    {
+                        Button check = ButtonNamed(d, "Проверить сейчас");
+                        Click(check);
+                        Assert(!check.IsEnabled, "Check button not disabled while busy");
+                        Click(check); // Even a synthetic second click cannot overlap a check.
+                        automaticCheckGate.Set();
+                        Stopwatch watch = Stopwatch.StartNew();
+                        while (!check.IsEnabled && watch.ElapsedMilliseconds < 5000)
+                        { Drain(); System.Threading.Thread.Sleep(5); }
+                        Assert(check.IsEnabled && automaticCoreCalls == 1, "Manual check overlapped or did not finish");
+                        StackPanel result = Controls<StackPanel>(d).Find(x => Object.Equals(x.Tag, "AutoUpdateResults"));
+                        Assert(Controls<TextBlock>(result).Exists(x => x.Text.Contains("AppShelf:") && x.Text.Contains("9.0.0")),
+                            "Manual result not rendered");
+                    }
+                    finally { automaticCheckGate.Set(); automaticCheckGate.Dispose(); automaticCheckGate = null; }
                 };
                 typeof(MainWindow).GetMethod("ShowAutomaticUpdateWindow", Private).Invoke(w, new object[] { w });
                 automaticUpdates = delegate(Window d) {

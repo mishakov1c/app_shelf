@@ -745,12 +745,27 @@ namespace AppShelf
                 }
             }
 
+            private static string SeenKey(UpdateNotice item)
+            {
+                // Each channel remembers its own highest announced release.
+                // A newly available stable version must not be hidden by a
+                // numerically newer preview that was previously announced.
+                return item.Key + (item.Preview ? "|preview" : "|stable");
+            }
+
             private bool IsNew(UpdateNotice item)
             {
                 string old;
-                if (Seen == null || !Seen.TryGetValue(item.Key, out old)) return true;
-                try { return CompareReleaseVersions(item.Version, old) > 0; }
-                catch (InvalidDataException) { return true; }
+                if (Seen == null || !Seen.TryGetValue(SeenKey(item), out old)) return true;
+                if (item.Key == "core")
+                {
+                    try { return CompareReleaseVersions(item.Version, old) > 0; }
+                    catch (InvalidDataException) { return true; }
+                }
+                // Plugin manifests allow numeric components above the core
+                // assembly's 65534 limit.
+                Version previous, next;
+                return !Version.TryParse(old, out previous) || !Version.TryParse(item.Version, out next) || next > previous;
             }
 
             internal List<UpdateNotice> Pending(AutoBatch batch, DateTime now)
@@ -767,7 +782,7 @@ namespace AppShelf
             {
                 if (Seen == null) Seen = new Dictionary<string, string>(StringComparer.Ordinal);
                 foreach (UpdateNotice notice in notices)
-                    if (IsNew(notice)) Seen[notice.Key] = notice.Version;
+                    if (IsNew(notice)) Seen[SeenKey(notice)] = notice.Version;
                 SnoozeTicks = 0;
             }
 

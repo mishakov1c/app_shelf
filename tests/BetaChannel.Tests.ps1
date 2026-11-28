@@ -164,7 +164,16 @@ namespace AppShelf
                 state.Pending(batch, now).Count == 1, "core disabled, preview opt-in and newer notification");
             state.MarkNotified(batch.Available);
             batch = AppUpdate.CollectAutomatic("2.25.0", false, false, false, targets, checkCore, checkPlugin, System.Threading.CancellationToken.None);
-            Assert(state.Pending(batch, now).Count == 0, "older stable does not repeat after preview");
+            Assert(state.Pending(batch, now).Count == 0, "previously announced stable does not repeat after preview");
+            var stableLater = new AppUpdate.AutoBatch();
+            stableLater.Available.Add(new AppUpdate.UpdateNotice { Key = target.Key, Name = target.Name,
+                Installed = "1.0.0", Version = "1.1.1", Preview = false });
+            Assert(state.Pending(stableLater, now).Count == 1, "new stable below preview still announced");
+            state.MarkNotified(stableLater.Available);
+            stableLater.Available[0].Version = "99999.1.0";
+            Assert(state.Pending(stableLater, now).Count == 1, "large valid plugin version");
+            state.MarkNotified(stableLater.Available);
+            Assert(state.Pending(stableLater, now).Count == 0, "large plugin version deduplicated");
             state.Complete(batch, now);
             Assert(state.LastSuccessTicks == now.Ticks, "successful check recorded");
             var failed = AppUpdate.CollectAutomatic("2.25.0", true, false, false, targets,

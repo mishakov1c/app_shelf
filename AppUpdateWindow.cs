@@ -158,6 +158,7 @@ namespace AppShelf
         private AppUpdate.AutoBatch _automaticUpdateBatch;
         private bool _automaticUpdateBusy, _automaticUpdateFirst = true, _automaticUpdateStopped;
         private int _automaticPluginGeneration;
+        private bool _automaticPluginManagerOpen, _automaticInventoryChanged;
         private Window _automaticUpdateWindow;
         private Action _refreshAutomaticUpdateWindow;
         private string AutomaticUpdateStatePath { get { return Path.Combine(ConfigStore.DirectoryPath, "update-monitor.json"); } }
@@ -191,7 +192,7 @@ namespace AppShelf
             _automaticUpdateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
             _automaticUpdateTimer.Tick += async delegate
             {
-                if (_automaticUpdateBusy || _automaticUpdateStopped || !_canSave ||
+                if (_automaticUpdateBusy || _automaticUpdateStopped || !_canSave || _automaticPluginManagerOpen ||
                     (_config.AutoCheckCoreUpdates == false && _config.AutoCheckPluginUpdates == false)) return;
                 if (_automaticUpdateState.Due(DateTime.UtcNow, _config.AutoUpdateIntervalHours,
                     _config.AutoCheckUpdatesAtStartup != false, _automaticUpdateFirst, _config.AutoNotifyUpdates != false))
@@ -216,8 +217,24 @@ namespace AppShelf
         private void InvalidateAutomaticPluginResults()
         {
             _automaticPluginGeneration++;
+            _automaticInventoryChanged = true;
             if (_automaticUpdateBatch != null)
                 _automaticUpdateBatch.Available.RemoveAll(delegate(AppUpdate.UpdateNotice n) { return n.Key != "core"; });
+            RefreshAutomaticUpdateWindow();
+        }
+
+        private void AutomaticUpdatePolicyChanged()
+        {
+            _automaticUpdateBatch = null;
+            _automaticUpdateFirst = true;
+            if (_automaticUpdateState != null)
+            {
+                _automaticUpdateState.LastAttemptTicks = 0;
+                _automaticUpdateState.AnchorTicks = DateTime.UtcNow.Ticks;
+                _automaticUpdateState.RetryTicks = 0;
+                if (_config.AutoNotifyUpdates == false) _automaticUpdateState.SnoozeTicks = 0;
+                SaveAutomaticUpdateState();
+            }
             RefreshAutomaticUpdateWindow();
         }
 
@@ -273,7 +290,8 @@ namespace AppShelf
                     SaveAutomaticUpdateState();
                     return;
                 }
-                if (inventory != _automaticPluginGeneration)
+                _automaticInventoryChanged = inventory != _automaticPluginGeneration || _automaticPluginManagerOpen;
+                if (_automaticInventoryChanged)
                 {
                     batch.Available.RemoveAll(delegate(AppUpdate.UpdateNotice n) { return n.Key != "core"; });
                     batch.Failed++;
@@ -390,6 +408,8 @@ namespace AppShelf
                 DateTime? last = AppUpdate.AutoState.Time(_automaticUpdateState.LastSuccessTicks);
                 status.Text = "Последняя успешная проверка: " + (last.HasValue ? last.Value.ToLocalTime().ToString("g") : "ещё не было");
                 if (_automaticUpdateBusy) status.Text += "\nПроверка выполняется…";
+                else if (_automaticInventoryChanged)
+                    status.Text += "\nСписок плагинов мог измениться. Для актуального результата нажмите «Проверить сейчас».";
                 else if (_automaticUpdateBatch != null)
                     status.Text += _automaticUpdateBatch.Failed > 0 ? "\nЧасть источников недоступна. Следующая фоновая попытка не ранее чем через 30 минут." :
                         _automaticUpdateBatch.Available.Count == 0 ? "\nБолее новых версий в проверенных каналах нет." : "\nДоступны обновления: " + _automaticUpdateBatch.Available.Count;
@@ -420,16 +440,7 @@ namespace AppShelf
                 next.CheckBetaUpdates = beta.IsChecked == true; next.AutoCheckPluginPreviews = previews.IsChecked == true;
                 bool changedPolicy = AutomaticPolicy(next) != AutomaticPolicy(_config);
                 if (!SaveConfigChanges(next)) return;
-                if (changedPolicy)
-                {
-                    _automaticUpdateBatch = null;
-                    _automaticUpdateState.LastAttemptTicks = 0;
-                    _automaticUpdateState.AnchorTicks = DateTime.UtcNow.Ticks;
-                    _automaticUpdateState.RetryTicks = 0;
-                    if (next.AutoNotifyUpdates == false) _automaticUpdateState.SnoozeTicks = 0;
-                    _automaticUpdateFirst = true;
-                    SaveAutomaticUpdateState();
-                }
+                if (changedPolicy) AutomaticUpdatePolicyChanged();
                 refresh(); status.Text += "\nНастройки сохранены.";
             };
             check.Click += async delegate { await RunAutomaticUpdateCheck(true); };
@@ -584,6 +595,7 @@ namespace AppShelf
                     finally { syncingBeta = false; }
                     return;
                 }
+                AutomaticUpdatePolicyChanged();
                 clearVersions();
                 setBusy(false);
                 lastCheck.Text = "";

@@ -931,8 +931,14 @@ namespace AppShelf
                     delegate(InstalledPlugin plugin) { return PrepareNetworkPluginEnable(manager, plugin); },
                     delegate(Window dialogOwner, bool indicator, string id) { ShowPluginWidgetPickerFor(dialogOwner, indicator, id); },
                     delegate { return WidgetsInFreeLayout(); }, BackupAutomation.BeforeUpdateEnabled(_config));
-                manager.ShowDialog();
+                _automaticPluginManagerOpen = true;
                 InvalidateAutomaticPluginResults();
+                try { manager.ShowDialog(); }
+                finally
+                {
+                    _automaticPluginManagerOpen = false;
+                    InvalidateAutomaticPluginResults();
+                }
                 if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
             }
             catch (Exception error)
