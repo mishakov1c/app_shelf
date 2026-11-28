@@ -693,6 +693,38 @@ public static class BackupTests
         Throws(delegate { BackupAutomation.ValidateRoot("relative-path"); });
     }
 
+    private static void BackupOptIn()
+    {
+        Assert(!BackupAutomation.AutomaticEnabled(new AppConfig()) && !BackupAutomation.BeforeUpdateEnabled(new AppConfig()),
+            "New profile opted into backups");
+        string root = ExternalBackupRoot();
+        foreach (string flag in new[] { "", ",\"automaticBackupsEnabled\":true", ",\"automaticBackupsEnabled\":false" })
+        foreach (bool configured in new[] { false, true })
+        {
+            string path = configured ? ",\"backupDirectory\":\"" + root.Replace("\\", "\\\\") + "\"" : "";
+            File.WriteAllText(ConfigStore.FilePath, "{\"items\":[],\"groups\":[],\"version\":5" + path + flag + "}");
+            AppConfig config = Loaded();
+            bool expected = configured && !flag.EndsWith("false", StringComparison.Ordinal);
+            Assert(BackupAutomation.AutomaticEnabled(config) == expected &&
+                BackupAutomation.BeforeUpdateEnabled(config) == expected, "Legacy backup policy migrated incorrectly");
+            if (!configured)
+            {
+                config.BackupDirectory = root;
+                Assert(!BackupAutomation.AutomaticEnabled(config), "Selecting a folder implicitly enabled backup");
+            }
+            config.BackupBeforeUpdateEnabled = false;
+            Assert(!BackupAutomation.BeforeUpdateEnabled(config) &&
+                BackupAutomation.AutomaticEnabled(config) == expected, "Pre-update preference changed daily policy");
+            ConfigStore.Save(config);
+            Assert(!BackupAutomation.BeforeUpdateEnabled(Loaded()), "Pre-update preference did not persist");
+        }
+        AppConfig off = Loaded();
+        off.AutomaticBackupsEnabled = false;
+        off.BackupDirectory = root;
+        Assert(!BackupAutomation.CreateAutomatic(off), "Disabled policy created an automatic copy");
+        Assert(!Directory.Exists(Path.Combine(root, "Automatic")), "Disabled policy touched automatic directory");
+    }
+
     private static void AutomaticBackupRetention()
     {
         AppConfig config = Loaded();
@@ -1189,6 +1221,7 @@ public static class BackupTests
         Case("plugin ZIP inventory, privacy, signature and staged restore", PluginBackupRoundtrip);
         if (!String.IsNullOrEmpty(samplePackage)) Case("real sample plugin install, IPC and ZIP recovery", delegate { SamplePluginRoundtrip(samplePackage); });
         Case("chosen backup directory isolation", InvalidBackupDirectory);
+        Case("backup opt-in and legacy policy migration", BackupOptIn);
         Case("automatic backup schedule, changed data, retention", AutomaticBackupRetention);
         Case("failed automatic copy preserves existing ZIP", FailedAutomaticPreservesPrevious);
         Case("paired pre-update ZIP, EXE and external restore safety", PreUpdateBackupAndRestoreLocation);

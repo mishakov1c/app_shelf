@@ -411,10 +411,11 @@ namespace AppShelf
                             });
                         });
                     if (!dialog.IsVisible) return;
-                    // A verified download alone is not enough: save the existing data
-                    // and executable before the external helper replaces AppShelf.exe.
+                    // Persistent user archives are optional; the installer still
+                    // retains its independent staged rollback executable.
+                    bool backupRequested = BackupAutomation.BeforeUpdateEnabled(_config);
                     bool backupReady = false;
-                    while (!backupReady)
+                    while (backupRequested && !backupReady)
                     {
                         if (!EnsureBackupDirectory(dialog))
                         {
@@ -453,7 +454,8 @@ namespace AppShelf
                     }
                     state.Text = backupReady
                         ? "Копия сохранена. Запускаю установщик…"
-                        : "Установка без резервной копии по твоему подтверждению…";
+                        : (backupRequested ? "Установка без резервной копии по твоему подтверждению…"
+                            : "Резервирование перед обновлением выключено. Запускаю установщик…");
                     AppUpdate.StartInstaller(prepared);
                     // The staged helper waits for this process to exit before replacing EXE.
                     installing = true;

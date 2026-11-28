@@ -1131,12 +1131,15 @@ namespace AppShelf
         [DataMember(Name = "checkBetaUpdates", EmitDefaultValue = false)]
         public bool CheckBetaUpdates;
 
-        // Auto-backup remains idle until the user chooses an external folder.
+        // User archives are opt-in; a selected external folder alone does not enable them.
         [DataMember(Name = "backupDirectory", EmitDefaultValue = false)]
         public string BackupDirectory;
 
         [DataMember(Name = "automaticBackupsEnabled", EmitDefaultValue = false)]
-        public bool? AutomaticBackupsEnabled = true;
+        public bool? AutomaticBackupsEnabled = false;
+
+        [DataMember(Name = "backupBeforeUpdateEnabled", EmitDefaultValue = false)]
+        public bool? BackupBeforeUpdateEnabled = true;
 
         // Only 1 or 7 days, 3/7/14 archives and 512/1024/2048/4096 MiB are supported.
         [DataMember(Name = "automaticBackupDays", EmitDefaultValue = false)]
@@ -1380,6 +1383,10 @@ namespace AppShelf
                 if (data == null) throw new InvalidDataException("Пустой файл настроек.");
                 if (data.Items == null) data.Items = new List<AppItem>();
                 if (data.Groups == null) data.Groups = new List<string>();
+                // Older profiles defaulted to true/null without a selected directory.
+                // Preserve an existing configured policy, but do not opt in untouched profiles.
+                data.AutomaticBackupsEnabled = !String.IsNullOrWhiteSpace(data.BackupDirectory) &&
+                    data.AutomaticBackupsEnabled != false;
                 PluginWidgetGroupConfig.Validate(data.WidgetGroups, data.WidgetIndicators);
                 if (data.Version < 3)
                 {

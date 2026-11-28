@@ -782,6 +782,18 @@ public static class Package6Tests
                     Click(Section(d, "backup-automatic")); Drain();
                     Assert(Body(d, "backup-automatic").Visibility == Visibility.Visible,
                         "Automatic backup section did not open");
+                    CheckBox automatic = Controls<CheckBox>(d).Find(x => Object.Equals(x.Tag, "BackupAutomaticEnabled"));
+                    StackPanel options = Controls<StackPanel>(d).Find(x => Object.Equals(x.Tag, "BackupAutomaticOptions"));
+                    Assert(automatic != null && automatic.IsChecked == false && options != null &&
+                        options.Visibility == Visibility.Collapsed, "Fresh profile opted in or shows automatic options");
+                    automatic.IsChecked = true; Drain();
+                    Assert(options.Visibility == Visibility.Visible, "Explicit opt-in did not expose options");
+                    CheckBox preUpdate = Controls<CheckBox>(d).Find(x => Object.Equals(x.Tag, "BackupBeforeUpdateEnabled"));
+                    Assert(preUpdate != null && preUpdate.IsChecked == true, "Pre-update option missing");
+                    preUpdate.IsChecked = false;
+                    automatic.IsChecked = false; Drain();
+                    Assert(options.Visibility == Visibility.Collapsed && preUpdate.IsChecked == false, "Opt-out lost pre-update preference");
+                    automatic.IsChecked = true; Drain();
                     List<ComboBox> fields = Controls<ComboBox>(d);
                     Assert(fields.Count == 3, "Expected cadence, retention and quota dropdowns");
                     foreach (ComboBox field in fields)
