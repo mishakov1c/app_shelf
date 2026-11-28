@@ -1131,6 +1131,21 @@ namespace AppShelf
         [DataMember(Name = "checkBetaUpdates", EmitDefaultValue = false)]
         public bool CheckBetaUpdates;
 
+        // Missing fields preserve the new default: daily background checks,
+        // no preview plugins unless explicitly enabled.
+        [DataMember(Name = "autoCheckCoreUpdates", EmitDefaultValue = false)]
+        public bool? AutoCheckCoreUpdates = true;
+        [DataMember(Name = "autoCheckPluginUpdates", EmitDefaultValue = false)]
+        public bool? AutoCheckPluginUpdates = true;
+        [DataMember(Name = "autoCheckUpdatesAtStartup", EmitDefaultValue = false)]
+        public bool? AutoCheckUpdatesAtStartup = true;
+        [DataMember(Name = "autoNotifyUpdates", EmitDefaultValue = false)]
+        public bool? AutoNotifyUpdates = true;
+        [DataMember(Name = "autoUpdateIntervalHours", EmitDefaultValue = false)]
+        public int AutoUpdateIntervalHours = 24;
+        [DataMember(Name = "autoCheckPluginPreviews", EmitDefaultValue = false)]
+        public bool AutoCheckPluginPreviews;
+
         // User archives are opt-in; a selected external folder alone does not enable them.
         [DataMember(Name = "backupDirectory", EmitDefaultValue = false)]
         public string BackupDirectory;
@@ -2815,7 +2830,11 @@ namespace AppShelf
 
         public MainWindow() : this(false) { }
 
-        public MainWindow(bool startInTray)
+        public MainWindow(bool startInTray) : this(startInTray, false) { }
+
+        // Embedded/test windows do not schedule external requests. Program
+        // explicitly enables the production monitor for its primary instance.
+        internal MainWindow(bool startInTray, bool monitorUpdates)
         {
             Title = "AppShelf — быстрый запуск";
             try
@@ -2902,6 +2921,7 @@ namespace AppShelf
                 if (_weatherTimer == null) StartMonitors();
                 StartAutomaticBackupMonitor();
                 StartPluginRuntime();
+                if (monitorUpdates) StartAutomaticUpdateMonitor();
             };
             SourceInitialized += OnWindowSourceInitialized;
             StateChanged += OnWindowStateChanged;
@@ -3277,6 +3297,9 @@ namespace AppShelf
             MenuItem about = new MenuItem { Header = "О программе", Icon = FluentUi.MenuGlyph("info") };
             about.Click += delegate { ShowAboutWindow(); };
             tools.Items.Add(about);
+            MenuItem updateCenter = new MenuItem { Header = "Обновления…" };
+            updateCenter.Click += delegate { ShowAutomaticUpdateWindow(this); };
+            tools.Items.Add(updateCenter);
             more.Click += delegate
             {
                 tools.PlacementTarget = more;
@@ -3485,6 +3508,11 @@ namespace AppShelf
                 Forms.ToolStripMenuItem remindersMenu = new Forms.ToolStripMenuItem("Напоминания");
                 remindersMenu.Click += delegate { Dispatcher.BeginInvoke(new Action(ShowRemindersWindow)); };
                 menu.Items.Add(remindersMenu);
+                Forms.ToolStripMenuItem updatesMenu = new Forms.ToolStripMenuItem("Обновления…");
+                updatesMenu.Click += delegate { Dispatcher.BeginInvoke(new Action(delegate {
+                    ShowPanel(); ShowAutomaticUpdateWindow(this);
+                })); };
+                menu.Items.Add(updatesMenu);
                 Forms.ToolStripMenuItem exit = new Forms.ToolStripMenuItem("Выход");
                 exit.Click += delegate
                 {
@@ -3715,6 +3743,7 @@ namespace AppShelf
 
         private void OnClosed(object sender, EventArgs e)
         {
+            StopAutomaticUpdateMonitor();
             StopPluginRuntime();
             if (Application.Current != null)
                 Application.Current.SessionEnding -= OnApplicationSessionEnding;
@@ -8242,7 +8271,7 @@ namespace AppShelf
                 ? "appearance" : savedSection;
             if (lastSection != "network" && lastSection != "weather" &&
                 lastSection != "time" && lastSection != "windows" &&
-                lastSection != "appearance" && lastSection != "data" && lastSection != "collections" && lastSection != "plugins")
+                lastSection != "appearance" && lastSection != "data" && lastSection != "collections" && lastSection != "plugins" && lastSection != "updates")
                 lastSection = "appearance";
             if (requestedSection == "appearance-panel")
             {
@@ -8251,7 +8280,7 @@ namespace AppShelf
             }
             else if (requestedSection == "network" || requestedSection == "weather" ||
                 requestedSection == "time" || requestedSection == "windows" ||
-                requestedSection == "appearance" || requestedSection == "data" || requestedSection == "collections" || requestedSection == "plugins")
+                requestedSection == "appearance" || requestedSection == "data" || requestedSection == "collections" || requestedSection == "plugins" || requestedSection == "updates")
                 lastSection = requestedSection;
             Action<string> toggleSection = delegate(string key)
             {
@@ -8413,6 +8442,12 @@ namespace AppShelf
             pluginHint.TextWrapping = TextWrapping.Wrap;
             AddSettingsSection(accordionRows, "plugins", "Плагины",
                 new List<UIElement> { pluginSettings, pluginHint }, sections, arrows, headers, toggleSection);
+            Button updateSettings = ActionButton("Настройки проверки обновлений…", false);
+            updateSettings.Click += delegate { ShowAutomaticUpdateWindow(dialog); };
+            TextBlock updateHint = Text("Фоновые проверки AppShelf и плагинов, периодичность, каналы и уведомления. Установка только вручную.", 12, MutedBrush);
+            updateHint.TextWrapping = TextWrapping.Wrap;
+            AddSettingsSection(accordionRows, "updates", "Обновления",
+                new List<UIElement> { updateHint, updateSettings }, sections, arrows, headers, toggleSection);
             AddSettingsSection(accordionRows, "data", "Резервные копии",
                 new List<UIElement> { backupSettings },
                 sections, arrows, headers, toggleSection);
@@ -8733,7 +8768,7 @@ namespace AppShelf
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 e.Handled = true;
             };
-            try { app.Run(new MainWindow(WindowsStartup.IsTrayLaunch())); }
+            try { app.Run(new MainWindow(WindowsStartup.IsTrayLaunch(), true)); }
             catch (Exception ex)
             {
                 ConfigStore.Log(ex);

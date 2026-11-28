@@ -1,5 +1,9 @@
-// Manual update flow using the official AppShelf GitHub Releases feed.
-// Background checks are a separate decision.
+// Manual installation and optional background release checks.
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+using System.Windows.Threading;
+using Forms = System.Windows.Forms;
 using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
@@ -148,6 +152,305 @@ namespace AppShelf
 
     public sealed partial class MainWindow
     {
+        private DispatcherTimer _automaticUpdateTimer;
+        private CancellationTokenSource _automaticUpdateCancel;
+        private AppUpdate.AutoState _automaticUpdateState;
+        private AppUpdate.AutoBatch _automaticUpdateBatch;
+        private bool _automaticUpdateBusy, _automaticUpdateFirst = true, _automaticUpdateStopped;
+        private int _automaticPluginGeneration;
+        private bool _automaticPluginManagerOpen, _automaticInventoryChanged;
+        private Window _automaticUpdateWindow;
+        private Action _refreshAutomaticUpdateWindow;
+        private string AutomaticUpdateStatePath { get { return Path.Combine(ConfigStore.DirectoryPath, "update-monitor.json"); } }
+
+        private static string AutomaticPolicy(AppConfig c)
+        {
+            return (c.AutoCheckCoreUpdates != false) + "|" + (c.AutoCheckPluginUpdates != false) + "|" +
+                (c.AutoCheckUpdatesAtStartup != false) + "|" + (c.AutoNotifyUpdates != false) + "|" +
+                AppUpdate.AutoState.Interval(c.AutoUpdateIntervalHours) + "|" + c.CheckBetaUpdates + "|" + c.AutoCheckPluginPreviews;
+        }
+
+        private void EnsureAutomaticUpdateState()
+        {
+            if (_automaticUpdateState != null) return;
+            _automaticUpdateState = _canSave ? AppUpdate.LoadAutoState(AutomaticUpdateStatePath) : new AppUpdate.AutoState();
+            _automaticUpdateState.EnsureAnchor(DateTime.UtcNow);
+            SaveAutomaticUpdateState();
+        }
+
+        private void SaveAutomaticUpdateState()
+        {
+            if (!_canSave || _automaticUpdateState == null) return;
+            try { AppUpdate.SaveAutoState(AutomaticUpdateStatePath, _automaticUpdateState); }
+            catch (Exception error) { ConfigStore.Log(error); }
+        }
+
+        private void StartAutomaticUpdateMonitor()
+        {
+            if (_automaticUpdateTimer != null || _automaticUpdateStopped || !_canSave) return;
+            EnsureAutomaticUpdateState();
+            _automaticUpdateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+            _automaticUpdateTimer.Tick += async delegate
+            {
+                if (_automaticUpdateBusy || _automaticUpdateStopped || !_canSave || _automaticPluginManagerOpen ||
+                    (_config.AutoCheckCoreUpdates == false && _config.AutoCheckPluginUpdates == false)) return;
+                if (_automaticUpdateState.Due(DateTime.UtcNow, _config.AutoUpdateIntervalHours,
+                    _config.AutoCheckUpdatesAtStartup != false, _automaticUpdateFirst, _config.AutoNotifyUpdates != false))
+                    await RunAutomaticUpdateCheck(false);
+            };
+            // Delay startup requests and never block initial rendering.
+            _automaticUpdateTimer.Start();
+        }
+
+        private void StopAutomaticUpdateMonitor()
+        {
+            _automaticUpdateStopped = true;
+            if (_automaticUpdateTimer != null) _automaticUpdateTimer.Stop();
+            if (_automaticUpdateCancel != null) _automaticUpdateCancel.Cancel();
+        }
+
+        private void RefreshAutomaticUpdateWindow()
+        {
+            if (_refreshAutomaticUpdateWindow != null) _refreshAutomaticUpdateWindow();
+        }
+
+        private void InvalidateAutomaticPluginResults()
+        {
+            _automaticPluginGeneration++;
+            _automaticInventoryChanged = true;
+            if (_automaticUpdateBatch != null)
+                _automaticUpdateBatch.Available.RemoveAll(delegate(AppUpdate.UpdateNotice n) { return n.Key != "core"; });
+            RefreshAutomaticUpdateWindow();
+        }
+
+        private void AutomaticUpdatePolicyChanged()
+        {
+            _automaticUpdateBatch = null;
+            _automaticUpdateFirst = true;
+            if (_automaticUpdateState != null)
+            {
+                _automaticUpdateState.LastAttemptTicks = 0;
+                _automaticUpdateState.AnchorTicks = DateTime.UtcNow.Ticks;
+                _automaticUpdateState.RetryTicks = 0;
+                if (_config.AutoNotifyUpdates == false) _automaticUpdateState.SnoozeTicks = 0;
+                SaveAutomaticUpdateState();
+            }
+            RefreshAutomaticUpdateWindow();
+        }
+
+        private async Task RunAutomaticUpdateCheck(bool manual)
+        {
+            if (_automaticUpdateBusy || _automaticUpdateStopped || (!manual && !_canSave)) return;
+            EnsureAutomaticUpdateState();
+            AppConfig snapshot = _config.Copy();
+            string policy = AutomaticPolicy(snapshot);
+            bool core = manual || snapshot.AutoCheckCoreUpdates != false;
+            bool plugins = manual || snapshot.AutoCheckPluginUpdates != false;
+            int inventory = _automaticPluginGeneration;
+            CancellationTokenSource cancel = new CancellationTokenSource();
+            _automaticUpdateCancel = cancel;
+            _automaticUpdateBusy = true;
+            _automaticUpdateFirst = false;
+            _automaticUpdateState.LastAttemptTicks = DateTime.UtcNow.Ticks;
+            SaveAutomaticUpdateState();
+            RefreshAutomaticUpdateWindow();
+            try
+            {
+                AppUpdate.AutoBatch batch = await Task.Run(delegate
+                {
+                    List<AppUpdate.AutoTarget> targets = new List<AppUpdate.AutoTarget>();
+                    bool inventoryFailed = false;
+                    if (plugins)
+                        try
+                        {
+                            foreach (InstalledPlugin plugin in new PluginPackageStore(ConfigStore.DirectoryPath).List())
+                            {
+                                PluginManifest m = plugin.Manifest;
+                                if (plugin.Error != null || m == null || m.Update == null ||
+                                    m.Update.Provider != "github" || !AppUpdate.ValidPluginRepository(m.Update.Repository)) continue;
+                                targets.Add(new AppUpdate.AutoTarget { Id = m.Id, Name = m.Name,
+                                    Repository = m.Update.Repository, Installed = m.Version });
+                            }
+                        }
+                        catch (Exception error) { ConfigStore.Log(error); inventoryFailed = true; }
+                    AppUpdate.AutoBatch result = AppUpdate.CollectAutomatic(AppUpdate.InstalledVersionText(), core,
+                        snapshot.CheckBetaUpdates, snapshot.AutoCheckPluginPreviews, targets,
+                        AppUpdate.CheckWithDetails, AppUpdate.CheckPluginReleases, cancel.Token);
+                    if (inventoryFailed) result.Failed++;
+                    return result;
+                });
+                if (_automaticUpdateStopped || cancel.IsCancellationRequested) return;
+                if (policy != AutomaticPolicy(_config))
+                {
+                    // A channel or policy changed during the request. Do not
+                    // announce obsolete results or defer the new policy.
+                    _automaticUpdateState.LastAttemptTicks = 0;
+                    _automaticUpdateState.RetryTicks = 0;
+                    _automaticUpdateFirst = true;
+                    SaveAutomaticUpdateState();
+                    return;
+                }
+                _automaticInventoryChanged = inventory != _automaticPluginGeneration || _automaticPluginManagerOpen;
+                if (_automaticInventoryChanged)
+                {
+                    batch.Available.RemoveAll(delegate(AppUpdate.UpdateNotice n) { return n.Key != "core"; });
+                    batch.Failed++;
+                }
+                _automaticUpdateBatch = batch;
+                DateTime now = DateTime.UtcNow;
+                _automaticUpdateState.Complete(batch, now);
+                if (!manual && snapshot.AutoNotifyUpdates != false)
+                {
+                    List<AppUpdate.UpdateNotice> notices = _automaticUpdateState.Pending(batch, now);
+                    if (notices.Count > 0)
+                    {
+                        string message = String.Join("\n", notices.ConvertAll(delegate(AppUpdate.UpdateNotice n) { return n.Caption; }).ToArray());
+                        if (message.Length > 190) message = message.Substring(0, 189) + "…";
+                        message += "\nПодробнее: меню AppShelf → Обновления…";
+                        if (_trayIcon != null && _trayIcon.Visible && _trayIcon.Icon != null)
+                            _trayIcon.ShowBalloonTip(6000, "AppShelf · Доступны обновления", message, Forms.ToolTipIcon.Info);
+                        else ShowStatusMessage("Доступны обновления (" + notices.Count + "). Меню → Обновления…", true);
+                        _automaticUpdateState.MarkNotified(notices);
+                    }
+                }
+                SaveAutomaticUpdateState();
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception error)
+            {
+                ConfigStore.Log(error);
+                if (!_automaticUpdateStopped)
+                {
+                    _automaticUpdateBatch = new AppUpdate.AutoBatch { Failed = 1 };
+                    _automaticUpdateState.Complete(_automaticUpdateBatch, DateTime.UtcNow);
+                    SaveAutomaticUpdateState();
+                }
+            }
+            finally
+            {
+                _automaticUpdateBusy = false;
+                _automaticUpdateCancel = null;
+                cancel.Dispose();
+                if (!_automaticUpdateStopped) RefreshAutomaticUpdateWindow();
+            }
+        }
+
+        private void ShowAutomaticUpdateWindow(Window owner)
+        {
+            if (_automaticUpdateWindow != null) { _automaticUpdateWindow.Activate(); return; }
+            EnsureAutomaticUpdateState();
+            Window dialog = new Window { Title = "AppShelf — Обновления", Owner = owner ?? this,
+                Width = 650, Height = 640, MinWidth = 420, MinHeight = 360,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner };
+            FluentUi.PrepareWindow(dialog);
+            DockPanel root = new DockPanel { Margin = new Thickness(18) };
+            dialog.Content = root;
+            WrapPanel actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
+            DockPanel.SetDock(actions, Dock.Bottom); root.Children.Add(actions);
+            Button save = ActionButton("Сохранить настройки", true);
+            Button check = ActionButton("Проверить сейчас", false);
+            Button close = ActionButton("Закрыть", false);
+            actions.Children.Add(save); actions.Children.Add(check); actions.Children.Add(close);
+            close.Click += delegate { dialog.Close(); };
+            StackPanel layout = new StackPanel();
+            ScrollViewer scroll = new ScrollViewer { Content = layout, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            FluentUi.StyleSettingsScroll(scroll); root.Children.Add(scroll);
+            TextBlock title = Text("Обновления", 23, WhiteBrush); title.FontWeight = FontWeights.Bold;
+            layout.Children.Add(title);
+            Func<string, bool, string, CheckBox> option = delegate(string label, bool value, string tag)
+            {
+                CheckBox box = new CheckBox { Content = new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap },
+                    IsChecked = value, Foreground = WhiteBrush, Tag = tag, Margin = new Thickness(0, 8, 0, 3) };
+                layout.Children.Add(box); return box;
+            };
+            CheckBox core = option("Автоматически проверять обновления AppShelf", _config.AutoCheckCoreUpdates != false, "AutoUpdateCore");
+            CheckBox plugins = option("Автоматически проверять обновления плагинов", _config.AutoCheckPluginUpdates != false, "AutoUpdatePlugins");
+            TextBlock intervalLabel = Text("Периодичность проверки", 12, MutedBrush); intervalLabel.Margin = new Thickness(0, 12, 0, 4);
+            layout.Children.Add(intervalLabel);
+            ComboBox interval = new ComboBox { Tag = "AutoUpdateInterval", MinHeight = 30 };
+            foreach (int hours in new[] { 1, 3, 6, 12, 24 })
+            {
+                ComboBoxItem item = new ComboBoxItem { Content = hours == 24 ? "Раз в сутки" : hours == 1 ? "Каждый час" : "Каждые " + hours + " ч.", Tag = hours };
+                interval.Items.Add(item);
+                if (hours == AppUpdate.AutoState.Interval(_config.AutoUpdateIntervalHours)) interval.SelectedItem = item;
+            }
+            FluentUi.StyleComboBox(interval); layout.Children.Add(interval);
+            CheckBox startup = option("Проверять при запуске приложения", _config.AutoCheckUpdatesAtStartup != false, "AutoUpdateStartup");
+            CheckBox notify = option("Уведомлять о новых версиях", _config.AutoNotifyUpdates != false, "AutoUpdateNotify");
+            CheckBox beta = option("Проверять бета-версии AppShelf", _config.CheckBetaUpdates, "AutoUpdateBeta");
+            CheckBox previews = option("Проверять предварительные версии плагинов", _config.AutoCheckPluginPreviews, "AutoUpdatePreviews");
+            TextBlock help = Text("Установка только вручную. Первая фоновая проверка через минуту после запуска; повторный запуск не создаёт запросы чаще пяти минут. «Проверить сейчас» проверяет ядро и все установленные плагины по сохранённым каналам.", 12, MutedBrush);
+            help.TextWrapping = TextWrapping.Wrap; help.Margin = new Thickness(0, 12, 0, 12);
+            layout.Children.Add(help);
+            TextBlock status = Text("", 12, MutedBrush); status.TextWrapping = TextWrapping.Wrap; status.Tag = "AutoUpdateStatus";
+            layout.Children.Add(status);
+            StackPanel results = new StackPanel { Tag = "AutoUpdateResults", Margin = new Thickness(0, 8, 0, 8) };
+            layout.Children.Add(results);
+            WrapPanel details = new WrapPanel();
+            Button coreDetails = ActionButton("Обновления AppShelf…", false);
+            Button pluginDetails = ActionButton("Менеджер плагинов…", false);
+            Button snooze = ActionButton("Напомнить через 6 часов", false);
+            details.Children.Add(coreDetails); details.Children.Add(pluginDetails); details.Children.Add(snooze);
+            layout.Children.Add(details);
+            coreDetails.Click += delegate { ShowUpdateWindow(dialog); beta.IsChecked = _config.CheckBetaUpdates; };
+            pluginDetails.Click += delegate { ShowPluginManager(dialog); };
+            snooze.Click += delegate
+            {
+                _automaticUpdateState.Snooze(DateTime.UtcNow);
+                SaveAutomaticUpdateState(); RefreshAutomaticUpdateWindow();
+            };
+            Action refresh = delegate
+            {
+                check.IsEnabled = !_automaticUpdateBusy;
+                save.IsEnabled = _canSave;
+                bool enabled = core.IsChecked == true || plugins.IsChecked == true;
+                interval.IsEnabled = startup.IsEnabled = notify.IsEnabled = enabled;
+                DateTime? last = AppUpdate.AutoState.Time(_automaticUpdateState.LastSuccessTicks);
+                status.Text = "Последняя успешная проверка: " + (last.HasValue ? last.Value.ToLocalTime().ToString("g") : "ещё не было");
+                if (_automaticUpdateBusy) status.Text += "\nПроверка выполняется…";
+                else if (_automaticInventoryChanged)
+                    status.Text += "\nСписок плагинов мог измениться. Для актуального результата нажмите «Проверить сейчас».";
+                else if (_automaticUpdateBatch != null)
+                    status.Text += _automaticUpdateBatch.Failed > 0 ? "\nЧасть источников недоступна. Следующая фоновая попытка не ранее чем через 30 минут." :
+                        _automaticUpdateBatch.Available.Count == 0 ? "\nБолее новых версий в проверенных каналах нет." : "\nДоступны обновления: " + _automaticUpdateBatch.Available.Count;
+                DateTime? retry = AppUpdate.AutoState.Time(_automaticUpdateState.RetryTicks);
+                if (retry.HasValue && retry.Value > DateTime.UtcNow) status.Text += "\nСледующая попытка после " + retry.Value.ToLocalTime().ToString("g");
+                DateTime? later = AppUpdate.AutoState.Time(_automaticUpdateState.SnoozeTicks);
+                if (later.HasValue && later.Value > DateTime.UtcNow) status.Text += "\nУведомления отложены до " + later.Value.ToLocalTime().ToString("g");
+                results.Children.Clear();
+                if (_automaticUpdateBatch != null)
+                    foreach (AppUpdate.UpdateNotice notice in _automaticUpdateBatch.Available)
+                    {
+                        TextBlock line = Text(notice.Caption, 13, WhiteBrush);
+                        line.TextWrapping = TextWrapping.Wrap; line.Margin = new Thickness(0, 3, 0, 3);
+                        results.Children.Add(line);
+                    }
+                snooze.IsEnabled = _canSave && enabled && notify.IsChecked == true && !_automaticUpdateBusy &&
+                    _automaticUpdateBatch != null && _automaticUpdateBatch.Available.Count > 0;
+            };
+            RoutedEventHandler changed = delegate { refresh(); };
+            core.Checked += changed; core.Unchecked += changed; plugins.Checked += changed; plugins.Unchecked += changed;
+            notify.Checked += changed; notify.Unchecked += changed;
+            save.Click += delegate
+            {
+                AppConfig next = _config.Copy();
+                next.AutoCheckCoreUpdates = core.IsChecked == true; next.AutoCheckPluginUpdates = plugins.IsChecked == true;
+                next.AutoCheckUpdatesAtStartup = startup.IsChecked == true; next.AutoNotifyUpdates = notify.IsChecked == true;
+                next.AutoUpdateIntervalHours = (int)((ComboBoxItem)interval.SelectedItem).Tag;
+                next.CheckBetaUpdates = beta.IsChecked == true; next.AutoCheckPluginPreviews = previews.IsChecked == true;
+                bool changedPolicy = AutomaticPolicy(next) != AutomaticPolicy(_config);
+                if (!SaveConfigChanges(next)) return;
+                if (changedPolicy) AutomaticUpdatePolicyChanged();
+                refresh(); status.Text += "\nНастройки сохранены.";
+            };
+            check.Click += async delegate { await RunAutomaticUpdateCheck(true); };
+            _automaticUpdateWindow = dialog;
+            _refreshAutomaticUpdateWindow = refresh;
+            refresh();
+            try { dialog.ShowDialog(); } // Automatic update center boundary.
+            finally { _refreshAutomaticUpdateWindow = null; _automaticUpdateWindow = null; }
+        }
+
         private void ShowUpdateWindow(Window owner)
         {
             Window dialog = new Window
@@ -292,6 +595,7 @@ namespace AppShelf
                     finally { syncingBeta = false; }
                     return;
                 }
+                AutomaticUpdatePolicyChanged();
                 clearVersions();
                 setBusy(false);
                 lastCheck.Text = "";

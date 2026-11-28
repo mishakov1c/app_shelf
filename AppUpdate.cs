@@ -559,9 +559,8 @@ namespace AppShelf
                 return SelectPluginReleases((List<GithubRelease>)new DataContractJsonSerializer(typeof(List<GithubRelease>)).ReadObject(input), repository, installed);
         }
 
-        internal static PluginRelease[] CheckPluginReleases(string repository, string installed)
+        private static string ReadPluginFeed(string repository)
         {
-            if (!ValidPluginRepository(repository)) throw new InvalidDataException("Некорректный репозиторий плагина.");
             List<GithubRelease> all = new List<GithubRelease>();
             bool complete = false;
             for (int page = 1; page <= 5; page++)
@@ -573,7 +572,251 @@ namespace AppShelf
                 if (part.Count < 100) { complete = true; break; }
             }
             if (!complete) throw new InvalidDataException("Слишком много релизов. Установите пакет вручную.");
-            return SelectPluginReleases(all, repository, installed);
+            using (MemoryStream buffer = new MemoryStream())
+            {
+                new DataContractJsonSerializer(typeof(List<GithubRelease>)).WriteObject(buffer, all);
+                return Encoding.UTF8.GetString(buffer.ToArray());
+            }
+        }
+
+        // Cache feeds, not installed-version-specific choices. All repositories
+        // and the core share the existing persisted rate-limit cooldown.
+        internal static PluginRelease[] CheckPluginReleasesWithCache(string repository, string installed,
+            string root, Func<string, string> fetch, DateTime now)
+        {
+            if (!ValidPluginRepository(repository) || installed == null || PluginVersion(installed) != installed)
+                throw new InvalidDataException("Некорректный источник или установленная версия плагина.");
+            lock (CacheGate)
+            {
+                string cooldown = Path.Combine(root, "cooldown.json");
+                DateTime? retry = CacheTime(LoadCache(cooldown));
+                if (retry.HasValue && retry.Value > now) throw new GithubRateLimitException(retry.Value);
+                // Owner cannot contain underscores, so the separator is unambiguous.
+                string path = Path.Combine(root, "plugin-" + repository.Replace("/", "__") + ".json");
+                CachedFeed saved = LoadCache(path);
+                DateTime? checkedUtc = CacheTime(saved);
+                if (checkedUtc.HasValue && checkedUtc.Value <= now &&
+                    now - checkedUtc.Value < TimeSpan.FromSeconds(60))
+                {
+                    try { return SelectPluginReleasesFromJson(saved.Json, repository, installed); }
+                    catch (Exception error) { ConfigStore.Log(error); }
+                }
+                try
+                {
+                    string json = fetch(repository);
+                    PluginRelease[] releases = SelectPluginReleasesFromJson(json, repository, installed);
+                    SaveCache(path, new CachedFeed { CheckedUtcTicks = now.Ticks, Json = json });
+                    return releases;
+                }
+                catch (GithubRateLimitException error)
+                {
+                    SaveCache(cooldown, new CachedFeed { CheckedUtcTicks = error.RetryUtc.Ticks });
+                    throw;
+                }
+            }
+        }
+
+        internal static PluginRelease[] CheckPluginReleases(string repository, string installed)
+        {
+            return CheckPluginReleasesWithCache(repository, installed, CacheRoot, ReadPluginFeed, DateTime.UtcNow);
+        }
+
+        internal sealed class AutoTarget
+        {
+            internal string Id, Name, Repository, Installed;
+            internal string Key { get { return "plugin:" + Id + "@" + Repository.ToLowerInvariant(); } }
+        }
+
+        internal sealed class UpdateNotice
+        {
+            internal string Key, Name, Installed, Version;
+            internal bool Preview;
+            internal string Caption { get { return Name + ": " + Installed + " → " + Version +
+                (Preview ? " (предварительная)" : ""); } }
+        }
+
+        internal sealed class AutoBatch
+        {
+            internal readonly List<UpdateNotice> Available = new List<UpdateNotice>();
+            internal int Checked, Failed;
+            internal DateTime? RetryUtc;
+        }
+
+        // No downloads, installation or plugin process operations here. All
+        // network boundaries are injectable for deterministic offline tests.
+        internal static AutoBatch CollectAutomatic(string installedCore, bool core, bool beta, bool pluginPreview,
+            IEnumerable<AutoTarget> targets, Func<bool, CheckResult> checkCore,
+            Func<string, string, PluginRelease[]> checkPlugin, CancellationToken cancel)
+        {
+            AutoBatch batch = new AutoBatch();
+            cancel.ThrowIfCancellationRequested();
+            if (core)
+            {
+                try
+                {
+                    CheckResult result = checkCore(beta);
+                    if (result.RetryUtc.HasValue) { batch.RetryUtc = result.RetryUtc; batch.Failed++; return batch; }
+                    if (result.Error != null || result.Releases == null) batch.Failed++;
+                    else
+                    {
+                        batch.Checked++;
+                        Release newest = null;
+                        foreach (Release candidate in result.Releases)
+                            if ((!candidate.IsBeta || beta) && CompareReleaseVersions(candidate.VersionText, installedCore) > 0 &&
+                                (newest == null || CompareReleaseVersions(candidate.VersionText, newest.VersionText) > 0))
+                                newest = candidate;
+                        if (newest != null) batch.Available.Add(new UpdateNotice { Key = "core", Name = "AppShelf",
+                            Installed = installedCore, Version = newest.VersionText, Preview = newest.IsBeta });
+                    }
+                }
+                catch (GithubRateLimitException error) { batch.RetryUtc = error.RetryUtc; batch.Failed++; return batch; }
+                catch (Exception error) { ConfigStore.Log(error); batch.Failed++; }
+            }
+            foreach (AutoTarget target in targets)
+            {
+                cancel.ThrowIfCancellationRequested();
+                if (target == null || !ValidPluginRepository(target.Repository)) continue;
+                try
+                {
+                    PluginRelease newest = null;
+                    foreach (PluginRelease candidate in checkPlugin(target.Repository, target.Installed))
+                        if ((!candidate.Preview || pluginPreview) && new Version(candidate.Version) > new Version(target.Installed) &&
+                            (newest == null || new Version(candidate.Version) > new Version(newest.Version)))
+                            newest = candidate;
+                    batch.Checked++;
+                    if (newest != null) batch.Available.Add(new UpdateNotice { Key = target.Key, Name = target.Name,
+                        Installed = target.Installed, Version = newest.Version, Preview = newest.Preview });
+                }
+                catch (GithubRateLimitException error) { batch.RetryUtc = error.RetryUtc; batch.Failed++; break; }
+                catch (Exception error) { ConfigStore.Log(error); batch.Failed++; }
+            }
+            cancel.ThrowIfCancellationRequested();
+            return batch;
+        }
+
+        [DataContract]
+        internal sealed class AutoState
+        {
+            [DataMember] internal long AnchorTicks, LastAttemptTicks, LastSuccessTicks, RetryTicks, SnoozeTicks;
+            [DataMember] internal Dictionary<string, string> Seen = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            internal static DateTime? Time(long ticks)
+            {
+                return ticks > 0 && ticks <= DateTime.MaxValue.Ticks ? (DateTime?)new DateTime(ticks, DateTimeKind.Utc) : null;
+            }
+
+            internal static int Interval(int hours)
+            {
+                return hours == 1 || hours == 3 || hours == 6 || hours == 12 ? hours : 24;
+            }
+
+            internal void EnsureAnchor(DateTime now)
+            {
+                if (!Time(AnchorTicks).HasValue || AnchorTicks > now.Ticks) AnchorTicks = now.Ticks;
+            }
+
+            internal bool Due(DateTime now, int hours, bool startup, bool first, bool notify)
+            {
+                DateTime? retry = Time(RetryTicks);
+                if (retry.HasValue && retry.Value > now) return false;
+                DateTime? attempted = Time(LastAttemptTicks);
+                DateTime baseline = attempted.HasValue && attempted.Value <= now ? attempted.Value :
+                    (Time(AnchorTicks) ?? now);
+                if (retry.HasValue) return true;
+                if (notify && SnoozeTicks > 0 && SnoozeTicks <= now.Ticks && LastAttemptTicks < SnoozeTicks) return true;
+                if (first && startup && (!attempted.HasValue || attempted.Value > now ||
+                    now - attempted.Value >= TimeSpan.FromMinutes(5))) return true;
+                return now - baseline >= TimeSpan.FromHours(Interval(hours));
+            }
+
+            internal void Complete(AutoBatch batch, DateTime now)
+            {
+                if (batch.Failed == 0)
+                {
+                    LastSuccessTicks = now.Ticks;
+                    RetryTicks = 0;
+                    if (SnoozeTicks > 0 && SnoozeTicks <= now.Ticks && batch.Available.Count == 0) SnoozeTicks = 0;
+                }
+                else
+                {
+                    DateTime retry = now.AddMinutes(30);
+                    if (batch.RetryUtc.HasValue && batch.RetryUtc.Value > retry) retry = batch.RetryUtc.Value;
+                    RetryTicks = retry.Ticks;
+                }
+            }
+
+            private static string SeenKey(UpdateNotice item)
+            {
+                // Each channel remembers its own highest announced release.
+                // A newly available stable version must not be hidden by a
+                // numerically newer preview that was previously announced.
+                return item.Key + (item.Preview ? "|preview" : "|stable");
+            }
+
+            private bool IsNew(UpdateNotice item)
+            {
+                string old;
+                if (Seen == null || !Seen.TryGetValue(SeenKey(item), out old)) return true;
+                if (item.Key == "core")
+                {
+                    try { return CompareReleaseVersions(item.Version, old) > 0; }
+                    catch (InvalidDataException) { return true; }
+                }
+                // Plugin manifests allow numeric components above the core
+                // assembly's 65534 limit.
+                Version previous, next;
+                return !Version.TryParse(old, out previous) || !Version.TryParse(item.Version, out next) || next > previous;
+            }
+
+            internal List<UpdateNotice> Pending(AutoBatch batch, DateTime now)
+            {
+                List<UpdateNotice> result = new List<UpdateNotice>();
+                if (SnoozeTicks > now.Ticks) return result;
+                bool repeat = SnoozeTicks > 0;
+                foreach (UpdateNotice item in batch.Available)
+                    if (repeat || IsNew(item)) result.Add(item);
+                return result;
+            }
+
+            internal void MarkNotified(IEnumerable<UpdateNotice> notices)
+            {
+                if (Seen == null) Seen = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (UpdateNotice notice in notices)
+                    if (IsNew(notice)) Seen[SeenKey(notice)] = notice.Version;
+                SnoozeTicks = 0;
+            }
+
+            internal void Snooze(DateTime now) { SnoozeTicks = now.AddHours(6).Ticks; }
+        }
+
+        internal static AutoState LoadAutoState(string path)
+        {
+            CachedFeed saved = LoadCache(path);
+            if (saved != null && !String.IsNullOrEmpty(saved.Json))
+                try
+                {
+                    using (MemoryStream input = new MemoryStream(Encoding.UTF8.GetBytes(saved.Json)))
+                    {
+                        AutoState state = (AutoState)new DataContractJsonSerializer(typeof(AutoState)).ReadObject(input);
+                        if (state != null)
+                        {
+                            if (state.Seen == null) state.Seen = new Dictionary<string, string>(StringComparer.Ordinal);
+                            return state;
+                        }
+                    }
+                }
+                catch (Exception error) { ConfigStore.Log(error); }
+            return new AutoState();
+        }
+
+        internal static void SaveAutoState(string path, AutoState state)
+        {
+            using (MemoryStream output = new MemoryStream())
+            {
+                new DataContractJsonSerializer(typeof(AutoState)).WriteObject(output, state);
+                SaveCache(path, new CachedFeed { CheckedUtcTicks = state.LastAttemptTicks,
+                    Json = Encoding.UTF8.GetString(output.ToArray()) });
+            }
         }
 
         internal static void DownloadPluginRelease(PluginRelease release, string path)
