@@ -41,6 +41,11 @@ try {
             if ([regex]::Matches($text, $rdpConfirm, 'Singleline').Count -ne 2) { throw 'RDP confirmation boundaries missing.' }
             $text = [regex]::Replace($text, $rdpConfirm, 'Package6Tests.ConfirmRdp()', 'Singleline')
         }
+        if ($file -eq 'AppUpdateWindow.cs') {
+            $target = 'try { dialog.ShowDialog(); } // Automatic update center boundary.'
+            if ($text.Split(@($target), [StringSplitOptions]::None).Length -ne 2) { throw 'Automatic update window boundary missing.' }
+            $text = $text.Replace($target, 'try { Package6Tests.AutomaticUpdates(dialog); }')
+        }
         if ($file -eq 'BackupManager.cs') {
             $target = '            dialog.ShowDialog();'
             if ($text.Split(@($target), [StringSplitOptions]::None).Length -ne 2) { throw 'Backup dialog interception anchor missing.' }
@@ -77,7 +82,12 @@ public static class Package6Tests
     private static int passed, failed;
     private static Action<Window> about;
     private static Action<Window> settings;
-    private static Action<Window> backup;
+    private static Action<Window> backup, automaticUpdates;
+    public static void AutomaticUpdates(Window dialog)
+    {
+        dialog.ShowInTaskbar = false; dialog.Show(); Drain();
+        try { automaticUpdates(dialog); } finally { dialog.Close(); }
+    }
     public static void Backup(Window dialog)
     {
         dialog.ShowInTaskbar = false; dialog.Show(); Drain();
@@ -1515,7 +1525,7 @@ public static class Package6Tests
         Case("settings accordion and saved navigation", delegate {
             Seed("normal", 1); MainWindow w = Open(); try {
                 settings = delegate(Window d) {
-                    string[] main = { "appearance", "network", "weather", "time", "windows", "collections", "plugins", "data" };
+                    string[] main = { "appearance", "network", "weather", "time", "windows", "collections", "plugins", "updates", "data" };
                     string[] nested = { "appearance-tiles", "appearance-background", "appearance-panel" };
                     Dictionary<string, Button> headers = new Dictionary<string, Button>();
                     foreach (Button b in Controls<Button>(d))
@@ -1539,9 +1549,9 @@ public static class Package6Tests
                         "Main accordion is not using the reference dark fill");
                     StackPanel rows = frames[0].Child as StackPanel;
                     StackPanel nestedRows = subframes.Count == 1 ? subframes[0].Child as StackPanel : null;
-                    Assert(rows != null && rows.Children.Count == 15 && nestedRows != null &&
-                        nestedRows.Children.Count == 5 && dividers.Count == 9,
-                        "Expected eight main sections and three nested Appearance subsections");
+                    Assert(rows != null && rows.Children.Count == 17 && nestedRows != null &&
+                        nestedRows.Children.Count == 5 && dividers.Count == 10,
+                        "Expected nine main sections and three nested Appearance subsections");
                     foreach (string key in main) {
                         StackPanel caption = Section(d, key).Content as StackPanel;
                         System.Windows.Shapes.Path chevron = caption == null ? null :
@@ -1611,6 +1621,38 @@ public static class Package6Tests
                         "Settings assigned to the wrong main/nested section");
                 };
                 Call(w, "ShowSettings");
+            } finally { w.Close(); }
+        });
+        Case("automatic update center settings, defaults and persistence", delegate {
+            Seed("normal", 1); MainWindow w = Open(); try {
+                automaticUpdates = delegate(Window d) {
+                    CheckBox core = Controls<CheckBox>(d).Find(x => Object.Equals(x.Tag, "AutoUpdateCore"));
+                    CheckBox plugins = Controls<CheckBox>(d).Find(x => Object.Equals(x.Tag, "AutoUpdatePlugins"));
+                    CheckBox startup = Controls<CheckBox>(d).Find(x => Object.Equals(x.Tag, "AutoUpdateStartup"));
+                    CheckBox notify = Controls<CheckBox>(d).Find(x => Object.Equals(x.Tag, "AutoUpdateNotify"));
+                    CheckBox previews = Controls<CheckBox>(d).Find(x => Object.Equals(x.Tag, "AutoUpdatePreviews"));
+                    ComboBox interval = Controls<ComboBox>(d).Find(x => Object.Equals(x.Tag, "AutoUpdateInterval"));
+                    Assert(core.IsChecked == true && plugins.IsChecked == true && startup.IsChecked == true &&
+                        notify.IsChecked == true && previews.IsChecked == false && (int)((ComboBoxItem)interval.SelectedItem).Tag == 24,
+                        "Automatic update defaults incorrect");
+                    core.IsChecked = false; plugins.IsChecked = false; Drain();
+                    Assert(!interval.IsEnabled && !startup.IsEnabled && !notify.IsEnabled, "Disabled sources did not disable cadence controls");
+                    plugins.IsChecked = true; Drain();
+                    interval.SelectedIndex = 2; startup.IsChecked = false; previews.IsChecked = true;
+                    Click(ButtonNamed(d, "Сохранить настройки"));
+                    AppConfig saved = Load();
+                    Assert(saved.AutoCheckCoreUpdates == false && saved.AutoCheckPluginUpdates == true &&
+                        saved.AutoUpdateIntervalHours == 6 && saved.AutoCheckUpdatesAtStartup == false && saved.AutoCheckPluginPreviews,
+                        "Automatic settings not persisted");
+                };
+                typeof(MainWindow).GetMethod("ShowAutomaticUpdateWindow", Private).Invoke(w, new object[] { w });
+                automaticUpdates = delegate(Window d) {
+                    Assert(Controls<CheckBox>(d).Find(x => Object.Equals(x.Tag, "AutoUpdateCore")).IsChecked == false &&
+                        Controls<CheckBox>(d).Find(x => Object.Equals(x.Tag, "AutoUpdatePreviews")).IsChecked == true &&
+                        (int)((ComboBoxItem)Controls<ComboBox>(d).Find(x => Object.Equals(x.Tag, "AutoUpdateInterval")).SelectedItem).Tag == 6,
+                        "Automatic update settings lost on reopen");
+                };
+                typeof(MainWindow).GetMethod("ShowAutomaticUpdateWindow", Private).Invoke(w, new object[] { w });
             } finally { w.Close(); }
         });
         Case("collections and backup settings preserve navigation", delegate {

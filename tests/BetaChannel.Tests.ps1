@@ -122,6 +122,87 @@ namespace AppShelf
                 "429 fallback cooldown");
         }
 
+        private static void AutomaticChecks()
+        {
+            DateTime now = new DateTime(2026, 11, 29, 0, 0, 0, DateTimeKind.Utc);
+            var state = new AppUpdate.AutoState(); state.EnsureAnchor(now);
+            Assert(AppUpdate.AutoState.Interval(0) == 24 && AppUpdate.AutoState.Interval(6) == 6, "daily default and valid intervals");
+            Assert(!state.Due(now.AddMinutes(1), 24, false, true, true) &&
+                state.Due(now.AddMinutes(1), 24, true, true, true) &&
+                state.Due(now.AddDays(1), 24, false, true, true), "startup/periodic schedule");
+            state.LastAttemptTicks = now.Ticks;
+            Assert(!state.Due(now.AddMinutes(4), 24, true, true, true) &&
+                state.Due(now.AddMinutes(5), 24, true, true, true) &&
+                !state.Due(now.AddHours(5), 6, false, false, true) &&
+                state.Due(now.AddHours(6), 6, false, false, true), "restart throttle and interval");
+            string repo = "example/plugin", hash = "sha256:" + new string('a', 64);
+            string feed = "[" + PluginEntry("v1.1.0", false, repo, hash) + "," +
+                PluginEntry("v1.2.0", true, repo, hash) + "]";
+            var target = new AppUpdate.AutoTarget { Id = "example.plugin", Name = "Sample", Repository = repo, Installed = "1.0.0" };
+            var targets = new[] { target };
+            int calls = 0, coreCalls = 0;
+            Func<bool, AppUpdate.CheckResult> checkCore = delegate(bool beta) {
+                coreCalls++; return new AppUpdate.CheckResult { Releases = AppUpdate.SelectAvailableFromJson(
+                    "[" + Entry("2.25.1", false, false) + "," + Entry("2.26.0-beta.1", true, false) + "]", beta) };
+            };
+            Func<string, string, AppUpdate.PluginRelease[]> checkPlugin = delegate(string r, string installed) {
+                calls++; return AppUpdate.SelectPluginReleasesFromJson(feed, r, installed);
+            };
+            var batch = AppUpdate.CollectAutomatic("2.25.0", true, false, false, targets, checkCore, checkPlugin, System.Threading.CancellationToken.None);
+            Assert(batch.Checked == 2 && batch.Failed == 0 && batch.Available.Count == 2 &&
+                batch.Available[0].Version == "2.25.1" && batch.Available[1].Version == "1.1.0", "stable aggregation");
+            Assert(state.Pending(batch, now).Count == 2, "first notification");
+            state.MarkNotified(batch.Available);
+            Assert(state.Pending(batch, now).Count == 0, "same releases deduplicated");
+            state.Snooze(now);
+            Assert(state.Pending(batch, now.AddHours(5)).Count == 0 &&
+                state.Due(now.AddHours(6), 24, false, false, true) &&
+                state.Pending(batch, now.AddHours(6)).Count == 2, "snooze suppresses and repeats");
+            state.MarkNotified(batch.Available);
+            batch = AppUpdate.CollectAutomatic("2.25.0", false, true, true, targets, checkCore, checkPlugin, System.Threading.CancellationToken.None);
+            Assert(coreCalls == 1 && calls == 2 && batch.Available.Count == 1 && batch.Available[0].Version == "1.2.0" &&
+                state.Pending(batch, now).Count == 1, "core disabled, preview opt-in and newer notification");
+            state.MarkNotified(batch.Available);
+            batch = AppUpdate.CollectAutomatic("2.25.0", false, false, false, targets, checkCore, checkPlugin, System.Threading.CancellationToken.None);
+            Assert(state.Pending(batch, now).Count == 0, "older stable does not repeat after preview");
+            state.Complete(batch, now);
+            Assert(state.LastSuccessTicks == now.Ticks, "successful check recorded");
+            var failed = AppUpdate.CollectAutomatic("2.25.0", true, false, false, targets,
+                delegate(bool b) { return new AppUpdate.CheckResult { Error = "offline", Releases = new[] { Select(false, Entry("9.0.0", false, false)) } }; },
+                delegate(string r, string v) { throw new AppUpdate.GithubRateLimitException(now.AddHours(2)); }, System.Threading.CancellationToken.None);
+            Assert(failed.Available.Count == 0 && failed.Failed == 2 && failed.RetryUtc == now.AddHours(2), "no stale notification, rate limit stops batch");
+            state.Complete(failed, now.AddMinutes(1));
+            Assert(!state.Due(now.AddHours(1), 1, true, true, true) && state.Due(now.AddHours(2), 24, false, false, true) &&
+                state.LastSuccessTicks == now.Ticks, "retry cooldown and last success");
+            var token = new System.Threading.CancellationToken(true);
+            bool cancelled = false;
+            try { AppUpdate.CollectAutomatic("2.25.0", true, false, false, targets, checkCore, checkPlugin, token); }
+            catch (OperationCanceledException) { cancelled = true; }
+            Assert(cancelled, "cancel before requests");
+            string root = Path.Combine(Path.GetTempPath(), "AppShelf-Automatic-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string path = Path.Combine(root, "state.json");
+                AppUpdate.SaveAutoState(path, state);
+                var restored = AppUpdate.LoadAutoState(path);
+                Assert(restored.LastSuccessTicks == state.LastSuccessTicks && restored.RetryTicks == state.RetryTicks &&
+                    restored.Pending(batch, now).Count == 0, "restart persists scheduling and deduplication");
+                int requests = 0;
+                Func<string, string> fetch = delegate(string r) { requests++; return feed; };
+                var first = AppUpdate.CheckPluginReleasesWithCache(repo, "1.0.0", root, fetch, now);
+                var second = AppUpdate.CheckPluginReleasesWithCache(repo, "1.1.0", root, fetch, now.AddSeconds(30));
+                Assert(requests == 1 && first.Length == 2 && second.Length == 1 && second[0].Preview, "plugin feed cache reselects by installed version");
+                bool limited = false;
+                try { AppUpdate.CheckPluginReleasesWithCache(repo, "1.0.0", root,
+                    delegate(string r) { throw new AppUpdate.GithubRateLimitException(now.AddHours(1)); }, now.AddMinutes(2)); }
+                catch (AppUpdate.GithubRateLimitException) { limited = true; }
+                Assert(limited, "plugin rate limit propagated");
+                var blocked = AppUpdate.CheckWithCache(false, root, delegate(bool b) { throw new Exception("Unexpected request"); }, now.AddMinutes(3));
+                Assert(blocked.RetryUtc == now.AddHours(1), "plugin cooldown shared with core");
+            }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
+
         private static void RenamedExecutableChecks()
         {
             string root = Path.Combine(Path.GetTempPath(), "AppShelf-Renamed-" + Guid.NewGuid().ToString("N"));
@@ -155,6 +236,7 @@ namespace AppShelf
         {
             PluginReleaseChecks();
             CacheChecks();
+            AutomaticChecks();
             RenamedExecutableChecks();
             Assert(AppUpdate.CompareReleaseVersions("2.24.0-beta.10", "2.24.0-beta.2") > 0, "numeric beta order");
             Assert(AppUpdate.CompareReleaseVersions("2.24.0", "2.24.0-beta.999") > 0, "final beats beta");

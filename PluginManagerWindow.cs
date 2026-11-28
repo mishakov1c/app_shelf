@@ -932,6 +932,7 @@ namespace AppShelf
                     delegate(Window dialogOwner, bool indicator, string id) { ShowPluginWidgetPickerFor(dialogOwner, indicator, id); },
                     delegate { return WidgetsInFreeLayout(); }, BackupAutomation.BeforeUpdateEnabled(_config));
                 manager.ShowDialog();
+                InvalidateAutomaticPluginResults();
                 if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
             }
             catch (Exception error)
