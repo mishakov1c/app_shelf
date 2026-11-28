@@ -991,9 +991,17 @@ namespace AppShelf
                     foreach (KeyValuePair<string, string> item in shortcuts)
                         File.Copy(item.Value, Path.Combine(ConfigStore.ShortcutsDirectory,
                             Path.GetFileName(item.Key)), true);
-                    // Restoring data must not change where backups are stored on this PC.
-                    if (!String.IsNullOrWhiteSpace(selectedBackupRoot))
-                        restored.BackupDirectory = BackupAutomation.ValidateRoot(selectedBackupRoot);
+                    // Archive import never grants backup consent or changes the local destination.
+                    restored.BackupDirectory = !String.IsNullOrWhiteSpace(selectedBackupRoot)
+                        ? BackupAutomation.ValidateRoot(selectedBackupRoot) : (currentSafe ? current.BackupDirectory : null);
+                    restored.AutomaticBackupsEnabled = currentSafe && BackupAutomation.AutomaticEnabled(current);
+                    restored.BackupBeforeUpdateEnabled = currentSafe ? current.BackupBeforeUpdateEnabled : true;
+                    if (currentSafe)
+                    {
+                        restored.AutomaticBackupDays = current.AutomaticBackupDays;
+                        restored.AutomaticBackupKeep = current.AutomaticBackupKeep;
+                        restored.AutomaticBackupQuotaMb = current.AutomaticBackupQuotaMb;
+                    }
                     if (restoreConfig) ConfigStore.Save(restored, false);
                     if (reminders != null) ReminderStore.Save(reminders);
                     if (collections != null) CollectionStore.Save(collections);
@@ -1082,7 +1090,13 @@ namespace AppShelf
 
         internal static bool AutomaticEnabled(AppConfig config)
         {
-            return config != null && config.AutomaticBackupsEnabled != false;
+            return config != null && !String.IsNullOrWhiteSpace(config.BackupDirectory) &&
+                config.AutomaticBackupsEnabled != false;
+        }
+
+        internal static bool BeforeUpdateEnabled(AppConfig config)
+        {
+            return AutomaticEnabled(config) && config.BackupBeforeUpdateEnabled != false;
         }
 
         internal static int IntervalDays(AppConfig config)
@@ -1624,8 +1638,7 @@ namespace AppShelf
 
         private async void MigrateLegacyExeIfPossible()
         {
-            if (_legacyBackupMigrationRunning || _config == null ||
-                String.IsNullOrWhiteSpace(_config.BackupDirectory) ||
+            if (_legacyBackupMigrationRunning || !BackupAutomation.AutomaticEnabled(_config) ||
                 Dispatcher.HasShutdownStarted) return;
             _legacyBackupMigrationRunning = true;
             try
@@ -1941,8 +1954,16 @@ namespace AppShelf
 
             CheckBox automatic = new CheckBox
             {
-                Content = "Автоматически создавать резервные копии",
+                Content = "Включить автоматическое резервное копирование",
+                Tag = "BackupAutomaticEnabled",
                 IsChecked = BackupAutomation.AutomaticEnabled(_config),
+                Foreground = WhiteBrush, Margin = new Thickness(0, 6, 0, 8)
+            };
+
+            CheckBox beforeUpdate = new CheckBox
+            {
+                Content = "Создавать копии перед обновлением AppShelf и плагинов",
+                Tag = "BackupBeforeUpdateEnabled", IsChecked = _config.BackupBeforeUpdateEnabled != false,
                 Foreground = WhiteBrush, Margin = new Thickness(0, 6, 0, 8)
             };
 
@@ -1987,6 +2008,7 @@ namespace AppShelf
                 if (automatic.IsChecked == true && !EnsureBackupDirectory(dialog)) return;
                 AppConfig pending = _config.Copy();
                 pending.AutomaticBackupsEnabled = automatic.IsChecked == true;
+                pending.BackupBeforeUpdateEnabled = beforeUpdate.IsChecked == true;
                 BackupStore.ApplyPolicy(pending, automaticChoice.Selected);
                 pending.AutomaticBackupDays = cadence.SelectedIndex == 1 ? 7 : 1;
                 pending.AutomaticBackupKeep = count.SelectedIndex == 0 ? 3 :
@@ -1997,6 +2019,7 @@ namespace AppShelf
                 {
                     refreshInfo();
                     QueueAutomaticBackup();
+                    MigrateLegacyExeIfPossible();
                 }
             };
 
@@ -2015,7 +2038,7 @@ namespace AppShelf
 
             TextBlock backupHelp = Text(
                 "Ежедневные копии создаются в фоне, только если данные изменились. " +
-                "Перед обновлением и восстановлением создаются полные страховочные копии независимо от выбранного состава. " +
+                "Копии перед обновлением создаются только при включённой опции; технический откат обновления и страховка восстановления остаются доступны всегда. " +
                 "Dropbox/OneDrive могут синхронизировать выбранную папку, но AppShelf не проверяет загрузку в облако.",
                 12, MutedBrush);
             backupHelp.TextWrapping = TextWrapping.Wrap;
@@ -2030,10 +2053,12 @@ namespace AppShelf
                 if (!selection.HasValue) return;
                 if (!_remindersCanSave && BackupStore.Includes(selection.Value, BackupComponents.Reminders))
                 { ShowSaveDisabled(); return; }
-                if (!EnsureBackupDirectory(dialog)) return;
-                string manualDirectory = Path.Combine(_config.BackupDirectory, "Manual");
-                try { Directory.CreateDirectory(manualDirectory); }
-                catch (Exception error) { ShowError("Не удалось создать папку ручных копий.", error); return; }
+                string manualDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                if (!String.IsNullOrWhiteSpace(_config.BackupDirectory) && Directory.Exists(_config.BackupDirectory))
+                {
+                    string preferred = Path.Combine(_config.BackupDirectory, "Manual");
+                    manualDirectory = Directory.Exists(preferred) ? preferred : _config.BackupDirectory;
+                }
                 SaveFileDialog picker = new SaveFileDialog { Title = "Экспорт AppShelf",
                     InitialDirectory = manualDirectory,
                     Filter = "Архив AppShelf (*.zip)|*.zip", FileName = "AppShelf-backup-" + DateTime.Now.ToString("yyyy-MM-dd") + ".zip" };
@@ -2052,9 +2077,9 @@ namespace AppShelf
             Button importAll = ActionButton("Восстановить из ZIP…", false);
             importAll.Click += delegate
             {
-                if (!EnsureBackupDirectory(dialog)) return;
                 OpenFileDialog picker = new OpenFileDialog { Title = "Восстановление AppShelf",
-                    InitialDirectory = _config.BackupDirectory,
+                    InitialDirectory = Directory.Exists(_config.BackupDirectory) ? _config.BackupDirectory :
+                        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
                     Filter = "Архив AppShelf (*.zip)|*.zip" };
                 if (picker.ShowDialog(dialog) != true) return;
                 BackupComponents? selection;
@@ -2199,9 +2224,19 @@ namespace AppShelf
                     headers[part.Key].Background = active ? (Brush)selectedHeading : Brushes.Transparent;
                 }
             };
+            StackPanel automaticOptions = new StackPanel { Tag = "BackupAutomaticOptions" };
+            foreach (UIElement element in new UIElement[] { chooseFolder, beforeUpdate, cadenceLabel, cadence,
+                countLabel, count, quotaLabel, quota, compositionTitle, automaticChoice.Panel, privateWarning, openBackupFolder, backupHelp })
+                automaticOptions.Children.Add(element);
+            Action updateAutomaticOptions = delegate
+            {
+                automaticOptions.Visibility = automatic.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+            };
+            automatic.Checked += delegate { updateAutomaticOptions(); };
+            automatic.Unchecked += delegate { updateAutomaticOptions(); };
+            updateAutomaticOptions();
             AddSettingsSection(backupRows, "backup-automatic", "Автоматические копии",
-                new List<UIElement> { chooseFolder, automatic, cadenceLabel, cadence,
-                    countLabel, count, quotaLabel, quota, compositionTitle, automaticChoice.Panel, privateWarning, savePolicy, openBackupFolder, backupHelp },
+                new List<UIElement> { automatic, automaticOptions, savePolicy },
                 bodies, arrows, headers, toggleBackupSection);
             AddSettingsSection(backupRows, "backup-full", "Экспорт и восстановление",
                 new List<UIElement> { note, exportAll, importAll, extractPrograms },

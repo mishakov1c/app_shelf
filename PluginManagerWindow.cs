@@ -23,6 +23,7 @@ namespace AppShelf
         private readonly PluginPackageStore store;
         private readonly PluginRuntime runtime;
         private readonly string backupRoot;
+        private readonly bool backupBeforeUpdate;
         private readonly Func<InstalledPlugin, Func<Task>> prepareEnable;
         private readonly Action<Window, bool, string> placeWidget;
         private readonly Func<bool> canPlaceWidget;
@@ -35,11 +36,12 @@ namespace AppShelf
         private bool busy;
 
         internal PluginManagerWindow(Window owner, PluginPackageStore packages, PluginRuntime controller, string selectedBackupRoot = null, Func<InstalledPlugin, Func<Task>> beforeEnable = null,
-            Action<Window, bool, string> placement = null, Func<bool> widgetPlacementAvailable = null)
+            Action<Window, bool, string> placement = null, Func<bool> widgetPlacementAvailable = null, bool archiveBeforeUpdate = true)
         {
             store = packages;
             runtime = controller;
             backupRoot = selectedBackupRoot;
+            backupBeforeUpdate = archiveBeforeUpdate;
             prepareEnable = beforeEnable;
             placeWidget = placement;
             canPlaceWidget = widgetPlacementAvailable;
@@ -382,10 +384,16 @@ namespace AppShelf
                     restore.IsEnabled = manifest != null && plugin.Error == null && manifest.Version == saved.Version;
                     restore.Click += delegate
                     {
-                        if (String.IsNullOrWhiteSpace(backupRoot))
+                        // An explicit restore always retains a safety copy, even without automatic backups.
+                        string restoreRoot;
+                        try
                         {
-                            AppDialog.Show(this, "Сначала выберите папку резервных копий AppShelf.", "AppShelf — Плагины",
-                                MessageBoxButton.OK, MessageBoxImage.Information);
+                            restoreRoot = String.IsNullOrWhiteSpace(backupRoot) ?
+                                Path.Combine(ConfigStore.DirectoryPath, "Backups") : BackupAutomation.ValidateRoot(backupRoot);
+                        }
+                        catch (Exception error)
+                        {
+                            AppDialog.Show(this, error.Message, "AppShelf — Плагины", MessageBoxButton.OK, MessageBoxImage.Warning);
                             return;
                         }
                         if (AppDialog.Show(this, "Остановить и отключить плагин, затем заменить перечисленные файлы сохранёнными данными?\n\n" +
@@ -394,7 +402,7 @@ namespace AppShelf
                             "AppShelf — Восстановление данных плагина", MessageBoxButton.YesNo, MessageBoxImage.Warning)
                             != MessageBoxResult.Yes) return;
                         RunAction(delegate { return runtime.RestoreDataAsync(plugin.Id, saved.Version,
-                            BackupAutomation.ValidateRoot(backupRoot)); }, "Данные восстановлены. Плагин отключён; включите его при необходимости.");
+                            restoreRoot); }, "Данные восстановлены. Плагин отключён; включите его при необходимости.");
                     };
                     body.Children.Add(restore);
                 }
@@ -533,7 +541,8 @@ namespace AppShelf
                             MessageBoxImage.Warning) == MessageBoxResult.Yes;
                     }));
                 }, expectedId, runtime.BeforePackageCommit,
-                    String.IsNullOrWhiteSpace(backupRoot) ? null : BackupAutomation.ValidateRoot(backupRoot), true, release == null ? null : release.Sha256);
+                    !backupBeforeUpdate || String.IsNullOrWhiteSpace(backupRoot) ? null : BackupAutomation.ValidateRoot(backupRoot),
+                    backupBeforeUpdate, release == null ? null : release.Sha256);
             });
         }
 
@@ -921,7 +930,7 @@ namespace AppShelf
                 manager = new PluginManagerWindow(owner, new PluginPackageStore(ConfigStore.DirectoryPath), GetPluginRuntime(), _config.BackupDirectory,
                     delegate(InstalledPlugin plugin) { return PrepareNetworkPluginEnable(manager, plugin); },
                     delegate(Window dialogOwner, bool indicator, string id) { ShowPluginWidgetPickerFor(dialogOwner, indicator, id); },
-                    delegate { return WidgetsInFreeLayout(); });
+                    delegate { return WidgetsInFreeLayout(); }, BackupAutomation.BeforeUpdateEnabled(_config));
                 manager.ShowDialog();
                 if (_pluginWidgets != null) _pluginWidgets.InvalidateStopped();
             }
